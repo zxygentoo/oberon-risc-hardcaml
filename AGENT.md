@@ -254,3 +254,14 @@ oberon-risc-hardcaml/
 - Oracle wiring (Phase 0, TBD with human): dune workspace spanning both sibling repos
   (tests track the live `risc_core`) **vs.** vendoring a copy (self-contained repo).
 - Tmp/scratch for this agent: `$CLAUDE_JOB_DIR/tmp`.
+
+### Git workflow (git-flow)
+
+- **`main`** = released state only. **Never commit or merge work directly to `main`.**
+  (`AGENT.md`/`CLAUDE.md` live on `develop`; `main` holds only `.gitignore` until a release.)
+- **`develop`** = integration branch where phases land; the normal working branch.
+- Feature branches: **`feat/<name>`** (note `feat/`, *not* git-flow's default `feature/`),
+  via `git flow feature start <name>` / `git flow feature finish <name>`. Other prefixes are
+  git-flow defaults (`bugfix/`, `release/`, `hotfix/`, `support/`; empty version-tag prefix).
+- Remote `origin` = the GitHub repo (HTTPS, pushes via the stored credential as `zxygentoo`).
+- Commit messages end with the `Co-Authored-By: Claude …` trailer.
