@@ -92,6 +92,9 @@ Boot ROM image: `po/verilog/prom.mem` (hex) + `po/verilog/prom.bmm`.
    (free & exact in simulation); the **DDR2 memory adapter** is a **deferred refactor** for
    board bring-up (see §4 — it's mandatory on *this* board, not optional).
 6. **Oracle:** the OCaml `risc_core` emulator, in-process, plus its FP vectors + boot ROM.
+7. **Toolchain:** **OxCaml** (opam switch `5.2.0+ox`) + Hardcaml **`v0.18~preview`** — chosen so
+   the official `docs.hardcaml.org` matches our API exactly (it documents the OxCaml/preview
+   build; vanilla opam stops at v0.17.1). Details and v0.18 API notes in §9.
 
 ---
 
@@ -243,16 +246,29 @@ oberon-risc-hardcaml/
   (lib/, test/, …)    ← the Hardcaml port — created from Phase 0 on
 ```
 
-**Toolchain:** OCaml 5.3.0 (opam switch `default`), dune 3.23, Hardcaml **v0.17.1**
-(+ `ppx_hardcaml`, `hardcaml_waveterm`). Available to add when needed: `hardcaml_c`
-(fast C sim for full-boot), `hardcaml_of_verilog` + `hardcaml_verify` (Phase 8 formal).
+**Toolchain:** **OxCaml** — opam switch **`5.2.0+ox`** (`ocaml-variants.5.2.0+ox`), dune
+`3.22+ox`, Hardcaml **`v0.18~preview`** (with `ppx_hardcaml` + `hardcaml_waveterm`, same
+version). We track Jane Street's OxCaml *preview channel* on purpose: **`docs.hardcaml.org`
+documents exactly this version** (built from the `with-extensions` branch); vanilla opam tops
+out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~preview.130.91+190`
+move forward under us). `hardcaml_c` / `hardcaml_of_verilog` / `hardcaml_verify` get added on
+ox when their phases arrive (confirm availability then).
 
-- Always `eval $(opam env)` (default switch) before building.
-- API note: `log_shift` is **positional** — `log_shift sll x sc` (no labels). This already
-  emits the same staged barrel shifter as `LeftShifter.v`.
-- Hardcaml → Verilog: `Rtl.print Verilog (Circuit.create_exn ~name [...])`.
-- Oracle wiring (Phase 0, TBD with human): dune workspace spanning both sibling repos
-  (tests track the live `risc_core`) **vs.** vendoring a copy (self-contained repo).
+- Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
+  lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).
+- **`docs.hardcaml.org` is authoritative for our API** (it tracks v0.18). Deltas vs. older
+  v0.17-era examples found online:
+  - Shifts take `~by`: `sll x ~by:n`, `sra x ~by:n`; `log_shift ~f:sll x ~by:sc`
+    (`log_shift : f:(t -> by:int -> t) -> t -> by:t -> t`).
+  - `select x ~high ~low`, `uresize x ~width`.
+  - Int conversions are explicit: `to_int_trunc` / `to_unsigned_int` / `to_signed_int`,
+    `of_unsigned_int ~width` / `of_signed_int ~width` (use these instead of v0.17's `to_int`/`of_int`).
+  - `mux sel list` and `mux2 sel t f` stay positional; `Signal.input`/`Signal.output` unchanged.
+- Hardcaml → Verilog: `Rtl.print Rtl.Language.Verilog circuit`.
+- Smoke-tested green on ox (`$CLAUDE_JOB_DIR/tmp/smoke18`): `ppx_hardcaml` interfaces +
+  `Circuit.With_interface` + `Rtl.print` + `Cyclesim.With_interface` (sim verified `0xFF<<4=0xFF0`).
+- Oracle wiring (Phase 0, TBD): dune workspace vs. vendoring `risc_core` — and confirm the
+  (vanilla, 5.3-targeted) `risc_core` builds under ox (5.2-based) at Phase 0.
 - Tmp/scratch for this agent: `$CLAUDE_JOB_DIR/tmp`.
 
 ### Git workflow (git-flow)
