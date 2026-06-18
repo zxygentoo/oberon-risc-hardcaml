@@ -1,0 +1,19 @@
+# OCaml / dune build artifacts
+_build/
+*.install
+.merlin
+*.merlin
+
+# Local opam switch
+_opam/
+
+# Editor / OS cruft
+*~
+*.swp
+*.swo
+.DS_Store
+.vscode/
+.idea/
+
+# Original Project Oberon sources (Verilog, PDFs, boot ROM) — not committed for now
+/po/
