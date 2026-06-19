@@ -160,10 +160,10 @@ Vivado-specific layer.
 | Phase | Deliverable | Oracle / proof |
 |---|---|---|
 | **0** ✅ | dune project on ox; emulator submodule + `oracle` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
-| **1** | `LeftShifter`, `RightShifter`, ALU logic/adder + N/Z/C/V flags | unit specs / qcheck |
-| **2** | `Multiplier`, `Divider` (state+stall); `FPAdder`/`FPMultiplier`/`FPDivider` | frozen `fp_vectors.txt` |
-| **3** | Register file (3R/1W async-read array) | unit |
-| **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
+| **1** | `LeftShifter`, `RightShifter`, ALU logic/adder + C/V flags | unit specs / qcheck |
+| **2** | Register file (3R/1W async-read array) | unit |
+| **3** | `Multiplier`, `Divider` (state+stall); `FPAdder`/`FPMultiplier`/`FPDivider` | frozen `fp_vectors.txt` |
+| **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **DDR2-via-MIG adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |

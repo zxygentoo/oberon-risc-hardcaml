@@ -22,7 +22,7 @@ module I : sig
     ; imm : 'a (** [IR[15:0]] — the MOV [imm<<16] source (16 bits) *)
     ; b : 'a (** operand [B] (= R.b) *)
     ; c1 : 'a (** second operand [C1] (already q-muxed: imm-extended or R.c) *)
-    ; h : 'a (** aux register [H] (MUL-high / DIV-remainder; a Phase-2 source) *)
+    ; h : 'a (** aux register [H] (MUL-high / DIV-remainder; a MUL/DIV-unit source) *)
     ; n_in : 'a (** current flag N — for the MOV flags-read word *)
     ; z_in : 'a (** current flag Z *)
     ; c_in : 'a (** current flag C — also the ADD'/SUB' carry-in *)
