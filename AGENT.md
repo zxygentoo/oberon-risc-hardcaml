@@ -83,8 +83,17 @@ Boot ROM image: `po/verilog/prom.mem` (hex) + `po/verilog/prom.bmm`.
 
 ## 2. Locked decisions
 
-1. **Fidelity:** cycle-accurate *structural* port of `RISC5.v` (mirror its registers/wires
-   and stall timing), **not** a fresh behavioral model. The Verilog is the spec.
+1. **Fidelity — faithful where structure *is* the spec, idiomatic where it isn't.**
+   A cycle-accurate port of `RISC5.v`, **not** a fresh behavioral model — but "the Verilog is
+   the spec" means its *behavior*, not its syntax. **Mirror the sequential skeleton exactly:**
+   which signals are registered, stall/state-counter timing, MUL/DIV's 33 cycles, interrupt
+   timing — that's what the oracle checks cycle-by-cycle and what synthesis *preserves* (it
+   takes register placement as given), not optimizes. **Be idiomatic Hardcaml in the
+   combinational datapath:** shifters, ALU ops, sign-extend, muxes — there only the truth
+   table is observable and synthesis re-maps structure freely (`log_shift` LeftShifter ≡
+   Wirth's radix-4 tree = the same point in the spec). Spend fidelity on *timing*, not on
+   transliterating wires. *Caveat (learning build, §0):* idiomatic code can hide the hardware
+   — still walk the structure for instructive blocks before shipping the idiom.
 2. **Synthesizable** and aimed at a real bitstream (not sim-only).
 3. **Board:** Digilent **Nexys 4 DDR (XC7A100T)**, Vivado flow.
 4. **Scope:** the **full SoC that boots** Project Oberon end-to-end.
@@ -176,13 +185,36 @@ Each layer's oracle already exists next door — this is our biggest leverage.
 5. *(stretch)* **Formal** — combinational/bounded equivalence between our port and the
    imported `RISC5.v` via `hardcaml_verify`.
 
-**Harness for unit/module tests (Phase 1+):** `ppx_expect` waveform expect tests — render the
-circuit with `hardcaml_waveterm` and freeze the ASCII waveform in an `[%expect]` block (`dune
-promote` updates it). Especially valuable for the multi-cycle units (MUL/DIV/FP stalls, CPU
-control), where the cycle-by-cycle timing *is* the test. Compose with the oracle: waveform for
-visible behavior + architectural-state assertions against `Oracle.Risc`. (Test dirs become
-`(library (inline_tests) (preprocess (pps ppx_hardcaml ppx_expect)))`; Phase 0's `test_scaffold`
-stays a plain executable smoke.)
+**Harness — co-locate genuine unit/module tests; keep a separate harness only for
+system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
+in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
+system-level harness (full-boot, the Phase 0 scaffold). Module tests live *inline in the design
+module's own `.ml`* via
+`ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
+freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
+property checks against a reference (for combinational blocks the reference is plain OCaml,
+e.g. `x lsl sc`, so no oracle needed). Waveforms are especially valuable for the multi-cycle
+units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the test. Compose
+with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
+behavior + architectural-state assertions against `Oracle.Risc`.
+
+Mechanics, with an honest caveat (verified empirically, not assumed — dune 3.22, ppx_expect
+v0.18~preview). A co-located `let%expect_test` compiles *as part of the library*, so the tooling
+it names (`hardcaml_waveterm`, `qcheck-core`) must sit in `lib`'s own `(libraries)`. Two corners we
+checked rather than guessed: `(inline_tests (libraries …))` does *not* cover it — that only feeds
+the generated test runner's link, not the library's own compile scope, so the build still fails
+`Unbound module QCheck`; and the deps are needed in *every* profile — dune keeps inline-test bodies
+under `release` as well as `dev` (md5-identical preprocessed AST), so there is no "non-test build"
+that silently drops them. It's still fine, but the reason is *not* that builds shed the deps — it's
+that they're host-side OCaml dev tools from the Jane Street/Hardcaml ecosystem we already use, and
+they *never reach the generated Verilog*: `Rtl.print` lowers the circuit graph, not the library's
+OCaml deps, so the netlist is identical with or without them. (Escape hatch, unused: `(pps …
+-inline-test-drop)` strips the test bodies and their deps — at the cost of those tests in that
+build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
+(single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/` (depending on `risc5` +
+`oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
+`(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the Phase 0 `test_scaffold` smoke
+stays in `test/`.
 
 ---
 
@@ -280,6 +312,21 @@ ox when their phases arrive (confirm availability then).
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).
+- **Standard library — use Jane Street `Core`, not OCaml's `Stdlib`.** We're already all-in on
+  the Jane Street ecosystem (OxCaml, Hardcaml, `ppx_expect`, `qcheck`), so standardize on it:
+  `open Core` (then `open Hardcaml`) and reach for `Core`'s `List`/`Int`/`Map`/labeled-arg APIs
+  over `Stdlib`. Hardcaml's signal operators are `:`-suffixed (`+:`, `&:`, `==:`, …), so they
+  coexist with `Core`'s shadowed polymorphic `=`/`<`/`compare` (use `==:` for signals,
+  `[%equal]`/typed equals for OCaml values). `Base` is the lighter, dep-minimal subset — reach
+  for it if we ever want the design lib leaner. Existing pure-Hardcaml modules (e.g. the
+  shifter) need no change; the rule binds new code that would otherwise reach for `Stdlib`.
+- **Module structure — every design module carries an `.mli`** (set alongside the co-located
+  tests rule, §6). The `.mli` is the public contract and owns the doc comments; the `.ml`
+  keeps implementation notes plus the co-located `let%expect_test`s. Hardcaml interfaces
+  re-derive in the signature — `module I : sig type 'a t = { … } [@@deriving hardcaml] end` —
+  with the `[@bits N]` width attributes kept in the `.ml` only (widths are values, not part of
+  the signature). Inline tests need no signature entry (they register as side effects), so an
+  `.mli` and co-located tests coexist. `lib/left_shifter.{ml,mli}` is the reference shape.
 - **`docs.hardcaml.org` is authoritative for our API** (it tracks v0.18). Deltas vs. older
   v0.17-era examples found online:
   - Shifts take `~by`: `sll x ~by:n`, `sra x ~by:n`; `log_shift ~f:sll x ~by:sc`
@@ -306,4 +353,10 @@ ox when their phases arrive (confirm availability then).
   via `git flow feature start <name>` / `git flow feature finish <name>`. Other prefixes are
   git-flow defaults (`bugfix/`, `release/`, `hotfix/`, `support/`; empty version-tag prefix).
 - Remote `origin` = the GitHub repo (HTTPS, pushes via the stored credential as `zxygentoo`).
+- **Pre-commit gate — before every commit run `dune fmt` and `dune build @check`, and fix what
+  they flag.** `dune fmt` keeps formatting canonical (janestreet profile); `dune build @check` is
+  the batch equivalent of merlin's in-editor diagnostics — it type-checks every module and `.mli`
+  and surfaces warnings (which are errors in the dev profile). If a flagged issue isn't reasonable
+  to fix — a false positive, a warning from vendored/generated code, or a "fix" that would
+  compromise port fidelity (§2) — **stop and notify the human** instead of silently suppressing it.
 - Commit messages end with the `Co-Authored-By: Claude …` trailer.
