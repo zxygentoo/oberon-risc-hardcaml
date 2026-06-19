@@ -195,12 +195,16 @@ units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the
 with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
 behavior + architectural-state assertions against `Oracle.Risc`.
 
-Inline tests don't pollute the design library: their extra deps go in `(inline_tests (libraries
-hardcaml_waveterm qcheck-core oracle …))`, which dune links **only into the test runner** — so
-`lib`'s own `(libraries)` stays minimal (`hardcaml`) and consumers of `risc5` never inherit the
-test stack. `lib/dune` thus carries `(inline_tests)` + `(preprocess (pps ppx_hardcaml
-ppx_expect))`. Reserve `test/` for cross-module/system tests — the full-boot lockstep (Phase 5)
-— plus the Phase 0 `test_scaffold` smoke.
+Mechanics, with an honest caveat. Tests inline in a design module are compiled *as part of that
+library*, so the libs they reference (`hardcaml_waveterm`, `qcheck-core`) must sit in `lib`'s own
+`(libraries)`. `(inline_tests (libraries …))` does *not* help here — it adds only link-time deps
+to the generated test runner, not compile scope to the library's own modules. That cost is
+acceptable: these are Hardcaml-ecosystem dev tools, dropped from non-test builds and absent from
+generated hardware. The one dep we deliberately keep *out* of `lib` is the emulator —
+oracle-coupled tests (single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/`
+(depending on `risc5` + `oracle`), so the synthesizable design never depends on the software
+model. `lib/dune` carries `(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the
+Phase 0 `test_scaffold` smoke stays in `test/`.
 
 ---
 
