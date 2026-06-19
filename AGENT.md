@@ -353,4 +353,10 @@ ox when their phases arrive (confirm availability then).
   via `git flow feature start <name>` / `git flow feature finish <name>`. Other prefixes are
   git-flow defaults (`bugfix/`, `release/`, `hotfix/`, `support/`; empty version-tag prefix).
 - Remote `origin` = the GitHub repo (HTTPS, pushes via the stored credential as `zxygentoo`).
+- **Pre-commit gate — before every commit run `dune fmt` and `dune build @check`, and fix what
+  they flag.** `dune fmt` keeps formatting canonical (janestreet profile); `dune build @check` is
+  the batch equivalent of merlin's in-editor diagnostics — it type-checks every module and `.mli`
+  and surfaces warnings (which are errors in the dev profile). If a flagged issue isn't reasonable
+  to fix — a false positive, a warning from vendored/generated code, or a "fix" that would
+  compromise port fidelity (§2) — **stop and notify the human** instead of silently suppressing it.
 - Commit messages end with the `Co-Authored-By: Claude …` trailer.
