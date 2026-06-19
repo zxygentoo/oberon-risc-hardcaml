@@ -186,7 +186,10 @@ Each layer's oracle already exists next door — this is our biggest leverage.
    imported `RISC5.v` via `hardcaml_verify`.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
-system-level tests.** Module tests live *inline in the design module's own `.ml`* via
+system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
+in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
+system-level harness (full-boot, the Phase 0 scaffold). Module tests live *inline in the design
+module's own `.ml`* via
 `ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
 freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
 property checks against a reference (for combinational blocks the reference is plain OCaml,
@@ -195,16 +198,23 @@ units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the
 with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
 behavior + architectural-state assertions against `Oracle.Risc`.
 
-Mechanics, with an honest caveat. Tests inline in a design module are compiled *as part of that
-library*, so the libs they reference (`hardcaml_waveterm`, `qcheck-core`) must sit in `lib`'s own
-`(libraries)`. `(inline_tests (libraries …))` does *not* help here — it adds only link-time deps
-to the generated test runner, not compile scope to the library's own modules. That cost is
-acceptable: these are Hardcaml-ecosystem dev tools, dropped from non-test builds and absent from
-generated hardware. The one dep we deliberately keep *out* of `lib` is the emulator —
-oracle-coupled tests (single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/`
-(depending on `risc5` + `oracle`), so the synthesizable design never depends on the software
-model. `lib/dune` carries `(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the
-Phase 0 `test_scaffold` smoke stays in `test/`.
+Mechanics, with an honest caveat (verified empirically, not assumed — dune 3.22, ppx_expect
+v0.18~preview). A co-located `let%expect_test` compiles *as part of the library*, so the tooling
+it names (`hardcaml_waveterm`, `qcheck-core`) must sit in `lib`'s own `(libraries)`. Two corners we
+checked rather than guessed: `(inline_tests (libraries …))` does *not* cover it — that only feeds
+the generated test runner's link, not the library's own compile scope, so the build still fails
+`Unbound module QCheck`; and the deps are needed in *every* profile — dune keeps inline-test bodies
+under `release` as well as `dev` (md5-identical preprocessed AST), so there is no "non-test build"
+that silently drops them. It's still fine, but the reason is *not* that builds shed the deps — it's
+that they're host-side OCaml dev tools from the Jane Street/Hardcaml ecosystem we already use, and
+they *never reach the generated Verilog*: `Rtl.print` lowers the circuit graph, not the library's
+OCaml deps, so the netlist is identical with or without them. (Escape hatch, unused: `(pps …
+-inline-test-drop)` strips the test bodies and their deps — at the cost of those tests in that
+build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
+(single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/` (depending on `risc5` +
+`oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
+`(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the Phase 0 `test_scaffold` smoke
+stays in `test/`.
 
 ---
 
