@@ -185,13 +185,22 @@ Each layer's oracle already exists next door — this is our biggest leverage.
 5. *(stretch)* **Formal** — combinational/bounded equivalence between our port and the
    imported `RISC5.v` via `hardcaml_verify`.
 
-**Harness for unit/module tests (Phase 1+):** `ppx_expect` waveform expect tests — render the
-circuit with `hardcaml_waveterm` and freeze the ASCII waveform in an `[%expect]` block (`dune
-promote` updates it). Especially valuable for the multi-cycle units (MUL/DIV/FP stalls, CPU
-control), where the cycle-by-cycle timing *is* the test. Compose with the oracle: waveform for
-visible behavior + architectural-state assertions against `Oracle.Risc`. (Test dirs become
-`(library (inline_tests) (preprocess (pps ppx_hardcaml ppx_expect)))`; Phase 0's `test_scaffold`
-stays a plain executable smoke.)
+**Harness — co-locate genuine unit/module tests; keep a separate harness only for
+system-level tests.** Module tests live *inline in the design module's own `.ml`* via
+`ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
+freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
+property checks against a reference (for combinational blocks the reference is plain OCaml,
+e.g. `x lsl sc`, so no oracle needed). Waveforms are especially valuable for the multi-cycle
+units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the test. Compose
+with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
+behavior + architectural-state assertions against `Oracle.Risc`.
+
+Inline tests don't pollute the design library: their extra deps go in `(inline_tests (libraries
+hardcaml_waveterm qcheck-core oracle …))`, which dune links **only into the test runner** — so
+`lib`'s own `(libraries)` stays minimal (`hardcaml`) and consumers of `risc5` never inherit the
+test stack. `lib/dune` thus carries `(inline_tests)` + `(preprocess (pps ppx_hardcaml
+ppx_expect))`. Reserve `test/` for cross-module/system tests — the full-boot lockstep (Phase 5)
+— plus the Phase 0 `test_scaffold` smoke.
 
 ---
 
@@ -289,6 +298,14 @@ ox when their phases arrive (confirm availability then).
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).
+- **Standard library — use Jane Street `Core`, not OCaml's `Stdlib`.** We're already all-in on
+  the Jane Street ecosystem (OxCaml, Hardcaml, `ppx_expect`, `qcheck`), so standardize on it:
+  `open Core` (then `open Hardcaml`) and reach for `Core`'s `List`/`Int`/`Map`/labeled-arg APIs
+  over `Stdlib`. Hardcaml's signal operators are `:`-suffixed (`+:`, `&:`, `==:`, …), so they
+  coexist with `Core`'s shadowed polymorphic `=`/`<`/`compare` (use `==:` for signals,
+  `[%equal]`/typed equals for OCaml values). `Base` is the lighter, dep-minimal subset — reach
+  for it if we ever want the design lib leaner. Existing pure-Hardcaml modules (e.g. the
+  shifter) need no change; the rule binds new code that would otherwise reach for `Stdlib`.
 - **`docs.hardcaml.org` is authoritative for our API** (it tracks v0.18). Deltas vs. older
   v0.17-era examples found online:
   - Shifts take `~by`: `sll x ~by:n`, `sra x ~by:n`; `log_shift ~f:sll x ~by:sc`
