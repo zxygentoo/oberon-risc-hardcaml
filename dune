@@ -1,0 +1,3 @@
+; Only these directories are part of the build (keeps dune out of ./po).
+
+(dirs lib test vendor)

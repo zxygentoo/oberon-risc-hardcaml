@@ -1,0 +1,3 @@
+[submodule "vendor/oberon-risc-emu-ocaml"]
+	path = vendor/oberon-risc-emu-ocaml
+	url = https://github.com/zxygentoo/oberon-risc-emu-ocaml.git

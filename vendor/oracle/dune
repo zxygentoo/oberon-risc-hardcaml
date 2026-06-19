@@ -1,0 +1,17 @@
+; Re-expose the vendored OCaml emulator's core as a library in OUR project.
+; The submodule's own `risc_core` is private and lives behind its own
+; dune-project boundary, so we compile its lib/ sources here instead. This is
+; reproducible (lives in this repo) and keeps the submodule pristine.
+;
+; Warnings are silenced (-w -a): this is third-party code we don't lint.
+; Only dependency is unix (matching the emulator's own lib/dune).
+
+(copy_files ../oberon-risc-emu-ocaml/lib/*.ml)
+
+(copy_files ../oberon-risc-emu-ocaml/lib/*.mli)
+
+(library
+ (name oracle)
+ (libraries unix)
+ (flags
+  (:standard -w -a)))

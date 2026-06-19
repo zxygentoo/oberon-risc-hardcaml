@@ -1,0 +1,6 @@
+; The emulator submodule is its own dune project, and its `risc_core` library is
+; private (no public_name) — so dune won't expose it across the project boundary.
+; Treat the submodule as raw data here; the `oracle` library next door compiles
+; its sources into THIS project instead. (This leaves the submodule untouched.)
+
+(data_only_dirs oberon-risc-emu-ocaml)

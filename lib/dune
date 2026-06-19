@@ -1,0 +1,10 @@
+; The Oberon RISC5 hardware design, in Hardcaml.
+; Real modules (shifters, ALU, MUL/DIV, FPU, register file, CPU core, SoC) land
+; here from Phase 1 on; for now this library is just a placeholder so the project
+; builds end to end.
+
+(library
+ (name risc5)
+ (libraries hardcaml)
+ (preprocess
+  (pps ppx_hardcaml)))

@@ -1,0 +1,11 @@
+; Phase 0 scaffold test: proves the toolchain wiring end to end on the ox switch
+;  - risc5        : our (placeholder) Hardcaml design library
+;  - oracle       : the OCaml emulator core, compiled from the vendored submodule
+;  - hardcaml     : build + simulate a circuit
+;  - hardcaml_waveterm : render an ASCII waveform of the counter smoke
+
+(test
+ (name test_scaffold)
+ (libraries risc5 oracle hardcaml hardcaml_waveterm)
+ (preprocess
+  (pps ppx_hardcaml)))

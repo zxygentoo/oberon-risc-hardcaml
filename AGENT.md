@@ -150,11 +150,11 @@ Vivado-specific layer.
 
 | Phase | Deliverable | Oracle / proof |
 |---|---|---|
-| **0** | dune project; `risc_core` wired as oracle; FP vectors + `prom.mem` copied; `@test`/`@cosim` aliases; waveterm working | toolchain smoke test |
+| **0** ✅ | dune project on ox; emulator submodule + `oracle` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
 | **1** | `LeftShifter`, `RightShifter`, ALU logic/adder + N/Z/C/V flags | unit specs / qcheck |
 | **2** | `Multiplier`, `Divider` (state+stall); `FPAdder`/`FPMultiplier`/`FPDivider` | frozen `fp_vectors.txt` |
 | **3** | Register file (3R/1W async-read array) | unit |
-| **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts | **single-instruction lockstep** vs `Risc.For_tests.single_step`, fuzzed (steering around §8) |
+| **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **DDR2-via-MIG adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
@@ -169,12 +169,20 @@ Each layer's oracle already exists next door — this is our biggest leverage.
 1. **Unit specs** — exhaustive or `qcheck` for combinational blocks (shifters, ALU).
 2. **FP vectors** — replay `fp_vectors.txt` through the FP units.
 3. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
-   compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Risc.For_tests.single_step`.
+   compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
    `qcheck`-fuzzed, exactly like the OCaml repo's `test/cosim/test_cosim_cpu.ml`.
 4. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
    cycles, compare CPU state / framebuffer. Use a fast sim backend (`hardcaml_c`).
 5. *(stretch)* **Formal** — combinational/bounded equivalence between our port and the
    imported `RISC5.v` via `hardcaml_verify`.
+
+**Harness for unit/module tests (Phase 1+):** `ppx_expect` waveform expect tests — render the
+circuit with `hardcaml_waveterm` and freeze the ASCII waveform in an `[%expect]` block (`dune
+promote` updates it). Especially valuable for the multi-cycle units (MUL/DIV/FP stalls, CPU
+control), where the cycle-by-cycle timing *is* the test. Compose with the oracle: waveform for
+visible behavior + architectural-state assertions against `Oracle.Risc`. (Test dirs become
+`(library (inline_tests) (preprocess (pps ppx_hardcaml ppx_expect)))`; Phase 0's `test_scaffold`
+stays a plain executable smoke.)
 
 ---
 
@@ -238,13 +246,29 @@ Reset (`rst` active-**low**) jumps to `StartAdr = 0x3FF800` (word addr); ROM dec
 
 ```
 oberon-risc-hardcaml/
-  AGENT.md            ← this file (CLAUDE.md is a symlink to it)
-  po/                 ← original sources
-    verilog/src/*.v   ← the RTL we're porting
-    verilog/prom.mem  ← boot ROM
-    *.pdf             ← ISA / design docs
-  (lib/, test/, …)    ← the Hardcaml port — created from Phase 0 on
+  AGENT.md / CLAUDE.md    ← this file (CLAUDE.md is a symlink to AGENT.md)
+  dune-project, dune      ← root build config (dune restricted to: lib test vendor)
+  lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
+                            real modules — shifters, ALU, CPU core… — from Phase 1)
+  test/                   ← tests (`test_scaffold` = the Phase 0 wiring smoke)
+  vendor/
+    oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
+                              (data_only_dirs: dune ignores its own project files)
+    oracle/               ← compiles the submodule's lib/ into library `oracle`
+                            (Oracle.Risc, Oracle.Fp, Oracle.Boot_rom, …)
+  po/                     ← original sources, git-ignored: verilog/src/*.v,
+                            verilog/prom.mem, *.pdf
 ```
+
+**Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
+`vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
+won't expose across the project boundary — so `vendor/oracle/dune` `copy_files` its `lib/`
+sources and builds them as library **`oracle`** in our project (warnings off; only dep is
+`unix`). Self-contained and leaves the submodule pristine. *Cleaner alternative if ever
+wanted:* give the emulator a `public_name` upstream (needs a package stanza in that repo),
+then depend on it directly and delete the wrapper. FP vectors
+(`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) and the boot ROM
+(`Oracle.Boot_rom`) come straight from the submodule — no copies needed.
 
 **Toolchain:** **OxCaml** — opam switch **`5.2.0+ox`** (`ocaml-variants.5.2.0+ox`), dune
 `3.22+ox`, Hardcaml **`v0.18~preview`** (with `ppx_hardcaml` + `hardcaml_waveterm`, same
@@ -265,10 +289,12 @@ ox when their phases arrive (confirm availability then).
     `of_unsigned_int ~width` / `of_signed_int ~width` (use these instead of v0.17's `to_int`/`of_int`).
   - `mux sel list` and `mux2 sel t f` stay positional; `Signal.input`/`Signal.output` unchanged.
 - Hardcaml → Verilog: `Rtl.print Rtl.Language.Verilog circuit`.
-- Smoke-tested green on ox (`$CLAUDE_JOB_DIR/tmp/smoke18`): `ppx_hardcaml` interfaces +
-  `Circuit.With_interface` + `Rtl.print` + `Cyclesim.With_interface` (sim verified `0xFF<<4=0xFF0`).
-- Oracle wiring (Phase 0, TBD): dune workspace vs. vendoring `risc_core` — and confirm the
-  (vanilla, 5.3-targeted) `risc_core` builds under ox (5.2-based) at Phase 0.
+- Verified end to end by `test/test_scaffold.ml` (`dune test`): `oracle` (`Oracle.Risc`)
+  callable on ox, `ppx_hardcaml` interfaces + `Cyclesim.With_interface` (sim `0xFF<<4=0xFF0`),
+  and a `hardcaml_waveterm` waveform render of a counter.
+- Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** — the ox
+  `ocamlformat` reports a git-hash version, so a normal pin (e.g. the emulator's `0.29.0`)
+  would mismatch and disable formatting. Format with `dune fmt`.
 - Tmp/scratch for this agent: `$CLAUDE_JOB_DIR/tmp`.
 
 ### Git workflow (git-flow)
