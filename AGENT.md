@@ -320,6 +320,13 @@ ox when their phases arrive (confirm availability then).
   `[%equal]`/typed equals for OCaml values). `Base` is the lighter, dep-minimal subset — reach
   for it if we ever want the design lib leaner. Existing pure-Hardcaml modules (e.g. the
   shifter) need no change; the rule binds new code that would otherwise reach for `Stdlib`.
+- **Module structure — every design module carries an `.mli`** (set alongside the co-located
+  tests rule, §6). The `.mli` is the public contract and owns the doc comments; the `.ml`
+  keeps implementation notes plus the co-located `let%expect_test`s. Hardcaml interfaces
+  re-derive in the signature — `module I : sig type 'a t = { … } [@@deriving hardcaml] end` —
+  with the `[@bits N]` width attributes kept in the `.ml` only (widths are values, not part of
+  the signature). Inline tests need no signature entry (they register as side effects), so an
+  `.mli` and co-located tests coexist. `lib/left_shifter.{ml,mli}` is the reference shape.
 - **`docs.hardcaml.org` is authoritative for our API** (it tracks v0.18). Deltas vs. older
   v0.17-era examples found online:
   - Shifts take `~by`: `sll x ~by:n`, `sra x ~by:n`; `log_shift ~f:sll x ~by:sc`
