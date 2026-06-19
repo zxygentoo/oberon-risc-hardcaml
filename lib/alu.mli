@@ -7,7 +7,9 @@
     Their results are selected alongside this unit's by the result mux at the core (Phase
     4), so those op slots read as 0 here.
 
-    Phase-1 step A delivers results only; the N/Z/C/OV flags follow in step B. *)
+    Flags: this unit emits the arithmetic C/OV (set only by ADD/SUB; other ops pass the
+    current C/OV through). N/Z are not here — they derive from the final write value
+    (regmux), assembled at the core. *)
 
 open Hardcaml
 
@@ -30,10 +32,14 @@ module I : sig
 end
 
 module O : sig
-  type 'a t = { res : 'a (** [aluRes] for the ops this unit owns (0, 4..9) *) }
+  type 'a t =
+    { res : 'a (** [aluRes] for the ops this unit owns (0, 4..9) *)
+    ; c : 'a (** carry/borrow — set by ADD/SUB, else passes [c_in] through *)
+    ; ov : 'a (** signed overflow — set by ADD/SUB, else passes [ov_in] through *)
+    }
   [@@deriving hardcaml]
 end
 
-(** [create] builds the result for MOV, the logic ops, and ADD/SUB (ops 0, 4..9); the
-    other op slots read as 0 (their units feed the result mux at the core). *)
+(** [create] builds the result for MOV, the logic ops, and ADD/SUB (ops 0, 4..9) plus the
+    C/OV flags; other op slots read as 0 (their units feed the result mux at the core). *)
 val create : Signal.t I.t -> Signal.t O.t

@@ -30,14 +30,16 @@ module I = struct
 end
 
 module O = struct
-  type 'a t = { res : 'a [@bits 32] } [@@deriving hardcaml]
+  type 'a t =
+    { res : 'a [@bits 32]
+    ; c : 'a [@bits 1]
+    ; ov : 'a [@bits 1]
+    }
+  [@@deriving hardcaml]
 end
 
 let create (i : _ I.t) : _ O.t =
-  let cin =
-    (* ADD'/SUB' carry-in (= u & C); prime variants chain the prior carry *)
-    uresize (i.u &: i.c_in) ~width:32
-  in
+  let cin = i.u &: i.c_in in
   let flags_word =
     (* MOV' flags-read: {N,Z,C,OV, 20'b0, 8'h53} — the 0x53 id byte, AGENT.md §8 *)
     concat_msb [ i.n_in; i.z_in; i.c_in; i.ov_in; zero 20; of_unsigned_int ~width:8 0x53 ]
@@ -47,6 +49,19 @@ let create (i : _ I.t) : _ O.t =
        u=1 -> q ? imm<<16 : v ? flags_word : H. See the MOV-forms waveform test. *)
     mux2 i.u (mux2 i.q (i.imm @: zero 16) (mux2 i.v flags_word i.h)) i.c1
   in
+  (* ADD and SUB, each one bit wider, via [addsub op] (op is +: or -:). The unsigned widen
+     gives the result (low 32) and carry/borrow (top bit); the signed widen gives overflow
+     (its top two bits disagree — the exact signed sum needed a 33rd bit). Carry-in cin =
+     u & C feeds the ADD'/SUB' variants. *)
+  let cin33 = uresize cin ~width:33 in
+  let addsub f =
+    let u = f (f (ue i.b) (ue i.c1)) cin33 in
+    let s = f (f (se i.b) (se i.c1)) cin33 in
+    let result = lsbs u in
+    result, msb u, msb s <>: msb result
+  in
+  let add_res, add_c, add_ov = addsub ( +: ) in
+  let sub_res, sub_c, sub_ov = addsub ( -: ) in
   let res =
     mux
       i.op
@@ -58,8 +73,8 @@ let create (i : _ I.t) : _ O.t =
       ; i.b &: ~:(i.c1) (* 5 ANN *)
       ; i.b |: i.c1 (* 6 IOR *)
       ; i.b ^: i.c1 (* 7 XOR *)
-      ; i.b +: i.c1 +: cin (* 8 ADD *)
-      ; i.b -: i.c1 -: cin (* 9 SUB *)
+      ; add_res (* 8 ADD *)
+      ; sub_res (* 9 SUB *)
       ; zero 32 (* 10 MUL — multi-cycle peer, muxed at core *)
       ; zero 32 (* 11 DIV — multi-cycle peer, muxed at core *)
       ; zero 32 (* 12 FAD *)
@@ -68,16 +83,22 @@ let create (i : _ I.t) : _ O.t =
       ; zero 32 (* 15 FDV *)
       ]
   in
-  { O.res }
+  (* C/OV come from the active arithmetic op; every other op leaves the current C/OV
+     unchanged. N/Z are not here — they derive from the final write value (regmux), at the
+     core. *)
+  let is_add = i.op ==: of_unsigned_int ~width:4 8 in
+  let is_sub = i.op ==: of_unsigned_int ~width:4 9 in
+  let c = mux2 is_add add_c (mux2 is_sub sub_c i.c_in) in
+  let ov = mux2 is_add add_ov (mux2 is_sub sub_ov i.ov_in) in
+  { O.res; c; ov }
 ;;
 
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: qcheck this unit's ops
-   {0 , 4..9}
-   — MOV, the logic ops, ADD/SUB — against a plain-OCaml reference (combinational, so no
-   oracle). Shifts (1..3) and MUL/DIV/FP (10..15) are peer units tested in their own
-   modules and muxed at the core, out of scope here. Behaviour: two curated waveforms
-   documenting the subtle bits — the ADD'/SUB' carry-in and the MOV forms. *)
+   Correctness: qcheck this unit's ops 0 and 4..9 — MOV, logic, ADD/SUB plus the C/OV
+   flags — against a plain-OCaml reference (combinational, so no oracle). Shifts (1..3)
+   and MUL/DIV/FP (10..15) are peer units tested in their own modules and muxed at the
+   core, out of scope here. Behaviour: curated waveforms for the subtle bits — the
+   ADD'/SUB' carry-in, the MOV forms, and carry-vs-overflow. *)
 
 let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -98,28 +119,47 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
     inp.c_in := Bits.of_unsigned_int ~width:1 c;
     inp.ov_in := Bits.of_unsigned_int ~width:1 ov;
     Cyclesim.cycle sim;
-    !(outp.res)
+    !(outp.res), !(outp.c), !(outp.ov)
   in
   let mask = 0xFFFF_FFFF in
+  let bit31 x = (x lsr 31) land 1 in
   let reference ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov =
     let cin = if u = 1 then c else 0 in
-    match op with
-    | 0 ->
-      (* MOV *)
-      if u = 0
-      then c1
-      else if q = 1
-      then (imm lsl 16) land mask
-      else if v = 1
-      then (n lsl 31) lor (z lsl 30) lor (c lsl 29) lor (ov lsl 28) lor 0x53
-      else h
-    | 4 -> b land c1 (* AND *)
-    | 5 -> b land (lnot c1 land mask) (* ANN *)
-    | 6 -> b lor c1 (* IOR *)
-    | 7 -> b lxor c1 (* XOR *)
-    | 8 -> (b + c1 + cin) land mask (* ADD *)
-    | 9 -> (b - c1 - cin) land mask (* SUB *)
-    | _ -> 0
+    let res =
+      match op with
+      | 0 ->
+        (* MOV *)
+        if u = 0
+        then c1
+        else if q = 1
+        then (imm lsl 16) land mask
+        else if v = 1
+        then (n lsl 31) lor (z lsl 30) lor (c lsl 29) lor (ov lsl 28) lor 0x53
+        else h
+      | 4 -> b land c1 (* AND *)
+      | 5 -> b land (lnot c1 land mask) (* ANN *)
+      | 6 -> b lor c1 (* IOR *)
+      | 7 -> b lxor c1 (* XOR *)
+      | 8 -> (b + c1 + cin) land mask (* ADD *)
+      | 9 -> (b - c1 - cin) land mask (* SUB *)
+      | _ -> 0
+    in
+    (* C/OV: ADD carry-out / SUB borrow + signed overflow; other ops pass (c, ov) through. *)
+    let cf, vf =
+      match op with
+      | 8 ->
+        let sa = bit31 res
+        and sb = bit31 b
+        and sc = bit31 c1 in
+        ((b + c1 + cin) lsr 32) land 1, if sb = sc && sa <> sb then 1 else 0
+      | 9 ->
+        let sa = bit31 res
+        and sb = bit31 b
+        and sc = bit31 c1 in
+        (if b < c1 + cin then 1 else 0), if sb <> sc && sa <> sb then 1 else 0
+      | _ -> c, ov
+    in
+    res, cf, vf
   in
   let ops = [| 0; 4; 5; 6; 7; 8; 9 |] in
   QCheck.Test.check_exn
@@ -141,12 +181,67 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
          and z = (f lsr 2) land 1
          and c = (f lsr 1) land 1
          and ov = f land 1 in
-         Bits.equal
-           (eval ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov)
-           (Bits.of_unsigned_int
-              ~width:32
-              (reference ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov))));
+         let er, ec, eov = eval ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
+         let rr, rc, rov = reference ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
+         Bits.equal er (Bits.of_unsigned_int ~width:32 rr)
+         && Bits.equal ec (Bits.of_unsigned_int ~width:1 rc)
+         && Bits.equal eov (Bits.of_unsigned_int ~width:1 rov)));
   [%expect {| |}]
+;;
+
+let%expect_test "ADD/SUB flags — carry-out vs overflow [waveform]" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let sim = Sim.create create in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  let drive ~op ~b ~c1 =
+    set inp.op op 4;
+    set inp.b b 32;
+    set inp.c1 c1 32;
+    Cyclesim.cycle sim
+  in
+  (* op 8=ADD 9=SUB; C = carry-out (ADD) / borrow (SUB), OV = signed overflow *)
+  drive ~op:8 ~b:0xFFFFFFFF ~c1:0x1;
+  drive ~op:8 ~b:0x7FFFFFFF ~c1:0x1;
+  drive ~op:9 ~b:0x1 ~c1:0x2;
+  drive ~op:9 ~b:0x80000000 ~c1:0x1;
+  Waveform.print
+    ~display_rules:
+      D.
+        [ port_name_is ~wave_format:Wave_format.Unsigned_int "op"
+        ; port_name_is ~wave_format:Wave_format.Hex "b"
+        ; port_name_is ~wave_format:Wave_format.Hex "c1"
+        ; port_name_is ~wave_format:Wave_format.Hex "res"
+        ; port_name_is ~wave_format:Wave_format.Bit "c"
+        ; port_name_is ~wave_format:Wave_format.Bit "ov"
+        ]
+    ~wave_width:8
+    ~display_width:110
+    waves;
+  [%expect
+    {|
+    ┌Signals───────────┐┌Waves───────────────────────────────────────────────────────────────────────────────────┐
+    │                  ││────────────────────────────────────┬───────────────────────────────────                │
+    │op                ││ 8                                  │9                                                  │
+    │                  ││────────────────────────────────────┴───────────────────────────────────                │
+    │                  ││──────────────────┬─────────────────┬─────────────────┬─────────────────                │
+    │b                 ││ FFFFFFFF         │7FFFFFFF         │00000001         │80000000                         │
+    │                  ││──────────────────┴─────────────────┴─────────────────┴─────────────────                │
+    │                  ││────────────────────────────────────┬─────────────────┬─────────────────                │
+    │c1                ││ 00000001                           │00000002         │00000001                         │
+    │                  ││────────────────────────────────────┴─────────────────┴─────────────────                │
+    │                  ││──────────────────┬─────────────────┬─────────────────┬─────────────────                │
+    │res               ││ 00000000         │80000000         │FFFFFFFF         │7FFFFFFF                         │
+    │                  ││──────────────────┴─────────────────┴─────────────────┴─────────────────                │
+    │c                 ││──────────────────┐                 ┌─────────────────┐                                 │
+    │                  ││                  └─────────────────┘                 └─────────────────                │
+    │ov                ││                  ┌─────────────────┐                 ┌─────────────────                │
+    │                  ││──────────────────┘                 └─────────────────┘                                 │
+    └──────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
+    |}]
 ;;
 
 let%expect_test "ADD/SUB vs ADD'/SUB' — the carry-in [waveform]" =
