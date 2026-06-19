@@ -11,12 +11,6 @@
 open Hardcaml
 open Signal
 
-let shift ~x ~sc ~md =
-  let asr_ = log_shift ~f:sra x ~by:sc in
-  let ror_ = log_shift ~f:rotr x ~by:sc in
-  mux2 md ror_ asr_
-;;
-
 module I = struct
   type 'a t =
     { x : 'a [@bits 32]
@@ -30,7 +24,11 @@ module O = struct
   type 'a t = { y : 'a [@bits 32] } [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t = { O.y = shift ~x:i.x ~sc:i.sc ~md:i.md }
+let create (i : _ I.t) : _ O.t =
+  let asr_ = log_shift ~f:sra i.x ~by:i.sc in
+  let ror_ = log_shift ~f:rotr i.x ~by:i.sc in
+  { O.y = mux2 i.md ror_ asr_ }
+;;
 
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Correctness: qcheck both modes against pure-OCaml references — ASR is sign-extend then

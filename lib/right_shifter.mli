@@ -9,11 +9,6 @@
 
 open Hardcaml
 
-(** [shift ~x ~sc ~md] is [x] shifted right by the low bits of [sc]: arithmetic
-    (sign-filled) when [md] is 0, rotate (wrap-filled) when [md] is 1. Exposed so the ALU
-    can use it inline as well as through {!create}. *)
-val shift : x:Signal.t -> sc:Signal.t -> md:Signal.t -> Signal.t
-
 module I : sig
   type 'a t =
     { x : 'a (** 32-bit operand *)
@@ -27,6 +22,6 @@ module O : sig
   type 'a t = { y : 'a (** [x] shifted right, [md]-filled *) } [@@deriving hardcaml]
 end
 
-(** [create] wraps {!shift} as a Hardcaml [I]-to-[O] interface — the [ASR]/[ROR] unit for
-    instantiation and simulation. *)
+(** [create] is the [ASR]/[ROR] unit as a Hardcaml [I]-to-[O] interface, for instantiation
+    and simulation. *)
 val create : Signal.t I.t -> Signal.t O.t

@@ -6,10 +6,6 @@
 
 open Hardcaml
 
-(** [shift ~x ~sc] is [x] shifted logically left by the low bits of [sc]. Exposed so the
-    ALU can use it inline as well as through {!create}. *)
-val shift : x:Signal.t -> sc:Signal.t -> Signal.t
-
 module I : sig
   type 'a t =
     { x : 'a (** 32-bit operand *)
@@ -22,6 +18,6 @@ module O : sig
   type 'a t = { y : 'a (** [x << sc], zero-filled *) } [@@deriving hardcaml]
 end
 
-(** [create] wraps {!shift} as a Hardcaml [I]-to-[O] interface — the [LSL] unit for
-    instantiation and simulation. *)
+(** [create] is the [LSL] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
+    simulation. *)
 val create : Signal.t I.t -> Signal.t O.t

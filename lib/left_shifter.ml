@@ -10,8 +10,6 @@
 open Hardcaml
 open Signal
 
-let shift ~x ~sc = log_shift ~f:sll x ~by:sc
-
 module I = struct
   type 'a t =
     { x : 'a [@bits 32]
@@ -24,7 +22,7 @@ module O = struct
   type 'a t = { y : 'a [@bits 32] } [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t = { O.y = shift ~x:i.x ~sc:i.sc }
+let create (i : _ I.t) : _ O.t = { O.y = log_shift ~f:sll i.x ~by:i.sc }
 
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Correctness: qcheck the circuit against the pure-OCaml reference [x lsl sc] (no oracle
