@@ -83,8 +83,17 @@ Boot ROM image: `po/verilog/prom.mem` (hex) + `po/verilog/prom.bmm`.
 
 ## 2. Locked decisions
 
-1. **Fidelity:** cycle-accurate *structural* port of `RISC5.v` (mirror its registers/wires
-   and stall timing), **not** a fresh behavioral model. The Verilog is the spec.
+1. **Fidelity — faithful where structure *is* the spec, idiomatic where it isn't.**
+   A cycle-accurate port of `RISC5.v`, **not** a fresh behavioral model — but "the Verilog is
+   the spec" means its *behavior*, not its syntax. **Mirror the sequential skeleton exactly:**
+   which signals are registered, stall/state-counter timing, MUL/DIV's 33 cycles, interrupt
+   timing — that's what the oracle checks cycle-by-cycle and what synthesis *preserves* (it
+   takes register placement as given), not optimizes. **Be idiomatic Hardcaml in the
+   combinational datapath:** shifters, ALU ops, sign-extend, muxes — there only the truth
+   table is observable and synthesis re-maps structure freely (`log_shift` LeftShifter ≡
+   Wirth's radix-4 tree = the same point in the spec). Spend fidelity on *timing*, not on
+   transliterating wires. *Caveat (learning build, §0):* idiomatic code can hide the hardware
+   — still walk the structure for instructive blocks before shipping the idiom.
 2. **Synthesizable** and aimed at a real bitstream (not sim-only).
 3. **Board:** Digilent **Nexys 4 DDR (XC7A100T)**, Vivado flow.
 4. **Scope:** the **full SoC that boots** Project Oberon end-to-end.
