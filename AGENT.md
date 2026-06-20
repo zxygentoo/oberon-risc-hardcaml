@@ -194,7 +194,13 @@ module's own `.ml`* via
 freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
 property checks against a reference (for combinational blocks the reference is plain OCaml,
 e.g. `x lsl sc`, so no oracle needed). Waveforms are especially valuable for the multi-cycle
-units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the test. Compose
+units (MUL/DIV/FP stalls, CPU control), where the cycle-by-cycle timing *is* the test.
+**Keep the frozen block tight:** set `~wave_width:4` — a bus cell is ≈ `2·w+1` wide, so 4 is the
+floor that still renders a full 32-bit hex value (`3` truncates it) — and *pin* `~display_width`
+to the rendered width rather than omitting it, so a rolling `v0.18~preview` default bump (§9) can't
+silently reflow the frozen ASCII out from under the `[%expect]`. Find the pin once: render wide,
+then shrink until the last cell keeps ~2 trailing spaces with no cycle clipped (≈70 for 5 cycles of
+32-bit hex, ≈58 for 4; `left_shifter.ml` is the reference shape). Compose
 with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
 behavior + architectural-state assertions against `Oracle.Risc`.
 
