@@ -162,7 +162,8 @@ Vivado-specific layer.
 | **0** ✅ | dune project on ox; emulator submodule + `oracle` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
 | **1** ✅ | `LeftShifter`, `RightShifter`, ALU logic/adder + C/V flags | unit specs / qcheck |
 | **2** ✅ | Register file (3R/1W async-read array) | unit |
-| **3** | `Multiplier`, `Divider` (state+stall); `FPAdder`/`FPMultiplier`/`FPDivider` | frozen `fp_vectors.txt` |
+| **3a** | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
+| **3b** | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | frozen `fp_vectors.txt` |
 | **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual |
@@ -265,6 +266,14 @@ Reset (`rst` active-**low**) jumps to `StartAdr = 0x3FF800` (word addr); ROM dec
   comparison (`risc.ml:353`, `s < b`) and misses one corner (2nd operand `0xFFFFFFFF` with
   carry-in). We follow the hardware, so our port and the oracle differ *only* here — the fuzzer
   must steer around this case. (Unreachable from Oberon-07 compiled code anyway.)
+- **Unsigned `MUL'` high word (a Phase-4 lockstep steer-around).** `Multiplier.v` sign-extends
+  its *second* operand unconditionally (`{w0[31], w0}`, line 16); the module's `u` flag (driven
+  `~u`, so `u=1`≡signed) controls *only* the MSB subtract, which flips the *first* operand's
+  sign. So unsigned `MUL'` computes `B_unsigned × C1_signed`, whereas both emulators compute
+  `B_unsigned × C1_unsigned` (OCaml `risc.ml:371`, C `risc.c:279`). The low 32 bits (the `R.a`
+  result) always agree; only `H` differs, and only when `C1[31]=1`. We follow the hardware (§2),
+  so the fuzzer must steer around `C1[31]=1` in unsigned-`MUL` lockstep. (Reachable only via an
+  `H`-read after `MUL'`.)
 - **Addressing.** FPGA uses a 20-bit address bus (out-of-range aliases into 1 MB); emulators
   decode 32 bits. Identical for well-behaved software.
 - **Register file timing:** **async read** (combinational `dout` from the read address),
