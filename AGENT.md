@@ -318,14 +318,19 @@ ox when their phases arrive (confirm availability then).
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).
-- **Standard library — use Jane Street `Core`, not OCaml's `Stdlib`.** We're already all-in on
-  the Jane Street ecosystem (OxCaml, Hardcaml, `ppx_expect`, `qcheck`), so standardize on it:
-  `open Core` (then `open Hardcaml`) and reach for `Core`'s `List`/`Int`/`Map`/labeled-arg APIs
-  over `Stdlib`. Hardcaml's signal operators are `:`-suffixed (`+:`, `&:`, `==:`, …), so they
-  coexist with `Core`'s shadowed polymorphic `=`/`<`/`compare` (use `==:` for signals,
-  `[%equal]`/typed equals for OCaml values). `Base` is the lighter, dep-minimal subset — reach
-  for it if we ever want the design lib leaner. Existing pure-Hardcaml modules (e.g. the
-  shifter) need no change; the rule binds new code that would otherwise reach for `Stdlib`.
+- **Standard library — Jane Street `Base`/`Core` over OCaml's `Stdlib`, minimally.** We're all-in
+  on the Jane Street ecosystem (OxCaml, Hardcaml, `ppx_expect`, `qcheck`), so replace `Stdlib` with
+  it — but the same minimum-choice rule we apply everywhere applies here too: pull in only what a
+  module actually needs. **Default to `Base`** (the lean, portable subset: `List`/`Array`/`Int`/
+  labeled-arg APIs); reach for `Core` only where a module genuinely needs its extras
+  (`Time`/`Command`/`Unix`/…) — a synthesizable design module rarely will. Open the replacement
+  with **`open!`** — it deliberately shadows `Stdlib`'s `List`/`Array`/`=`/comparison and the bang
+  says so (silencing warnings 44/45) — and keep library opens (`open Hardcaml`, `open Signal`)
+  plain. Hardcaml's signal operators are `:`-suffixed (`+:`, `&:`, `==:`, …), coexisting with the
+  shadowed polymorphic `=`/`<`/`compare` (use `==:` for signals, `[%equal]`/typed equals for OCaml
+  values). `Base` arrives transitively through Hardcaml, so it needs no `lib/dune` entry; and a
+  module that touches no `Stdlib` containers needs no replacement open at all (the shifters/ALU are
+  pure Hardcaml). See `registers.ml` for the `open! Base` shape.
 - **Module structure — every design module carries an `.mli`** (set alongside the co-located
   tests rule, §6). The `.mli` is the public contract and owns the doc comments; the `.ml`
   keeps implementation notes plus the co-located `let%expect_test`s. Hardcaml interfaces

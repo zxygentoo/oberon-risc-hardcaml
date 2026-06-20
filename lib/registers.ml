@@ -10,7 +10,7 @@
    infer the distributed RAM (it may re-derive Wirth's very duplication). Async read /
    sync write is the timing the core and the oracle depend on (§8). *)
 
-open Core
+open! Base
 open Hardcaml
 open Signal
 
