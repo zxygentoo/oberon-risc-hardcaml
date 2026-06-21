@@ -87,13 +87,23 @@ Boot ROM image: `po/verilog/prom.mem` (hex) + `po/verilog/prom.bmm`.
    A cycle-accurate port of `RISC5.v`, **not** a fresh behavioral model — but "the Verilog is
    the spec" means its *behavior*, not its syntax. **Mirror the sequential skeleton exactly:**
    which signals are registered, stall/state-counter timing, MUL/DIV's 33 cycles, interrupt
-   timing — that's what the oracle checks cycle-by-cycle and what synthesis *preserves* (it
-   takes register placement as given), not optimizes. **Be idiomatic Hardcaml in the
+   timing — that's what synthesis *preserves* (it takes register placement as given), not
+   optimizes, and what the Phase-8 formal-equivalence proof pins to `RISC5.v`. **Be idiomatic Hardcaml in the
    combinational datapath:** shifters, ALU ops, sign-extend, muxes — there only the truth
    table is observable and synthesis re-maps structure freely (`log_shift` LeftShifter ≡
    Wirth's radix-4 tree = the same point in the spec). Spend fidelity on *timing*, not on
    transliterating wires. *Caveat (learning build, §0):* idiomatic code can hide the hardware
    — still walk the structure for instructive blocks before shipping the idiom.
+
+   *What cycle-fidelity is — and isn't — for.* The OCaml oracle is **instruction-level** (its
+   ms-clock is injected via `set_time`, not cycle-derived; it steps by instruction), so it
+   proves *behavioral* correctness and needs **no** cycle-accuracy — both lockstep levels (§6)
+   would pass a faster MUL just the same. Cycle-accuracy earns its keep on three *other* counts:
+   the **exhaustive** Phase-8 equivalence proof vs `RISC5.v` (catching rare corners that
+   sampling misses), `RISC5.v` as a **cycle-level debugging oracle** through the hard core/SoC
+   phases, and the **bright-line discipline** (match the RTL exactly ⇒ no per-deviation "is this
+   behavior-preserving?" judgment, nothing hiding in the oracle's blind spots). Trading these
+   away for idiom or speed is deliberately deferred to Phase 9 (§5).
 2. **Synthesizable** and aimed at a real bitstream (not sim-only).
 3. **Board:** Digilent **Nexys 4 DDR (XC7A100T)**, Vivado flow.
 4. **Scope:** the **full SoC that boots** Project Oberon end-to-end.
@@ -169,6 +179,14 @@ Vivado-specific layer.
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **DDR2-via-MIG adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
+| **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + full-boot: Oberon still boots & runs); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
+
+*Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
+`RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
+is the one place we deliberately cross it, only *after* the faithful port is verified (and formally
+checked in 8): optimizations there are judged against the **ISA/oracle** — does Oberon still boot and
+lockstep at the instruction level — not against `RISC5.v` timing. Work from a tagged faithful baseline
+(e.g. a `feat/fast-mul` spike), so the proven port is never lost.
 
 ---
 
