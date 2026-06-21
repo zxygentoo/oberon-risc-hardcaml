@@ -172,7 +172,7 @@ Vivado-specific layer.
 | **0** ✅ | dune project on ox; emulator submodule + `oracle` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
 | **1** ✅ | `LeftShifter`, `RightShifter`, ALU logic/adder + C/V flags | unit specs / qcheck |
 | **2** ✅ | Register file (3R/1W async-read array) | unit |
-| **3a** | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
+| **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
 | **3b** | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | frozen `fp_vectors.txt` |
 | **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
