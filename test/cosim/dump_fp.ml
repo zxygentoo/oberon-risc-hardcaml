@@ -1,10 +1,13 @@
 (* Consolidated RTL-fidelity dumper for the FP units. Drives a Hardcaml FP unit (selected
-   by the first argument) over a stimulus set and writes "x y z" / "x y u v z" lines,
-   which the matching Verilator harness (test/cosim/<unit>.cpp) replays through the
-   reference _po/verilog/src/<Unit>.v to assert RTL z == port z. This is a port-vs-RTL
-   FIDELITY check, so the stimuli are (a) the frozen fp_vectors lines tagged for this unit
-   (the expected-z column is ignored — we compare against the RTL, not the software
-   oracle) and (b) a deterministic random fuzz pass for breadth.
+   by the first argument) over a stimulus set and writes "x y z cycles" / "x y u v z
+   cycles" lines (cycles = how many clock cycles the unit stalls), which the matching
+   Verilator harness (test/cosim/<unit>.cpp) replays through the reference
+   _po/verilog/src/<Unit>.v to assert RTL z == port z AND RTL stall-length == port
+   stall-length — value- AND cycle-fidelity, the latter the simulation preview of the
+   Phase-8 equivalence proof. This is a port-vs-RTL FIDELITY check, so the stimuli are (a)
+   the frozen fp_vectors lines tagged for this unit (the expected-z column is ignored — we
+   compare against the RTL, not the software oracle) and (b) a deterministic random fuzz
+   pass for breadth.
 
    The three FP units share one dumper because the drive protocol (run -> drain on stall
    -> read z) is identical; they differ only in the modifier bits (the adder carries u/v
@@ -26,25 +29,29 @@ let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v
 let drive sim ~run ~stall ~z =
   set run 1;
   Cyclesim.cycle sim;
-  let safety = ref 0 in
+  (* [cycles] counts the clock cycles with [run] asserted until [stall] drops — i.e. the
+     stall length (= the unit's state-counter terminal: FPAdd 3, FPMul 25, FPDiv 26). The
+     <unit>.cpp drives the RTL with the identical run -> drain protocol and the identical
+     count, so equal counts ⇔ the port stalls for exactly as many cycles as the RTL. *)
+  let cycles = ref 1 in
   while Bits.to_int_trunc !stall = 1 do
     Cyclesim.cycle sim;
-    incr safety;
-    if !safety > 40 then failwith "FP unit did not terminate"
+    incr cycles;
+    if !cycles > 40 then failwith "FP unit did not terminate"
   done;
   let result = Bits.to_unsigned_int !z in
   set run 0;
   Cyclesim.cycle sim;
-  result
+  result, !cycles
 ;;
 
 (* a unit-specific driver: its frozen-vector line [tag], whether it carries u/v modifiers,
    and a closure that drives one op (setting only the inputs that unit actually has) and
-   returns z. *)
+   returns (z, stall-cycle count). *)
 type driver =
   { tag : string
   ; has_uv : bool
-  ; run : u:int -> v:int -> x:int -> y:int -> int
+  ; run : u:int -> v:int -> x:int -> y:int -> int * int (* z, stall-cycle count *)
   }
 
 let adder_driver () =
@@ -104,10 +111,10 @@ let () =
   let n = ref 0 in
   let emit ~u ~v ~x ~y =
     incr n;
-    let z = d.run ~u ~v ~x ~y in
+    let z, cycles = d.run ~u ~v ~x ~y in
     if d.has_uv
-    then Printf.printf "%08X %08X %d %d %08X\n" x y u v z
-    else Printf.printf "%08X %08X %08X\n" x y z
+    then Printf.printf "%08X %08X %d %d %08X %d\n" x y u v z cycles
+    else Printf.printf "%08X %08X %08X %d\n" x y z cycles
   in
   (* (a) corner stimuli: the frozen vectors tagged for this unit (expected-z column
          ignored). *)

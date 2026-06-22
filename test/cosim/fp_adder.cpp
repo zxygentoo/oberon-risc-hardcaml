@@ -1,7 +1,8 @@
 // RTL-fidelity co-sim for Fp_adder: drive the reference _po/verilog/src/FPAdder.v through
-// Verilator on each stimulus dumped by test/cosim/dump_fp, and assert RTL z == port z.
-// Exit 0 iff the Hardcaml port is bit-exact to FPAdder.v over the whole stimulus set.
-//   usage:  cosim <port_dump_path>          (lines: "x y u v port_z")
+// Verilator on each stimulus dumped by test/cosim/dump_fp, and assert RTL z == port z AND
+// RTL stall-length == port stall-length. Exit 0 iff the Hardcaml port is bit-exact AND
+// cycle-exact to FPAdder.v over the whole stimulus set.
+//   usage:  cosim <port_dump_path>          (lines: "x y u v port_z port_cycles")
 // Driven by test/cosim/run.sh; see test/cosim/README.md.
 
 #include "VFPAdder.h"
@@ -18,22 +19,25 @@ static void tick() {
   dut->eval();
 }
 
-// hold inputs, run, drain until stall drops (State 0->3), read z, release run for one cycle
-static uint32_t run_op(uint32_t x, uint32_t y, int u, int v) {
+// hold inputs, run, drain until stall drops (State 0->3), read z, release run for one cycle.
+// *cycles = clock cycles with run asserted until stall drops (the stall length), counted
+// identically to dump_fp's port-side drive so the two are directly comparable.
+static uint32_t run_op(uint32_t x, uint32_t y, int u, int v, int* cycles) {
   dut->u = u;
   dut->v = v;
   dut->x = x;
   dut->y = y;
   dut->run = 1;
   tick();
-  int safety = 0;
-  while (dut->stall && safety < 20) {
+  int c = 1;
+  while (dut->stall && c < 40) {
     tick();
-    safety++;
+    c++;
   }
   uint32_t z = dut->z;
   dut->run = 0;
   tick();
+  *cycles = c;
   return z;
 }
 
@@ -51,20 +55,29 @@ int main(int argc, char** argv) {
   dut = new VFPAdder;
 
   unsigned int x, y, pz;
-  int u, v;
-  long n = 0, mismatch = 0;
-  while (fscanf(f, "%x %x %d %d %x", &x, &y, &u, &v, &pz) == 5) {
-    uint32_t rz = run_op(x, y, u, v);
+  int u, v, pcyc;
+  long n = 0, mismatch = 0, cyc_mismatch = 0;
+  while (fscanf(f, "%x %x %d %d %x %d", &x, &y, &u, &v, &pz, &pcyc) == 6) {
+    int rcyc = 0;
+    uint32_t rz = run_op(x, y, u, v, &rcyc);
     n++;
     if (rz != (uint32_t)pz) {
       mismatch++;
       if (mismatch <= 20)
         printf("MISMATCH x=%08X y=%08X u=%d v=%d: RTL=%08X PORT=%08X\n", x, y, u, v, rz, pz);
     }
+    if (rcyc != pcyc) {
+      cyc_mismatch++;
+      if (cyc_mismatch <= 20)
+        printf("CYCLE-MISMATCH x=%08X y=%08X u=%d v=%d: RTL=%dcy PORT=%dcy\n", x, y, u, v, rcyc,
+               pcyc);
+    }
   }
   fclose(f);
-  printf("fp_adder co-sim: %ld stimuli, %ld mismatch\n", n, mismatch);
-  if (mismatch == 0) printf("==> Hardcaml Fp_adder is bit-exact to FPAdder.v.\n");
+  printf("fp_adder co-sim: %ld stimuli, %ld value-mismatch, %ld cycle-mismatch\n", n, mismatch,
+         cyc_mismatch);
+  if (mismatch == 0 && cyc_mismatch == 0)
+    printf("==> Hardcaml Fp_adder is bit-exact AND cycle-exact to FPAdder.v.\n");
   delete dut;
-  return mismatch == 0 ? 0 : 1;
+  return (mismatch == 0 && cyc_mismatch == 0) ? 0 : 1;
 }
