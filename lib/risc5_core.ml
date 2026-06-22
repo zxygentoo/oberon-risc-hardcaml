@@ -8,12 +8,15 @@
    oracle checks and synthesis preserves; the combinational web around them is idiomatic
    Hardcaml. Each [create] line is tagged with the RISC5.v line it ports.
 
-   It is assembled in vertical slices across Phase 4, each a green lockstep milestone.
-   This is the fetch/decode/stall spine: PC/IR/stallL1, the decode those need, the stall
-   aggregation, the next-PC mux, and the memory-bus control strobes. Layering in later:
-   the register file + ALU result mux (4.1), the multi-cycle units + H (4.2), branches
-   (4.3), the load/store data path (4.4), and interrupts (4.5). Bindings the later slices
-   read off the interface (irq, inbus) are already ports but not yet wired. *)
+   It was assembled in vertical slices across Phase 4, each a green lockstep milestone:
+   the fetch/decode/stall spine (PC/IR/stallL1, the decode those need, the stall
+   aggregation, the next-PC mux, the memory-bus strobes — 4.0), the register file + ALU
+   result mux (4.1), the multi-cycle units + H (4.2), branches (4.3), the load/store data
+   path (4.4), and interrupts (4.5). Every interface port (irq, inbus, ...) is now wired.
+   The interrupt FSM (4.5) has no OCaml-oracle counterpart — the oracle is interrupt-free
+   — so it is checked by a co-located behavioural test against the RISC5.v spec, and
+   exhaustively by the Phase-8 RTL co-sim; the instruction lockstep steers RTI/STI/CLI out
+   (§8). *)
 
 open Hardcaml
 open Signal
@@ -46,8 +49,8 @@ let create (i : _ I.t) : _ O.t =
   (* ── State registers (RISC5.v:13-17, written in the always block 171-183) ── Faithful
      no-reset registers: there is no clear port. [rst_n] (active low) reaches the datapath
      as ordinary logic (pcmux below), exactly as the RTL does it. Up now: the three
-     fetch-timing registers (4.0), the condition flags N/Z/C/OV (4.1), and the aux
-     register H (4.2, MUL high word / DIV remainder); the interrupt state joins in 4.5.
+     fetch-timing registers (4.0), the condition flags N/Z/C/OV (4.1), the aux register H
+     (4.2, MUL high word / DIV remainder), and the interrupt state (4.5).
      [pc]/[ir]/[stall]/[regmux], the flags, and [h] are named (--) so the waveform and
      lockstep tests can watch and poke them. *)
   let pc = Always.Variable.reg spec ~width:22 in
@@ -58,6 +61,13 @@ let create (i : _ I.t) : _ O.t =
   let c = Always.Variable.reg spec ~width:1 in
   let ov = Always.Variable.reg spec ~width:1 in
   let h = Always.Variable.reg spec ~width:32 in
+  (* RISC5.v:34-35 — the interrupt state (4.5): the IRQ edge-detect flop, the enable /
+     pending / in-handler flags, and SPC = [{saved flags, saved PC}] (4 + 22 = 26 bits). *)
+  let irq1 = Always.Variable.reg spec ~width:1 in
+  let int_enb = Always.Variable.reg spec ~width:1 in
+  let int_pnd = Always.Variable.reg spec ~width:1 in
+  let int_md = Always.Variable.reg spec ~width:1 in
+  let spc = Always.Variable.reg spec ~width:26 in
   let pc_v = pc.value -- "pc" in
   let ir_v = ir.value -- "ir" in
   let stall_l1_v = stall_l1.value in
@@ -66,6 +76,11 @@ let create (i : _ I.t) : _ O.t =
   let c_v = c.value -- "c" in
   let ov_v = ov.value -- "ov" in
   let h_v = h.value -- "h" in
+  let irq1_v = irq1.value in
+  let int_enb_v = int_enb.value -- "int_enb" in
+  let int_pnd_v = int_pnd.value -- "int_pnd" in
+  let int_md_v = int_md.value -- "int_md" in
+  let spc_v = spc.value -- "spc" in
   (* ── Instruction decode (RISC5.v:70-96) ── the mode bits, the register-op fields, and
      the op-classes the wired slices need; the rest is decoded as later slices land. *)
   let p = select ir_v ~high:31 ~low:31 in
@@ -90,6 +105,10 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:94 *)
   let br = p &: q in
   (* RISC5.v:95 *)
+  let rti = br &: ~:u &: ~:v &: select ir_v ~high:4 ~low:4 in
+  (* RISC5.v:96 — RTI = BR & ~u & ~v & IR[4] (return from interrupt) *)
+  let sti_cli = br &: ~:u &: ~:v &: select ir_v ~high:5 ~low:5 in
+  (* RISC5.v:181 — STI/CLI = BR & ~u & ~v & IR[5]; writes intEnb := IR[0] *)
   let is_op k = ~:p &: (op ==:. k) in
   let mul = is_op 10
   and div = is_op 11
@@ -201,6 +220,10 @@ let create (i : _ I.t) : _ O.t =
     stall_l0 |: i.stall_x |: stall_m |: stall_d |: stall_fa |: stall_fm |: stall_fd
   in
   let stall = stall_all -- "stall" in
+  (* RISC5.v:149 — acknowledge an interrupt when one is pending and enabled, we're not
+     already inside a handler ([~int_md]), and nothing is stalling. The [~stall] gate
+     keeps the about-to-be-saved PC coherent (no half-finished multi-cycle op). *)
+  let int_ack = int_pnd_v &: int_enb_v &: ~:int_md_v &: ~:stall in
   (* ── Memory address + load byte-lane (RISC5.v:101,104,128-130) ── the data address is
      B[23:0] + sign-extended off; [ben] is the byte enable. A byte load selects the lane
      at [data_adr[1:0]] from inbus and zero-extends; a word load passes inbus through.
@@ -266,19 +289,45 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:127 — a register op (not stalled), a taken linking branch, or a load (which
      writes the fetched data on its [stallL0] cycle) *)
   assign regwr_w regwr;
-  let nn = mux2 regwr (msb regmux) n_v in
-  (* RISC5.v:159 *)
-  let zz = mux2 regwr (regmux ==:. 0) z_v in
-  (* RISC5.v:160 *)
-  let cx = alu_c in
-  (* RISC5.v:161-163 *)
-  let vv = alu_ov in
-  (* RISC5.v:164-166 *)
+  let nn = mux2 rti (select spc_v ~high:25 ~low:25) (mux2 regwr (msb regmux) n_v) in
+  (* RISC5.v:159 — RTI restores N from SPC[25], else N from the writeback / hold *)
+  let zz = mux2 rti (select spc_v ~high:24 ~low:24) (mux2 regwr (regmux ==:. 0) z_v) in
+  (* RISC5.v:160 — RTI restores Z from SPC[24] *)
+  let cx = mux2 rti (select spc_v ~high:23 ~low:23) alu_c in
+  (* RISC5.v:161-163 — RTI restores C from SPC[23], else the ALU's add/sub carry *)
+  let vv = mux2 rti (select spc_v ~high:22 ~low:22) alu_ov in
+  (* RISC5.v:164-166 — RTI restores OV from SPC[22], else the ALU's add/sub overflow *)
   let h_next = mux2 mul (select product ~high:63 ~low:32) (mux2 div remainder h_v) in
   (* RISC5.v:176 — H <= MUL ? product[63:32] : DIV ? remainder : H *)
+  (* ── Interrupt next-state (RISC5.v:178-182) ── on intAck, SPC latches
+     [{flags, return PC}]; intPnd sets on a rising IRQ edge and clears on intAck; intMd
+     marks "in handler" (set on intAck, cleared by RTI); intEnb is reset-cleared and
+     written by STI/CLI. The [rst_n &] / [~rst_n ?] guards are RISC5.v's [rst &] /
+     [~rst ?] (rst is active-low). *)
+  let spc_next = mux2 int_ack (nn @: zz @: cx @: vv @: pcmux0) spc_v in
+  (* RISC5.v:182 — {nn, zz, cx, vv, pcmux0}: the flags about to be set + the return PC *)
+  let int_pnd_next = i.rst_n &: ~:int_ack &: (~:irq1_v &: i.irq |: int_pnd_v) in
+  (* RISC5.v:179 — set on the rising IRQ edge [~irq1 & irq], cleared on intAck *)
+  let int_md_next = i.rst_n &: ~:rti &: (int_ack |: int_md_v) in
+  (* RISC5.v:180 *)
+  let int_enb_next = mux2 ~:(i.rst_n) (zero 1) (mux2 sti_cli (lsb ir_v) int_enb_v) in
+  (* RISC5.v:181 — IR[0] = the e bit of STI/CLI *)
   let start_adr = of_unsigned_int ~width:22 0x3F_F800 in
   (* RISC5.v:11, StartAdr *)
-  let pcmux = mux2 ~:(i.rst_n) start_adr (mux2 stall pc_v pcmux0) in
+  let spc_pc = select spc_v ~high:21 ~low:0 in
+  (* RISC5.v:152 — the return PC lives in SPC[21:0] *)
+  let pcmux =
+    mux2
+      ~:(i.rst_n)
+      start_adr
+      (mux2
+         stall
+         pc_v
+         (mux2 int_ack (of_unsigned_int ~width:22 1) (mux2 rti spc_pc pcmux0)))
+  in
+  (* RISC5.v:150-152 — priority reset > stall > intAck (→ vector address 1) > RTI (→
+     restore SPC[21:0]) > branch/step. intAck is [~stall]-gated, so it never collides with
+     the stall term above it. *)
   (* ── Memory bus (RISC5.v:101-104,132-134) ── [adr] is the data address while [stallL0],
      else the fetch address; [outbus] is the store data — A for a word store, or A[7:0]
      replicated into the addressed byte lane for a byte store. *)
@@ -312,6 +361,11 @@ let create (i : _ I.t) : _ O.t =
       ; c <-- cx
       ; ov <-- vv
       ; h <-- h_next (* RISC5.v:176 *)
+      ; irq1 <-- i.irq (* RISC5.v:178 — the IRQ edge-detect flop *)
+      ; int_pnd <-- int_pnd_next (* RISC5.v:179 *)
+      ; int_md <-- int_md_next (* RISC5.v:180 *)
+      ; int_enb <-- int_enb_next (* RISC5.v:181 *)
+      ; spc <-- spc_next (* RISC5.v:182 *)
       ]);
   { O.adr; rd; wr; ben; outbus }
 ;;
@@ -681,5 +735,90 @@ let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [wave
     │outbus       ││ 00000000 │DEADBEEF │00AB0000 │000000AB    │
     │             ││──────────┴─────────┴─────────┴─────────   │
     └─────────────┘└───────────────────────────────────────────┘
+    |}]
+;;
+
+(* 4.5 — the interrupt handshake. The OCaml oracle is instruction-level and models no
+   interrupts, so (unlike every other slice) this is checked against the RISC5.v FSM
+   directly rather than by lockstep. The full cycle: STI enables (intEnb := IR[0]); a
+   one-cycle IRQ pulse latches a pending request on its rising edge (intPnd); with nothing
+   stalling and not already in a handler, intAck fires — PC jumps to the vector (address
+   1), intMd marks "in handler", and SPC saves [{flags, return PC}]; the handler runs;
+   then RTI restores PC from SPC[21:0] and the flags from SPC[25:22] and clears intMd. We
+   start from a legible PC (0x100) with C=1, so the saved SPC = 0x800103 visibly carries
+   the flag (bit 23) alongside the return PC 0x103. All driver instructions are
+   never-taken branches (cc=7 negated): NOP=0xCF000000, STI=0xCF000021 (IR[5], IR[0]=e),
+   RTI=0xCF000010 (IR[4]). *)
+
+let%expect_test "interrupts — STI enable, IRQ to intAck (vector 1), RTI restore \
+                 [waveform]"
+  =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let some = function
+    | Some x -> x
+    | None -> failwith "lookup"
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  inp.stall_x := Bits.of_unsigned_int ~width:1 0;
+  inp.codebus := Bits.of_unsigned_int ~width:32 0;
+  (* the interrupt registers power up to 0 (sim init = post-reset); start from a legible
+     PC and C=1 in place of the reset StartAdr *)
+  Cyclesim.Reg.of_int (reg "pc") 0x100;
+  Cyclesim.Reg.of_int (reg "c") 1;
+  let step ~ir ~irq =
+    Cyclesim.Reg.of_int (reg "ir") ir;
+    inp.irq := Bits.of_unsigned_int ~width:1 irq;
+    Cyclesim.cycle sim
+  in
+  step ~ir:0xCF00_0021 ~irq:0;
+  (* STI: intEnb <- 1; PC -> 0x101 *)
+  step ~ir:0xCF00_0000 ~irq:1;
+  (* IRQ: intPnd <- 1 (edge); PC -> 0x102 *)
+  step ~ir:0xCF00_0000 ~irq:0;
+  (* ack: PC <- 1, intMd <- 1, SPC <- 0x800103, intPnd <- 0 *)
+  step ~ir:0xCF00_0000 ~irq:0;
+  (* hdlr: no re-dispatch (intMd); PC -> 2 *)
+  step ~ir:0xCF00_0010 ~irq:0;
+  (* RTI: PC <- 0x103, intMd <- 0, C restored *)
+  step ~ir:0xCF00_0000 ~irq:0;
+  (* back: running at 0x103 *)
+  Waveform.print
+    ~display_rules:
+      D.
+        [ port_name_is ~wave_format:Wave_format.Hex "ir"
+        ; port_name_is ~wave_format:Wave_format.Hex "pc"
+        ; port_name_is ~wave_format:Wave_format.Bit "int_enb"
+        ; port_name_is ~wave_format:Wave_format.Bit "int_pnd"
+        ; port_name_is ~wave_format:Wave_format.Bit "int_md"
+        ; port_name_is ~wave_format:Wave_format.Hex "spc"
+        ]
+    ~wave_width:4
+    ~display_width:82
+    waves;
+  [%expect
+    {|
+    ┌Signals───────────┐┌Waves───────────────────────────────────────────────────────┐
+    │                  ││──────────┬─────────────────────────────┬─────────┬─────────│
+    │ir                ││ CF000021 │CF000000                     │CF000010 │CF000000 │
+    │                  ││──────────┴─────────────────────────────┴─────────┴─────────│
+    │                  ││──────────┬─────────┬─────────┬─────────┬─────────┬─────────│
+    │pc                ││ 000100   │000101   │000102   │000001   │000002   │000103   │
+    │                  ││──────────┴─────────┴─────────┴─────────┴─────────┴─────────│
+    │int_enb           ││          ┌─────────────────────────────────────────────────│
+    │                  ││──────────┘                                                 │
+    │int_pnd           ││                    ┌─────────┐                             │
+    │                  ││────────────────────┘         └─────────────────────────────│
+    │int_md            ││                              ┌───────────────────┐         │
+    │                  ││──────────────────────────────┘                   └─────────│
+    │                  ││──────────────────────────────┬─────────────────────────────│
+    │spc               ││ 0000000                      │0800103                      │
+    │                  ││──────────────────────────────┴─────────────────────────────│
+    └──────────────────┘└────────────────────────────────────────────────────────────┘
     |}]
 ;;
