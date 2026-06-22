@@ -41,6 +41,10 @@ type t =
   ; reg_h : Cyclesim.Reg.t
   ; stall : Cyclesim.Node.t
   ; oracle : R.t
+  ; inbus : Bits.t ref (* load-data input port *)
+  ; out_pre : Bits.t ref Core.O.t
+  (* outputs sampled before the edge — to catch a store's adr/wr/outbus on its [stallL0]
+     cycle *)
   }
 
 let create () =
@@ -54,7 +58,9 @@ let create () =
   inp.rst_n := Bits.of_unsigned_int ~width:1 1;
   inp.stall_x := Bits.of_unsigned_int ~width:1 0;
   inp.codebus := Bits.of_unsigned_int ~width:32 0;
-  { sim
+  { inbus = inp.inbus
+  ; out_pre = Cyclesim.outputs ~clock_edge:Before sim
+  ; sim
   ; regfile = some "regfile" (Cyclesim.lookup_mem_by_name sim "regfile")
   ; reg_ir = reg "ir"
   ; reg_pc = reg "pc"
@@ -83,12 +89,9 @@ type case =
 (* the flags as the oracle / cpu_state pack them: Z | N<<1 | C<<2 | V<<3 *)
 let packed_flags ~n ~z ~c ~ov = z lor (n lsl 1) lor (c lsl 2) lor (ov lsl 3)
 
-(* run [case] on the Hardcaml core and read back (regs, flags, pc, h). Single-cycle ops
-   (0..9) take one cycle; multi-cycle ops (10..15) run until the unit's "stall" drops,
-   then one more cycle commits the writeback (regwr = ~p & ~stall fires only once stall
-   drops). The leading run=0 cycle clears the units' (reset-less, run-gated) state
-   counters. *)
-let step_core t { regs; n; z; c; ov; h; op; instr } =
+(* poke [case]'s arch state into the core, after a run=0 cycle that clears the units'
+   state counters. (Does not cycle the instruction itself.) *)
+let poke_core t { regs; n; z; c; ov; h; instr; op = _ } =
   Cyclesim.Reg.of_int t.reg_ir 0;
   Cyclesim.cycle t.sim;
   Array.iteri (fun k v -> Cyclesim.Memory.of_int t.regfile ~address:k v) regs;
@@ -98,15 +101,11 @@ let step_core t { regs; n; z; c; ov; h; op; instr } =
   Cyclesim.Reg.of_int t.reg_ov ov;
   Cyclesim.Reg.of_int t.reg_h h;
   Cyclesim.Reg.of_int t.reg_ir instr;
-  Cyclesim.Reg.of_int t.reg_pc base_pc;
-  if op < 10
-  then Cyclesim.cycle t.sim
-  else (
-    Cyclesim.cycle t.sim;
-    while Cyclesim.Node.to_int t.stall = 1 do
-      Cyclesim.cycle t.sim
-    done;
-    Cyclesim.cycle t.sim);
+  Cyclesim.Reg.of_int t.reg_pc base_pc
+;;
+
+(* read back the core's (regs, flags, pc, h) *)
+let read_core t =
   let regs = Array.init 16 (fun k -> Cyclesim.Memory.to_int t.regfile ~address:k) in
   let flags =
     packed_flags
@@ -116,6 +115,22 @@ let step_core t { regs; n; z; c; ov; h; op; instr } =
       ~ov:(Cyclesim.Reg.to_int t.reg_ov)
   in
   regs, flags, Cyclesim.Reg.to_int t.reg_pc, Cyclesim.Reg.to_int t.reg_h
+;;
+
+(* run [case] on the Hardcaml core (poke -> step -> read). Single-cycle ops (0..9) take
+   one cycle; multi-cycle ops (10..15) run until the unit's "stall" drops, then one more
+   cycle commits the writeback (regwr = ~p & ~stall fires only once stall drops). *)
+let step_core t case =
+  poke_core t case;
+  if case.op < 10
+  then Cyclesim.cycle t.sim
+  else (
+    Cyclesim.cycle t.sim;
+    while Cyclesim.Node.to_int t.stall = 1 do
+      Cyclesim.cycle t.sim
+    done;
+    Cyclesim.cycle t.sim);
+  read_core t
 ;;
 
 (* run [case] on the oracle and read back the same (regs, flags, pc, h) tuple *)
@@ -265,6 +280,174 @@ let steered_branch { instr; _ } =
   u = 0 && v = 1 && irc = 15
 ;;
 
+(* ─── Loads ─── *)
+
+(* run a load on both machines and compare (regs, flags, pc, h). The loaded word is
+   presented on inbus and placed in the oracle's ram[adr_word]; a byte load selects the
+   lane at adr[1:0] from that word, a word load takes it whole. The 2-cycle access writes
+   R[a] on its stallL0 cycle, then the bubble advances PC. *)
+let agree_load t ~case ~adr_word ~load_val =
+  poke_core t case;
+  t.inbus := Bits.of_unsigned_int ~width:32 load_val;
+  Cyclesim.cycle t.sim;
+  Cyclesim.cycle t.sim;
+  let hw_regs, hw_flags, hw_pc, hw_h = read_core t in
+  let oregs = R.For_tests.regs t.oracle in
+  Array.iteri (fun k v -> oregs.(k) <- v) case.regs;
+  R.For_tests.set_flags t.oracle (packed_flags ~n:case.n ~z:case.z ~c:case.c ~ov:case.ov);
+  R.For_tests.set_h t.oracle case.h;
+  R.For_tests.set_pc t.oracle base_pc;
+  (R.For_tests.ram t.oracle).(base_pc) <- case.instr;
+  (R.For_tests.ram t.oracle).(adr_word) <- load_val;
+  R.For_tests.single_step t.oracle;
+  let or_regs = R.For_tests.regs t.oracle in
+  let regs_eq = ref true in
+  for k = 0 to 15 do
+    if hw_regs.(k) <> or_regs.(k) then regs_eq := false
+  done;
+  !regs_eq
+  && hw_flags = R.For_tests.flags t.oracle
+  && hw_pc = R.For_tests.pc t.oracle
+  && hw_h = R.For_tests.h t.oracle
+;;
+
+(* a load draw: [ctrl] packs a/b/byte-mode/flags; [addr_byte] is the data address (kept in
+   a small RAM region below the instruction at base_pc, so the oracle finds it in RAM and
+   the word index never aliases base_pc); [off] is a small signed offset (we set R[b] =
+   addr-off so R[b]+off lands on addr); [load_word] is what memory returns; [h] is the aux
+   register. *)
+let arbitrary_load =
+  QCheck.set_print
+    (fun (ctrl, addr, off, w, h) ->
+      Printf.sprintf "ctrl=%x addr=%x off=%d load=%08lx h=%08lx" ctrl addr off w h)
+    (QCheck.tup5
+       (QCheck.int_bound 0x1FFF)
+       (QCheck.int_range 0x100 0x3C00)
+       (QCheck.int_range (-0x40) 0x3F)
+       QCheck.int32
+       QCheck.int32)
+;;
+
+let decode_load (ctrl, addr_byte, off, load_word, h32) =
+  let a = (ctrl lsr 9) land 0xF
+  and b = (ctrl lsr 5) land 0xF
+  and byte_mode = (ctrl lsr 4) land 1
+  and flags = ctrl land 0xF in
+  let regs = Array.make 16 0 in
+  regs.(b) <- addr_byte - off (* R[b]; R[b]+off = addr_byte *);
+  let instr =
+    (* LDR: p=1,q=0,u=0, v=byte_mode, a=dest, b=base, off in IR[19:0] *)
+    0x8000_0000
+    lor (byte_mode lsl 28)
+    lor (a lsl 24)
+    lor (b lsl 20)
+    lor (off land 0xF_FFFF)
+  in
+  let case =
+    { regs
+    ; op = 0
+    ; instr
+    ; n = (flags lsr 1) land 1
+    ; z = flags land 1
+    ; c = (flags lsr 2) land 1
+    ; ov = (flags lsr 3) land 1
+    ; h = u32 h32
+    }
+  in
+  case, addr_byte lsr 2, u32 load_word
+;;
+
+(* ─── Stores ─── *)
+
+(* run a store on both machines and compare. The core drives outbus/adr/wr on its stallL0
+   cycle (captured pre-edge); we apply that to memory ([init_word] at adr_word, the
+   addressed byte for a byte store) and compare with the oracle's ram[adr_word], plus the
+   strobe/address and the (unchanged) regs/flags/pc/h. *)
+let agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane =
+  poke_core t case;
+  Cyclesim.cycle t.sim;
+  let hw_adr = Bits.to_int_trunc !(t.out_pre.adr)
+  and hw_wr = Bits.to_int_trunc !(t.out_pre.wr)
+  and hw_outbus = Bits.to_int_trunc !(t.out_pre.outbus) in
+  Cyclesim.cycle t.sim;
+  let hw_regs, hw_flags, hw_pc, hw_h = read_core t in
+  let hw_mem =
+    if byte_mode = 1
+    then
+      init_word land lnot (0xFF lsl (8 * lane)) lor (hw_outbus land (0xFF lsl (8 * lane)))
+    else hw_outbus
+  in
+  let oregs = R.For_tests.regs t.oracle in
+  Array.iteri (fun k v -> oregs.(k) <- v) case.regs;
+  R.For_tests.set_flags t.oracle (packed_flags ~n:case.n ~z:case.z ~c:case.c ~ov:case.ov);
+  R.For_tests.set_h t.oracle case.h;
+  R.For_tests.set_pc t.oracle base_pc;
+  (R.For_tests.ram t.oracle).(base_pc) <- case.instr;
+  (R.For_tests.ram t.oracle).(adr_word) <- init_word;
+  R.For_tests.single_step t.oracle;
+  let or_regs = R.For_tests.regs t.oracle in
+  let regs_eq = ref true in
+  for k = 0 to 15 do
+    if hw_regs.(k) <> or_regs.(k) then regs_eq := false
+  done;
+  hw_wr = 1
+  && hw_adr lsr 2 = adr_word
+  && hw_mem = (R.For_tests.ram t.oracle).(adr_word)
+  && !regs_eq
+  && hw_flags = R.For_tests.flags t.oracle
+  && hw_pc = R.For_tests.pc t.oracle
+  && hw_h = R.For_tests.h t.oracle
+;;
+
+let arbitrary_store =
+  QCheck.set_print
+    (fun (ctrl, addr, off, data, init) ->
+      Printf.sprintf
+        "ctrl=%x addr=%x off=%d data=%08lx init=%08lx"
+        ctrl
+        addr
+        off
+        data
+        init)
+    (QCheck.tup5
+       (QCheck.int_bound 0x1FFF)
+       (QCheck.int_range 0x100 0x3C00)
+       (QCheck.int_range (-0x40) 0x3F)
+       QCheck.int32
+       QCheck.int32)
+;;
+
+let decode_store (ctrl, addr_byte, off, data, init32) =
+  let a = (ctrl lsr 9) land 0xF
+  and b = (ctrl lsr 5) land 0xF
+  and byte_mode = (ctrl lsr 4) land 1
+  and flags = ctrl land 0xF in
+  let regs = Array.make 16 0 in
+  regs.(a) <- u32 data (* R[a] = store data *);
+  regs.(b) <- addr_byte - off (* R[b] = base (placed last, so a=b takes the base) *);
+  let instr =
+    (* STR: p=1,q=0,u=1, v=byte_mode, a=source, b=base, off in IR[19:0] *)
+    0x8000_0000
+    lor (1 lsl 29)
+    lor (byte_mode lsl 28)
+    lor (a lsl 24)
+    lor (b lsl 20)
+    lor (off land 0xF_FFFF)
+  in
+  let case =
+    { regs
+    ; op = 0
+    ; instr
+    ; n = (flags lsr 1) land 1
+    ; z = flags land 1
+    ; c = (flags lsr 2) land 1
+    ; ov = (flags lsr 3) land 1
+    ; h = 0
+    }
+  in
+  case, addr_byte lsr 2, u32 init32, byte_mode, addr_byte land 3
+;;
+
 let () =
   let t = create () in
   (* int32 boundary coverage + shrinking minimizes a failure to a small instruction +
@@ -293,5 +476,25 @@ let () =
           let case = decode_branch raw in
           QCheck.assume (not (steered_branch case));
           agree t case));
-  Printf.printf "cpu lockstep (branches): 50000 QCheck cases, passed\n"
+  Printf.printf "cpu lockstep (branches): 50000 QCheck cases, passed\n";
+  (* loads: R[a] gets the byte-lane-selected / whole word from memory *)
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:50_000
+       ~name:"cpu load lockstep (word/byte)"
+       arbitrary_load
+       (fun raw ->
+          let case, adr_word, load_val = decode_load raw in
+          agree_load t ~case ~adr_word ~load_val));
+  Printf.printf "cpu lockstep (loads): 50000 QCheck cases, passed\n";
+  (* stores: memory at adr gets A (word) or A[7:0] in the addressed lane (byte) *)
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:50_000
+       ~name:"cpu store lockstep (word/byte)"
+       arbitrary_store
+       (fun raw ->
+          let case, adr_word, init_word, byte_mode, lane = decode_store raw in
+          agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane));
+  Printf.printf "cpu lockstep (stores): 50000 QCheck cases, passed\n"
 ;;

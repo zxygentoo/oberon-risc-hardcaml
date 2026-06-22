@@ -82,6 +82,8 @@ let create (i : _ I.t) : _ O.t =
      relative target displacement *)
   let neg = select ir_v ~high:27 ~low:27 in
   let disp = select ir_v ~high:21 ~low:0 in
+  let off = select ir_v ~high:19 ~low:0 in
+  (* RISC5.v:80 — the 20-bit signed load/store offset *)
   let ldr = p &: ~:q &: ~:u in
   (* RISC5.v:93 *)
   let str = p &: ~:q &: u in
@@ -199,6 +201,26 @@ let create (i : _ I.t) : _ O.t =
     stall_l0 |: i.stall_x |: stall_m |: stall_d |: stall_fa |: stall_fm |: stall_fd
   in
   let stall = stall_all -- "stall" in
+  (* ── Memory address + load byte-lane (RISC5.v:101,104,128-130) ── the data address is
+     B[23:0] + sign-extended off; [ben] is the byte enable. A byte load selects the lane
+     at [data_adr[1:0]] from inbus and zero-extends; a word load passes inbus through.
+     (data_adr is the output [adr] during a load/store, so its low 2 bits are adr[1:0].) *)
+  let data_adr = sel_bottom b ~width:24 +: sresize off ~width:24 in
+  (* RISC5.v:101 — B[23:0] + {{4{off[19]}}, off} *)
+  let ben = p &: ~:q &: v &: ~:(i.stall_x) &: ~:stall_l1_v in
+  (* RISC5.v:104 — byte enable *)
+  let byte_lane = sel_bottom data_adr ~width:2 in
+  let load_byte =
+    mux
+      byte_lane
+      [ select i.inbus ~high:7 ~low:0
+      ; select i.inbus ~high:15 ~low:8
+      ; select i.inbus ~high:23 ~low:16
+      ; select i.inbus ~high:31 ~low:24
+      ]
+  in
+  let inbus1 = mux2 ben (zero 24 @: load_byte) i.inbus in
+  (* RISC5.v:128-130 *)
   (* ── Control unit: condition + next PC (RISC5.v:137-153) ── [cond] is the branch
      condition (the §7 cc table, negated by IR[27]); [pcmux0] sends a taken branch to its
      target (PC+1+disp relative, or R.c>>2 register) and falls through to nxpc otherwise.
@@ -233,11 +255,16 @@ let create (i : _ I.t) : _ O.t =
      RTI-restore in 4.5. *)
   let link = zero 8 @: nxpc @: zero 2 in
   (* RISC5.v:131 — {8'b0, nxpc, 2'b0}, the return byte address *)
-  let regmux = mux2 (br &: v) link res -- "regmux" in
+  let regmux = mux2 ldr inbus1 (mux2 (br &: v) link res) -- "regmux" in
   assign regmux_w regmux;
-  let regwr = ~:p &: ~:stall |: (br &: cond &: v &: ~:(i.stall_x)) in
-  (* RISC5.v:127 (partial) — a register op (not stalled), or a taken linking branch; the
-     LDR term joins at 4.4 *)
+  let regwr =
+    ~:p
+    &: ~:stall
+    |: (br &: cond &: v &: ~:(i.stall_x))
+    |: (ldr &: ~:(i.stall_x) &: ~:stall_l1_v)
+  in
+  (* RISC5.v:127 — a register op (not stalled), a taken linking branch, or a load (which
+     writes the fetched data on its [stallL0] cycle) *)
   assign regwr_w regwr;
   let nn = mux2 regwr (msb regmux) n_v in
   (* RISC5.v:159 *)
@@ -252,20 +279,27 @@ let create (i : _ I.t) : _ O.t =
   let start_adr = of_unsigned_int ~width:22 0x3F_F800 in
   (* RISC5.v:11, StartAdr *)
   let pcmux = mux2 ~:(i.rst_n) start_adr (mux2 stall pc_v pcmux0) in
-  (* ── Memory bus (RISC5.v:101-104) ── the control strobes are final; [adr]'s load/store
-     data-address branch ([stallL0 ? B+off]) and [outbus]'s store data arrive with the
-     load/store data path in 4.4, so [adr] is the fetch address and [outbus] is 0 for now. *)
-  let adr = pcmux @: zero 2 in
-  (* RISC5.v:101 (fetch path) *)
+  (* ── Memory bus (RISC5.v:101-104,132-134) ── [adr] is the data address while [stallL0],
+     else the fetch address; [outbus] is the store data — A for a word store, or A[7:0]
+     replicated into the addressed byte lane for a byte store. *)
+  let adr = mux2 stall_l0 data_adr (pcmux @: zero 2) in
+  (* RISC5.v:101 *)
   let rd = ldr &: ~:(i.stall_x) &: ~:stall_l1_v in
   (* RISC5.v:102 *)
   let wr = str &: ~:(i.stall_x) &: ~:stall_l1_v in
   (* RISC5.v:103 *)
-  let ben = p &: ~:q &: v &: ~:(i.stall_x) &: ~:stall_l1_v in
-  (* RISC5.v:104 *)
-  let outbus = a in
-  (* RISC5.v:132 — outbus = A (the ~ben case); the byte-lane mux for byte stores joins in
-     4.4 *)
+  let a8 = sel_bottom a ~width:8 in
+  let store_byte =
+    mux
+      byte_lane
+      [ zero 24 @: a8 (* lane 0 *)
+      ; zero 16 @: a8 @: zero 8 (* lane 1 *)
+      ; zero 8 @: a8 @: zero 16 (* lane 2 *)
+      ; a8 @: zero 24 (* lane 3 *)
+      ]
+  in
+  let outbus = mux2 ben store_byte a in
+  (* RISC5.v:132-134 *)
   (* ── Sequential update — the one always block (RISC5.v:171-183) ── this list grows to
      all twelve registers as the slices land; today the fetch-timing registers and flags. *)
   Always.(
@@ -351,9 +385,9 @@ let%expect_test "fetch spine — reset, PC march, load stall, external stall [wa
     │                  ││──────────────────────────────┘         └─────────┘         └───────── │
     │rd                ││                              ┌─────────┐                              │
     │                  ││──────────────────────────────┘         └───────────────────────────── │
-    │                  ││──────────┬─────────┬───────────────────┬───────────────────┬───────── │
-    │adr               ││ FFE000   │FFE004   │FFE008             │FFE00C             │FFE010    │
-    │                  ││──────────┴─────────┴───────────────────┴───────────────────┴───────── │
+    │                  ││──────────┬─────────┬─────────┬─────────┬───────────────────┬───────── │
+    │adr               ││ FFE000   │FFE004   │FFE008   │000000   │FFE00C             │FFE010    │
+    │                  ││──────────┴─────────┴─────────┴─────────┴───────────────────┴───────── │
     └──────────────────┘└───────────────────────────────────────────────────────────────────────┘
     |}]
 ;;
@@ -573,5 +607,79 @@ let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through)
     │regmux      ││ 00000404 │00000000 │00080000 │00000000   │
     │            ││──────────┴─────────┴─────────┴─────────  │
     └────────────┘└──────────────────────────────────────────┘
+    |}]
+;;
+
+(* 4.4 — a load/store is a 2-cycle access: the stallL0 cycle drives the data address B+off
+   and the rd/wr strobe (PC/IR frozen), then a bubble cycle. We poke a word load (R1 <-
+   inbus, the byte-lane select gives the whole word) and a byte store (outbus = R1[7:0]
+   replicated into the addressed lane). regmux is the load writeback; outbus the store
+   data. *)
+
+let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [waveform]" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let some = function
+    | Some x -> x
+    | None -> failwith "lookup"
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let mem = some (Cyclesim.lookup_mem_by_name sim "regfile") in
+  let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  inp.stall_x := Bits.of_unsigned_int ~width:1 0;
+  inp.codebus := Bits.of_unsigned_int ~width:32 0;
+  let access ~r1 ~r2 ~inbus ~instr =
+    Cyclesim.Memory.of_int mem ~address:1 r1;
+    Cyclesim.Memory.of_int mem ~address:2 r2;
+    inp.inbus := Bits.of_unsigned_int ~width:32 inbus;
+    Cyclesim.Reg.of_int (reg "ir") instr;
+    Cyclesim.Reg.of_int (reg "pc") 0x100;
+    Cyclesim.cycle sim;
+    Cyclesim.cycle sim
+  in
+  (* LDR word R1,[R2+0] (R2=0x1000, inbus=0xDEADBEEF); STR byte R1,[R2+2] (R1=0xAB,
+     R2=0x2000 -> outbus = 0xAB in lane 2 = 0x00AB0000) *)
+  access ~r1:0 ~r2:0x1000 ~inbus:0xDEAD_BEEF ~instr:0x8120_0000;
+  access ~r1:0xAB ~r2:0x2000 ~inbus:0 ~instr:0xB120_0002;
+  Waveform.print
+    ~display_rules:
+      D.
+        [ port_name_is ~wave_format:Wave_format.Hex "ir"
+        ; port_name_is ~wave_format:Wave_format.Hex "adr"
+        ; port_name_is ~wave_format:Wave_format.Bit "rd"
+        ; port_name_is ~wave_format:Wave_format.Bit "wr"
+        ; port_name_is ~wave_format:Wave_format.Bit "stall"
+        ; port_name_is ~wave_format:Wave_format.Hex "regmux"
+        ; port_name_is ~wave_format:Wave_format.Hex "outbus"
+        ]
+    ~wave_width:4
+    ~display_width:60
+    waves;
+  [%expect
+    {|
+    ┌Signals──────┐┌Waves──────────────────────────────────────┐
+    │             ││────────────────────┬───────────────────   │
+    │ir           ││ 81200000           │B1200002              │
+    │             ││────────────────────┴───────────────────   │
+    │             ││──────────┬─────────┬─────────┬─────────   │
+    │adr          ││ 001000   │000404   │002002   │000404      │
+    │             ││──────────┴─────────┴─────────┴─────────   │
+    │rd           ││──────────┐                                │
+    │             ││          └─────────────────────────────   │
+    │wr           ││                    ┌─────────┐            │
+    │             ││────────────────────┘         └─────────   │
+    │stall        ││──────────┐         ┌─────────┐            │
+    │             ││          └─────────┘         └─────────   │
+    │             ││────────────────────┬───────────────────   │
+    │regmux       ││ DEADBEEF           │80000053              │
+    │             ││────────────────────┴───────────────────   │
+    │             ││──────────┬─────────┬─────────┬─────────   │
+    │outbus       ││ 00000000 │DEADBEEF │00AB0000 │000000AB    │
+    │             ││──────────┴─────────┴─────────┴─────────   │
+    └─────────────┘└───────────────────────────────────────────┘
     |}]
 ;;
