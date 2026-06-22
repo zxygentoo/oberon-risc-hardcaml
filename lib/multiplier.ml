@@ -3,7 +3,7 @@
    Implementation note. This is a *sequential* unit, so per AGENT.md §2 we mirror
    RISC5.v's skeleton exactly — which signals are registered and the state/stall timing
    are the spec the oracle checks cycle-by-cycle and synthesis preserves. The original RTL
-   is [po/verilog/src/Multiplier.v] (25 lines); each [create] line below is tagged with
+   is [_po/verilog/src/Multiplier.v] (25 lines); each [create] line below is tagged with
    the wire it ports (formatting these as verbatim multi-line code in a comment doesn't
    survive ocamlformat, so they stay inline).
 

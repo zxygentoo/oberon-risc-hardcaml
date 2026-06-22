@@ -7,6 +7,11 @@ _build/
 # Local opam switch
 _opam/
 
+# Original Project Oberon sources (Verilog, PDFs, boot ROM): not vendored (licensing). The
+# co-sim fetches the reference Verilog on demand into _po/ and checksum-verifies it; see
+# test/cosim/rtl-sources.txt. The _ prefix marks it local/generated, like _build.
+/_po/
+
 # Editor / OS cruft
 *~
 *.swp

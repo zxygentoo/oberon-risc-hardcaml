@@ -3,8 +3,8 @@
    Implementation note. Sequential unit → mirror RISC5.v's skeleton exactly (AGENT.md §2);
    this is the Multiplier's twin — identical 6-bit [S] counter, [stall = run & ~(S==33)],
    run-gated with no reset, 33 cycles, and a dual-role 64-bit register [RQ]. Original RTL
-   is [po/verilog/src/Divider.v] (28 lines); each [create] line is tagged with the wire it
-   ports.
+   is [_po/verilog/src/Divider.v] (28 lines); each [create] line is tagged with the wire
+   it ports.
 
    [RQ] holds [remainder | quotient] (high 32 | low 32). Load (S=0) puts [|x|] in the low
    half and 0 in the high. Each step is one round of *restoring division*: shift [{R,Q}]

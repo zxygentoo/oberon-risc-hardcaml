@@ -1,9 +1,9 @@
 ; RTL-fidelity co-sim helper (Phase-8-style preview, OPT-IN — not a dune test).
-; dump_fp_adder runs the Hardcaml Fp_adder over a stimulus set and dumps its outputs; the
-; Verilator harness (fp_adder.cpp, driven by run.sh) replays them through the reference
-; po/verilog/src/FPAdder.v and asserts RTL z == port z. The dumper builds under `dune build
+; dump_fp <unit> runs the named Hardcaml FP unit over a stimulus set and dumps its outputs; the
+; Verilator harness (<unit>.cpp, driven by run.sh) replays them through the reference
+; _po/verilog/src/<Unit>.v and asserts RTL z == port z. The dumper builds under `dune build
 ; @check` (Verilator-free, so it can't silently rot); the actual cross-check is run.sh.
 
 (executable
- (name dump_fp_adder)
+ (name dump_fp)
  (libraries risc5 hardcaml))

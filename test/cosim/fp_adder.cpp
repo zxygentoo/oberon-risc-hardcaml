@@ -1,5 +1,5 @@
-// RTL-fidelity co-sim for Fp_adder: drive the reference po/verilog/src/FPAdder.v through
-// Verilator on each stimulus dumped by test/cosim/dump_fp_adder, and assert RTL z == port z.
+// RTL-fidelity co-sim for Fp_adder: drive the reference _po/verilog/src/FPAdder.v through
+// Verilator on each stimulus dumped by test/cosim/dump_fp, and assert RTL z == port z.
 // Exit 0 iff the Hardcaml port is bit-exact to FPAdder.v over the whole stimulus set.
 //   usage:  cosim <port_dump_path>          (lines: "x y u v port_z")
 // Driven by test/cosim/run.sh; see test/cosim/README.md.
