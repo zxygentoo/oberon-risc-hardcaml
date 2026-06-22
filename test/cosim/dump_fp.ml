@@ -77,8 +77,19 @@ let mul_driver () =
   { tag = "M"; has_uv = false; run }
 ;;
 
-(* fp_divider's driver slots in here once Risc5.Fp_divider lands — identical to
-   [mul_driver] but over Fp_divider and tag "D". *)
+let div_driver () =
+  let module D = Risc5.Fp_divider in
+  let module Sim = Cyclesim.With_interface (D.I) (D.O) in
+  let sim = Sim.create D.create in
+  let inp = (Cyclesim.inputs sim : _ D.I.t)
+  and outp = (Cyclesim.outputs sim : _ D.O.t) in
+  let run ~u:_ ~v:_ ~x ~y =
+    set inp.x x;
+    set inp.y y;
+    drive sim ~run:inp.run ~stall:outp.stall ~z:outp.z
+  in
+  { tag = "D"; has_uv = false; run }
+;;
 
 let () =
   let unit_name = Sys.argv.(1) in
@@ -87,6 +98,7 @@ let () =
     match unit_name with
     | "fp_adder" -> adder_driver ()
     | "fp_multiplier" -> mul_driver ()
+    | "fp_divider" -> div_driver ()
     | other -> failwith (Printf.sprintf "dump_fp: unknown unit %S" other)
   in
   let n = ref 0 in

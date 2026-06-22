@@ -18,7 +18,7 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 
 ```sh
 bash test/cosim/run.sh                  # all FP units
-bash test/cosim/run.sh fp_multiplier    # just one (fp_adder | fp_multiplier)
+bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider)
 ```
 
 Ensures the reference RTL is present (fetching it on first run), builds the OCaml dumper, then
@@ -50,7 +50,7 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 The OCaml dumper builds under `dune build @check` (Verilator-free), so it can't silently rot
 even though the cross-check itself only runs via `run.sh`.
 
-## Adding another unit (FPDiv / core)
+## Adding another unit (the CPU core, peripherals)
 
 The dumper is shared, so adding a stall-based unit is three small steps:
 

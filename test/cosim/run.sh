@@ -7,7 +7,7 @@
 # checksum-verified against test/cosim/rtl-sources.txt — so a fresh clone with verilator just
 # works. See test/cosim/README.md.
 #
-#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | all]   (default: all)
+#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | all]  (default: all)
 set -euo pipefail
 cd "$(dirname "$0")/../.." # repo root
 eval "$(opam env --switch 5.2.0+ox --set-switch)"
@@ -84,8 +84,11 @@ run_one() {
     fp_multiplier)
       cosim_unit fp_multiplier FPMultiplier.v FPMultiplier test/cosim/fp_multiplier.cpp
       ;;
+    fp_divider)
+      cosim_unit fp_divider FPDivider.v FPDivider test/cosim/fp_divider.cpp
+      ;;
     *)
-      echo "unknown unit: $1 (expected fp_adder | fp_multiplier | all)" >&2
+      echo "unknown unit: $1 (expected fp_adder | fp_multiplier | fp_divider | all)" >&2
       exit 2
       ;;
   esac
@@ -94,7 +97,7 @@ run_one() {
 ensure_rtl
 unit="${1:-all}"
 if [ "$unit" = all ]; then
-  for u in fp_adder fp_multiplier; do run_one "$u"; done
+  for u in fp_adder fp_multiplier fp_divider; do run_one "$u"; done
 else
   run_one "$unit"
 fi
