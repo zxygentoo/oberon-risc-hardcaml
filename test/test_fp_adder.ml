@@ -1,8 +1,8 @@
 (* Phase 3b — FPAdder value-correctness, over the domain the compiler actually emits (the
    always-on, Verilator-free behavioural layer; the RTL-fidelity co-sim in test/cosim/ is
-   the separate, opt-in fidelity oracle — AGENT.md §6). Shares the sim-drive/loader/RNG
-   with the mul/div replays via [Fp_replay], but keeps its own steering: unlike FML/FDV,
-   the adder has a real emulator-vs-RTL divergence, so it cannot use
+   the separate, opt-in fidelity oracle — AGENT.md §6). Shares the sim-drive/loader with
+   the mul/div replays via [Fp_replay], but keeps its own steering: unlike FML/FDV, the
+   adder has a real emulator-vs-RTL divergence, so it cannot use
    [Fp_replay.simple_value_test].
 
    The oracle is the frozen fp_vectors.txt (C-generated; Oracle.Fp is bit-identical to
@@ -32,19 +32,46 @@ let magic = 0x4B00_0000
    FLT/FLOOR, nor u=v=1. *)
 let reachable ~u ~v ~y = (u = 0 && v = 0) || (u + v = 1 && y = magic)
 
-let () =
+(* the FLT/FLOOR edge inputs checked deterministically before the random fuzz: small ints,
+   mantissa/exponent boundaries, and a few known float bit-patterns *)
+let edges =
+  [ 0
+  ; 1
+  ; 2
+  ; 5
+  ; 0x100
+  ; 0x7F_FFFF
+  ; 0x80_0000
+  ; 0xFF_FFFF
+  ; 0x7FFF_FFFF
+  ; 0x8000_0000
+  ; 0xFFFF_FFFF
+  ; 0x3F80_0000
+  ; 0x4049_0FDB
+  ; 0xC000_0000
+  ; magic
+  ; 0x7F80_0000
+  ]
+;;
+
+(* build the [run ~u ~v ~x ~y] driver over a fresh FPAdder sim (the run->drain->read
+   protocol from Fp_replay) *)
+let make_run () =
   let module Sim = Cyclesim.With_interface (Fp.I) (Fp.O) in
   let sim = Sim.create Fp.create in
   let inp = (Cyclesim.inputs sim : _ Fp.I.t)
   and outp = (Cyclesim.outputs sim : _ Fp.O.t) in
-  let run ~u ~v ~x ~y =
+  fun ~u ~v ~x ~y ->
     Fp_replay.set inp.u u;
     Fp_replay.set inp.v v;
     Fp_replay.set inp.x x;
     Fp_replay.set inp.y y;
     Fp_replay.drive sim ~run:inp.run ~stall:outp.stall ~z:outp.z
-  in
-  (* 1. Frozen vectors, reachable domain only. *)
+;;
+
+(* replay the frozen A-vectors over the compiler-reachable domain only. Prints a summary;
+   returns the mismatch count. *)
+let replay_reachable run =
   let fails = ref 0
   and replayed = ref 0
   and skipped = ref 0
@@ -82,10 +109,14 @@ let () =
     (!replayed - !fails)
     !replayed
     !skipped;
-  (* 2. Fuzz the reachable FLT/FLOOR domain (y=magic) against Oracle.Fp directly — the
-     frozen set samples only ~24 x each, and FLT's real domain is 32-bit integers. Fixed
-     seed. *)
-  let rng = Random.State.make [| 0x3b_07 |] in
+  !fails
+;;
+
+(* fuzz the reachable FLT/FLOOR domain (y=magic) against Oracle.Fp — the frozen set
+   samples only ~24 x each, and FLT's real domain is 32-bit integers. The [edges] run
+   deterministically; the random pass is QCheck, each x checked as both FLT and FLOOR.
+   Prints a summary; returns the edge mismatch count (the QCheck pass raises on failure). *)
+let fuzz_conversions run =
   let conv_fails = ref 0
   and conv_n = ref 0 in
   let check_conv ~u ~v x =
@@ -97,40 +128,32 @@ let () =
       incr conv_fails;
       if !conv_fails <= 10
       then
-        Printf.printf "  fuzz FAIL u=%d v=%d x=%08X: got %08X want %08X\n" u v x got want)
-  in
-  let edges =
-    [ 0
-    ; 1
-    ; 2
-    ; 5
-    ; 0x100
-    ; 0x7F_FFFF
-    ; 0x80_0000
-    ; 0xFF_FFFF
-    ; 0x7FFF_FFFF
-    ; 0x8000_0000
-    ; 0xFFFF_FFFF
-    ; 0x3F80_0000
-    ; 0x4049_0FDB
-    ; 0xC000_0000
-    ; magic
-    ; 0x7F80_0000
-    ]
+        Printf.printf "  edge FAIL u=%d v=%d x=%08X: got %08X want %08X\n" u v x got want)
   in
   List.iter
     (fun x ->
       check_conv ~u:1 ~v:0 x;
       check_conv ~u:0 ~v:1 x)
     edges;
-  for _ = 1 to 5000 do
-    let x = Fp_replay.rand32 rng in
-    check_conv ~u:1 ~v:0 x;
-    check_conv ~u:0 ~v:1 x
-  done;
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:5000
+       ~name:"fp-adder FLT/FLOOR fuzz"
+       (QCheck.set_print (fun x -> Printf.sprintf "x=%08lx" x) QCheck.int32)
+       (fun x32 ->
+         let x = Fp_replay.u32 x32 in
+         run ~u:1 ~v:0 ~x ~y:magic = Oracle.Fp.fp_add x magic true false
+         && run ~u:0 ~v:1 ~x ~y:magic = Oracle.Fp.fp_add x magic false true));
   Printf.printf
-    "fp-adder fuzz: %d reachable FLT/FLOOR cases vs Oracle.Fp, %d fail\n"
+    "fp-adder fuzz: %d edge + 5000 QCheck FLT/FLOOR cases vs Oracle.Fp, %d edge fail\n"
     !conv_n
     !conv_fails;
-  if !fails > 0 || !conv_fails > 0 then exit 1
+  !conv_fails
+;;
+
+let () =
+  let run = make_run () in
+  let frozen_fails = replay_reachable run in
+  let edge_fails = fuzz_conversions run in
+  if frozen_fails > 0 || edge_fails > 0 then exit 1
 ;;

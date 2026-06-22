@@ -1,0 +1,55 @@
+(** [Risc5_core] — the RISC5 CPU core ([RISC5.v]): the single-issue, mostly-one-cycle
+    processor at the heart of the machine (AGENT.md §2's "crown jewel").
+
+    The whole CPU is a handful of registers — [PC], [IR], the flags [N]/[Z]/[C]/[OV], the
+    aux register [H], the load/store [stallL1], and the interrupt state — updated in a
+    single [always @(posedge clk)] block, wrapped in a cloud of combinational logic that
+    computes their next values. Per AGENT.md §2 we mirror that sequential skeleton exactly
+    (the registers and their stall/interrupt timing are the spec the oracle pins to and
+    synthesis preserves) and are idiomatic Hardcaml in the combinational datapath.
+
+    The datapath is the classic "compute everything, then mux": operands [B]/[C1] fan out
+    to all the arithmetic units ({!Alu}, the shifters, {!Multiplier}/{!Divider}, the FP
+    units) every cycle, and the result mux selects one by the [op] field. A multi-cycle
+    unit holds the core by asserting [stall], which freezes [PC] and [IR] (re-presenting
+    the same instruction) and gates the register write until the final cycle.
+
+    The core is assembled across Phase 4 in vertical slices, each ending at a green
+    instruction-lockstep milestone against [Oracle.Risc] (AGENT.md §6): the fetch/decode
+    spine, then register ALU ops, the multi-cycle units, branches, load/store, and
+    interrupts. The ports below are the final SoC-facing interface throughout. *)
+
+open Hardcaml
+
+module I : sig
+  type 'a t =
+    { clock : 'a
+    ; rst_n : 'a
+    (** reset ([RISC5.v]'s [rst]), active LOW — pulls [PC] to [StartAdr] while held at 0.
+        The [_n] spelling is also load-bearing: a port named exactly [rst]/[reset]/[clear]
+        is reserved by the simulation's clock/reset domain, which silently mis-traces it
+        in waveforms (the logic is unaffected; the rendered row lies). *)
+    ; irq : 'a (** interrupt request (level; edge-detected internally) *)
+    ; stall_x : 'a (** external stall ([stallX]) — the video controller's DMA hold *)
+    ; inbus : 'a (** data read bus — [Mem]/MMIO read data for loads *)
+    ; codebus : 'a (** instruction fetch bus (= [Mem[adr]]) *)
+    }
+  [@@deriving hardcaml]
+end
+
+module O : sig
+  type 'a t =
+    { adr : 'a
+    (** 24-bit byte address: the instruction fetch address, or a load/store data address
+        while [stallL0] *)
+    ; rd : 'a (** read strobe (load cycle) *)
+    ; wr : 'a (** write strobe (store cycle) *)
+    ; ben : 'a (** byte enable — byte vs word access *)
+    ; outbus : 'a (** data write bus — store data *)
+    }
+  [@@deriving hardcaml]
+end
+
+(** [create] builds the CPU core: the state registers updated in one synchronous block,
+    and the combinational decode / datapath / control logic that feeds them. *)
+val create : Signal.t I.t -> Signal.t O.t
