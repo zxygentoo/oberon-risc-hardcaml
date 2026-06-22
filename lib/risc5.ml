@@ -6,3 +6,4 @@
     the register file, the CPU core, the SoC). *)
 
 module Left_shifter = Left_shifter
+module Fp_adder = Fp_adder
