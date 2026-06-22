@@ -49,6 +49,10 @@ let create (i : _ I.t) : _ O.t =
   let reads =
     multiport_memory
       16
+      (* named so a simulation can peek/poke the array by name
+         (Cyclesim.lookup_mem_by_name "regfile") for differential testing; a name is
+         metadata, not behaviour. *)
+      ~name:"regfile"
       ~initialize_to:(Array.init 16 ~f:(fun _ -> Bits.of_unsigned_int ~width:32 0))
       ~write_ports:[| write_port |]
       ~read_addresses:[| i.rno0; i.rno1; i.rno2 |]
