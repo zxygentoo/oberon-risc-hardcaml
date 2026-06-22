@@ -41,10 +41,12 @@ Concretely, as the agent on this project you should:
 
 ## 1. What we're porting (the sources)
 
-Everything lives under `po/` (originals) and the three sibling emulator repos.
+Everything lives under `_po/` (originals, git-ignored; the co-sim fetches the Verilog on
+demand — §6) and the three sibling emulator repos.
 
 ### The Verilog — this is the spec
-`po/verilog/src/` (extracted from `po/OStationVerilog.zip`, rev. 2015/2018):
+`_po/verilog/src/` (from `OStationVerilog.zip`, rev. 2015/2018 — fetched + checksum-pinned by
+`test/cosim/rtl-sources.txt`):
 
 | File | What it is | Notes |
 |---|---|---|
@@ -63,12 +65,12 @@ Everything lives under `po/` (originals) and the three sibling emulator repos.
 | `PS2.v` / `MousePM.v` | PS/2 keyboard / PS/2 mouse | |
 | `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 DDR `.xdc` in Phase 7 |
 
-Boot ROM image: `po/verilog/prom.mem` (hex) + `po/verilog/prom.bmm`.
+Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
 
 ### The docs
-- `po/RISC-Arch.pdf` (3 pp) — **ISA encoding** (the cheat sheet in §7 is distilled from this).
-- `po/RISC.pdf` (24 pp) — Wirth's detailed design writeup.
-- `po/PO.Computer.pdf` (21 pp) — the board/SoC overview.
+- `_po/RISC-Arch.pdf` (3 pp) — **ISA encoding** (the cheat sheet in §7 is distilled from this).
+- `_po/RISC.pdf` (24 pp) — Wirth's detailed design writeup.
+- `_po/PO.Computer.pdf` (21 pp) — the board/SoC overview.
 
 ### The reference emulators (oracles & cross-checks) — sibling repos
 - `../oberon-risc-emu-ocaml/` — **OCaml emulator; our primary golden model.** Library
@@ -173,7 +175,7 @@ Vivado-specific layer.
 | **1** ✅ | `LeftShifter`, `RightShifter`, ALU logic/adder + C/V flags | unit specs / qcheck |
 | **2** ✅ | Register file (3R/1W async-read array) | unit |
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
-| **3b** | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | frozen `fp_vectors.txt` |
+| **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
 | **4** | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8) |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual |
@@ -194,15 +196,38 @@ lockstep at the instruction level — not against `RISC5.v` timing. Work from a 
 
 Each layer's oracle already exists next door — this is our biggest leverage.
 
+**Two oracles, split by the question they answer.** The OCaml `risc_core` emulator is the
+*system-state* oracle: bit-exact architectural state (`pc`/`r[]`/`H`/`flags`) at *instruction*
+granularity (its ms-clock is injected, not cycle-derived — it sees no wire and no cycle). Its
+home is whole-machine lockstep and boot (layers 4–5). The **original Verilog itself**, run
+through **Verilator** (our `test/cosim/`), is the *wire-state* oracle: any signal at *cycle*
+granularity, against the spec directly — the §2 fidelity authority (layer 3, exhaustively at
+layer 6). They answer orthogonal questions — *is the result correct?* vs *did we copy the
+spec?* — and cross-check: **every §8 divergence is the emulator differing from `RISC5.v`, and
+the co-sim is what proves our port sides with the RTL.** (There is no Verilog→Hardcaml *source*
+translator; `hardcaml_of_verilog` would import the `.v` as an in-process circuit but is
+unbuildable on the preview — §9 — so the co-sim runs the `.v` out-of-process and compares
+dumps, fine for a periodic fidelity check.)
+
 1. **Unit specs** — exhaustive or `qcheck` for combinational blocks (shifters, ALU).
-2. **FP vectors** — replay `fp_vectors.txt` through the FP units.
-3. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
+2. **FP vectors** — replay `fp_vectors.txt` through the FP units over the *compiler-reachable*
+   domain (FLT/FLOOR always carry the fixed 2nd operand `0x4B000000`; steer around the
+   unreachable forms where the C-derived oracle diverges from `RISC5.v` — see §8), plus a fuzz
+   of the reachable conversion domain against `Oracle.Fp`.
+3. **RTL co-sim (fidelity)** — our `test/cosim/`: dump the Hardcaml unit's outputs over a
+   stimulus set, replay them through the reference `.v` under Verilator, assert bit-exact.
+   Opt-in (needs Verilator; outside `dune runtest`). The reference `.v` is not vendored — the
+   harness fetches it on demand into `_po/`, checksum-pinned (`test/cosim/rtl-sources.txt`). The
+   OCaml dumper builds under `@check` so it can't rot. The simulation preview of layer 6: one
+   shared `dump_fp.ml` over all units + a per-unit `<unit>.cpp`.
+4. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
    compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
-   `qcheck`-fuzzed, exactly like the OCaml repo's `test/cosim/test_cosim_cpu.ml`.
-4. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
-   cycles, compare CPU state / framebuffer. Use a fast sim backend (`hardcaml_c`).
-5. *(stretch)* **Formal** — combinational/bounded equivalence between our port and the
-   imported `RISC5.v` via `hardcaml_verify`.
+   `qcheck`-fuzzed, like the OCaml repo's `test/cosim/test_cosim_cpu.ml` (steering §8).
+5. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
+   cycles, compare CPU state / framebuffer. Fast backend: `hardcaml_c` or `hardcaml_verilator`
+   (Verilator-backed `Cyclesim.t`, clean deps — §9).
+6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
+   `hardcaml_verify` (installed); the exhaustive form of layer 3.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
@@ -272,6 +297,10 @@ Reset (`rst` active-**low**) jumps to `StartAdr = 0x3FF800` (word addr); ROM dec
 
 ## 8. Known divergences & gotchas
 
+*These are all emulator-vs-`RISC5.v` divergences — the port follows the hardware (§2), and the
+RTL co-sim (§6, `test/cosim/`) proves it. For OCaml lockstep the fuzzer steers around them;
+against the RTL itself they can't arise.*
+
 - **The flags/ID byte (resolved — not a steer-around).** `MOV'` flags-read returns
   `{N,Z,C,OV} | 0x53` — our `RISC5.v:113` emits low byte **`0x53`** (`{N,Z,C,OV,20'b0,8'h53}`).
   Our **OCaml oracle and the Rust port now both follow the hardware** and emit `0x53` (OCaml
@@ -292,6 +321,15 @@ Reset (`rst` active-**low**) jumps to `StartAdr = 0x3FF800` (word addr); ROM dec
   result) always agree; only `H` differs, and only when `C1[31]=1`. We follow the hardware (§2),
   so the fuzzer must steer around `C1[31]=1` in unsigned-`MUL` lockstep. (Reachable only via an
   `H`-read after `MUL'`.)
+- **FP FLT/FLOOR denormalize sign-fill (a co-sim non-issue; an FP-vector steer-around).**
+  `FPAdder.v` fills its denormalize right-shift with the operand *sign bit*, while the C/OCaml
+  model arithmetic-shifts the two's-complement *value* — they differ only for a
+  negative-zero-mantissa operand being *shifted*, which surfaces only in FLT/FLOOR (FAD keeps
+  its hidden bit, so it's immune; null-operand checks mask the rest). Unreachable in compiled
+  code: the compiler (`ORG.Mod` `Float`/`Floor`) fixes the FLT/FLOOR 2nd operand to `0x4B000000`
+  (2^23; exponent 150, positive), so no divergent shift occurs. Our port follows the hardware
+  and is verified bit-exact to `FPAdder.v` over 26k stimuli (`test/cosim/`); the FP-vector
+  replay (§6) steers around the non-`0x4B000000` forms.
 - **Addressing.** FPGA uses a 20-bit address bus (out-of-range aliases into 1 MB); emulators
   decode 32 bits. Identical for well-behaved software.
 - **Register file timing:** **async read** (combinational `dout` from the read address),
@@ -321,8 +359,8 @@ oberon-risc-hardcaml/
                               (data_only_dirs: dune ignores its own project files)
     oracle/               ← compiles the submodule's lib/ into library `oracle`
                             (Oracle.Risc, Oracle.Fp, Oracle.Boot_rom, …)
-  po/                     ← original sources, git-ignored: verilog/src/*.v,
-                            verilog/prom.mem, *.pdf
+  _po/                    ← original sources, git-ignored; the co-sim fetches
+                            verilog/src/*.v on demand. prom.mem + *.pdf placed locally
 ```
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
@@ -340,8 +378,12 @@ then depend on it directly and delete the wrapper. FP vectors
 version). We track Jane Street's OxCaml *preview channel* on purpose: **`docs.hardcaml.org`
 documents exactly this version** (built from the `with-extensions` branch); vanilla opam tops
 out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~preview.130.91+190`
-move forward under us). `hardcaml_c` / `hardcaml_of_verilog` / `hardcaml_verify` get added on
-ox when their phases arrive (confirm availability then).
+move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardcaml_of_verilog`
+(yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
+OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
+**Verilator** out-of-process (`test/cosim/`, §6). `hardcaml_verilator` (Verilator-backed
+`Cyclesim.t`; deps `hardcaml`+`ctypes`, no `jsonaf` → installs clean) is the planned Phase-5
+fast-sim backend, not a Verilog importer. `hardcaml_c` when Phase 5 arrives.
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).

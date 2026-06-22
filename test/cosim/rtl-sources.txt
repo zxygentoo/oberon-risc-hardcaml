@@ -1,0 +1,19 @@
+# Reference RTL provenance for the Verilator co-sim (test/cosim/run.sh).
+#
+# The original Project Oberon / OberonStation Verilog is NOT vendored into this repo (its
+# licensing is unclear and we prefer not to redistribute it). Instead run.sh fetches it on
+# demand into _po/ and verifies it against the pins below — so a fresh clone with `verilator`
+# installed Just Works, while we ship only these facts, never the copyrighted Verilog.
+#
+# A pin mismatch means upstream drifted from the exact revision our port was verified against
+# (AGENT.md §8 cites specific RTL line numbers); the co-sim then refuses rather than compare
+# against unknown RTL. Updating to a newer upstream revision is a deliberate edit of this file.
+#
+# Source : N. Wirth / P. Reed, "Project Oberon (2013) for OberonStation".
+# url    http://www.projectoberon.net/zip/OStationVerilog.zip
+# zip256 400e56391c2faf056c30f29919e22a1aabb404492d50d71893fabec42b2b9a25
+#
+# Per-file pins below double as the `sha256sum -c` gate (paths repo-root-relative):
+75529e017b9d3111bb5d8cd7b21d23bc6a525ef0949f89bdad780626b32b314b  _po/verilog/src/FPAdder.v
+66eda46ed646a0022d9d181568b93fbe7a35f721962ddcd4e33bfc655be73d4a  _po/verilog/src/FPMultiplier.v
+8875453835ca18cf7510ebb9195607283a2ed29087918d4cb842ea6570dc868a  _po/verilog/src/FPDivider.v

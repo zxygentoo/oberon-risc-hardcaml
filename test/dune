@@ -4,8 +4,10 @@
 ;  - hardcaml     : build + simulate a circuit
 ;  - hardcaml_waveterm : render an ASCII waveform of the counter smoke
 
-(test
- (name test_scaffold)
+(tests
+ (names test_scaffold test_fp_adder test_fp_multiplier test_fp_divider)
  (libraries risc5 oracle hardcaml hardcaml_waveterm)
+ ; Phase 3b: the frozen FP vectors (vendored, data-only) feed test_fp_adder's replay.
+ (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
  (preprocess
   (pps ppx_hardcaml)))
