@@ -207,6 +207,64 @@ let arbitrary =
        QCheck.int32)
 ;;
 
+(* ─── Generating a random branch case ─── *)
+
+(* decode a raw branch draw into a [case]. A branch is p=q=1; we keep the target in the
+   in-range domain (§8 addressing): the register target R[irc] < 1 MB (so R[irc]>>2 stays
+   in the oracle's RAM and within the core's 22-bit PC) and the relative disp small (so
+   PC+1+disp neither wraps nor branches "into the void"). Register branches force
+   IR[5:4]=0 to avoid the interrupt forms RTI/STI/CLI (4.5). [op]=0 selects the
+   single-cycle path. *)
+let decode_branch (bctrl, target32, disp, flags4) =
+  let u = (bctrl lsr 29) land 1 in
+  let irc = bctrl land 0xF in
+  let ctrl = bctrl land 0x3F00_0000 (* u, v, neg, cc — bits 29..24 *) in
+  let instr =
+    if u = 1
+    then
+      (* relative: a sign-extended displacement. RISC5.v reads IR[21:0] (22-bit), the
+         oracle reads IR[23:0] (24-bit); they agree only when IR[23:22] = sign(IR[21]), so
+         we write the small disp across all 24 bits (the compiler likewise emits
+         sign-extended offsets) *)
+      0xC000_0000 lor ctrl lor (disp land 0xFF_FFFF)
+    else 0xC000_0000 lor ctrl lor irc (* register: irc in IR[3:0], IR[5:4]=0 *)
+  in
+  let regs = Array.make 16 0 in
+  regs.(irc) <- u32 target32 land 0xF_FFFF;
+  { regs
+  ; op = 0
+  ; instr
+  ; n = (flags4 lsr 1) land 1
+  ; z = flags4 land 1
+  ; c = (flags4 lsr 2) land 1
+  ; ov = (flags4 lsr 3) land 1
+  ; h = 0
+  }
+;;
+
+let arbitrary_branch =
+  QCheck.set_print
+    (fun (bctrl, target, disp, f) ->
+      Printf.sprintf "bctrl=%08x target=%08lx disp=%d flags=%x" bctrl target disp f)
+    (QCheck.tup4
+       (QCheck.int_bound 0x3FFF_FFFF)
+       QCheck.int32
+       (QCheck.int_range (-0x800) 0x7FF)
+       (QCheck.int_bound 15))
+;;
+
+(* register branch-and-link through R15 (u=0, v=1, irc=15): the RTL reads the OLD R15
+   (async regfile read) as the target while linking the return address to R15 (sync write,
+   same edge), so it jumps to the old R15; the oracle links first then reads the new R15,
+   jumping to the link. We follow the hardware. Unreachable — the compiler never calls
+   through the link register. *)
+let steered_branch { instr; _ } =
+  let u = (instr lsr 29) land 1
+  and v = (instr lsr 28) land 1
+  and irc = instr land 0xF in
+  u = 0 && v = 1 && irc = 15
+;;
+
 let () =
   let t = create () in
   (* int32 boundary coverage + shrinking minimizes a failure to a small instruction +
@@ -221,5 +279,19 @@ let () =
           let case = decode raw in
           QCheck.assume (not (steered case));
           agree t case));
-  Printf.printf "cpu lockstep (register ops 0..15): 50000 QCheck cases, passed\n"
+  Printf.printf "cpu lockstep (register ops 0..15): 50000 QCheck cases, passed\n";
+  (* branches reuse the same harness — no flags/regs written except a taken link, PC takes
+     the target. The in-range domain and IR[5:4]=0 are baked into [decode_branch]; the
+     lone §8 corner (BL through R15) is steered with [assume]. *)
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:50_000
+       ~max_gen:55_000
+       ~name:"cpu branch lockstep (taken/not-taken, relative/register, link)"
+       arbitrary_branch
+       (fun raw ->
+          let case = decode_branch raw in
+          QCheck.assume (not (steered_branch case));
+          agree t case));
+  Printf.printf "cpu lockstep (branches): 50000 QCheck cases, passed\n"
 ;;

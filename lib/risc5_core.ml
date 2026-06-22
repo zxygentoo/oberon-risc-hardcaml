@@ -77,6 +77,11 @@ let create (i : _ I.t) : _ O.t =
   let op = select ir_v ~high:19 ~low:16 in
   let irc = select ir_v ~high:3 ~low:0 in
   let imm = select ir_v ~high:15 ~low:0 in
+  let cc = select ir_v ~high:26 ~low:24 in
+  (* branch fields: [cc] selects the condition, [IR[27]] negates it, [disp] is the
+     relative target displacement *)
+  let neg = select ir_v ~high:27 ~low:27 in
+  let disp = select ir_v ~high:21 ~low:0 in
   let ldr = p &: ~:q &: ~:u in
   (* RISC5.v:93 *)
   let str = p &: ~:q &: u in
@@ -194,16 +199,45 @@ let create (i : _ I.t) : _ O.t =
     stall_l0 |: i.stall_x |: stall_m |: stall_d |: stall_fa |: stall_fm |: stall_fd
   in
   let stall = stall_all -- "stall" in
-  (* ── Writeback + flags (RISC5.v:127,131,155-166) ── [regmux] is the value written back
-     (the ALU/unit result; the LDR/BR forms join at 4.3/4.4). [regwr] is now resolvable
-     ([stall] exists). N/Z derive from the written value, C/OV from the ALU's arithmetic
-     flags; the RTI-restore term joins with interrupts in 4.5. *)
-  let regmux = res -- "regmux" in
-  (* RISC5.v:131 *)
+  (* ── Control unit: condition + next PC (RISC5.v:137-153) ── [cond] is the branch
+     condition (the §7 cc table, negated by IR[27]); [pcmux0] sends a taken branch to its
+     target (PC+1+disp relative, or R.c>>2 register) and falls through to nxpc otherwise.
+     The intAck/RTI terms of [pcmux] layer in with interrupts (4.5). *)
+  let nxpc = pc_v +:. 1 in
+  (* RISC5.v:138 *)
+  let s = n_v ^: ov_v in
+  (* RISC5.v:137 — S = N ^ OV *)
+  let cond =
+    neg
+    ^: mux
+         cc
+         [ n_v (* 0 MI/PL *)
+         ; z_v (* 1 EQ/NE *)
+         ; c_v (* 2 CS/CC *)
+         ; ov_v (* 3 VS/VC *)
+         ; c_v |: z_v (* 4 LS/HI *)
+         ; s (* 5 LT/GE *)
+         ; s |: z_v (* 6 LE/GT *)
+         ; vdd (* 7 T/F *)
+         ]
+  in
+  (* RISC5.v:139-147 *)
+  let pcmux0 =
+    mux2 (br &: cond) (mux2 u (nxpc +: disp) (select c0 ~high:23 ~low:2)) nxpc
+  in
+  (* RISC5.v:153 *)
+  (* ── Writeback + flags (RISC5.v:127,131,155-166) ── [regmux] is the written-back value:
+     a taken linking branch ([BR & v]) writes the return byte-address [{PC+1, 2'b0}] to
+     R15 (= [ira0]); otherwise the ALU/unit result. (The LDR form joins at 4.4.) [regwr]
+     gains the branch-link enable. N/Z from the written value, C/OV from the ALU;
+     RTI-restore in 4.5. *)
+  let link = zero 8 @: nxpc @: zero 2 in
+  (* RISC5.v:131 — {8'b0, nxpc, 2'b0}, the return byte address *)
+  let regmux = mux2 (br &: v) link res -- "regmux" in
   assign regmux_w regmux;
-  let regwr = ~:p &: ~:stall in
-  (* RISC5.v:127 (partial) — a register op writes when not stalled (= on a unit's last
-     cycle); LDR/BR terms at 4.3/4.4 *)
+  let regwr = ~:p &: ~:stall |: (br &: cond &: v &: ~:(i.stall_x)) in
+  (* RISC5.v:127 (partial) — a register op (not stalled), or a taken linking branch; the
+     LDR term joins at 4.4 *)
   assign regwr_w regwr;
   let nn = mux2 regwr (msb regmux) n_v in
   (* RISC5.v:159 *)
@@ -215,13 +249,9 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:164-166 *)
   let h_next = mux2 mul (select product ~high:63 ~low:32) (mux2 div remainder h_v) in
   (* RISC5.v:176 — H <= MUL ? product[63:32] : DIV ? remainder : H *)
-  (* ── Control unit: next PC (RISC5.v:138, 150-153) ── 4.0 keeps the reset/stall/step
-     ladder; intAck, RTI, and the branch target layer in at 4.3 (branches) / 4.5 (ints). *)
-  let nxpc = pc_v +:. 1 in
-  (* RISC5.v:138 *)
   let start_adr = of_unsigned_int ~width:22 0x3F_F800 in
   (* RISC5.v:11, StartAdr *)
-  let pcmux = mux2 ~:(i.rst_n) start_adr (mux2 stall pc_v nxpc) in
+  let pcmux = mux2 ~:(i.rst_n) start_adr (mux2 stall pc_v pcmux0) in
   (* ── Memory bus (RISC5.v:101-104) ── the control strobes are final; [adr]'s load/store
      data-address branch ([stallL0 ? B+off]) and [outbus]'s store data arrive with the
      load/store data path in 4.4, so [adr] is the fetch address and [outbus] is 0 for now. *)
@@ -484,5 +514,64 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
     │h              ││ 00000000                                          │
     │               ││──────────────────────────────                     │
     └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
+;;
+
+(* 4.3 — a branch changes PC instead of writing a register. We poke a taken relative
+   branch-and-link (BL) and a not-taken conditional, each run two cycles so the PC
+   register shows the post-branch value: the BL's regmux is the return byte-address
+   [{PC+1,2'b0}] (the link, written to R15) and PC jumps to nxpc+disp; the not-taken
+   branch's regmux is the unwritten ALU result and PC simply falls through to nxpc. *)
+
+let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through) [waveform]"
+  =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let some = function
+    | Some x -> x
+    | None -> failwith "lookup"
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  inp.stall_x := Bits.of_unsigned_int ~width:1 0;
+  inp.codebus := Bits.of_unsigned_int ~width:32 0;
+  let branch ~z ~instr =
+    Cyclesim.Reg.of_int (reg "z") z;
+    Cyclesim.Reg.of_int (reg "ir") instr;
+    Cyclesim.Reg.of_int (reg "pc") 0x100;
+    Cyclesim.cycle sim;
+    Cyclesim.cycle sim
+  in
+  (* BL T relative disp=+3 (cc=7=T, v=1 link): pc 0x100 -> nxpc(0x101)+3 = 0x104, regmux =
+     link = 0x101<<2 = 0x404. Then B EQ disp=8 with Z=0 (not taken): pc -> nxpc 0x101. *)
+  branch ~z:0 ~instr:0xF700_0003;
+  branch ~z:0 ~instr:0xE100_0008;
+  Waveform.print
+    ~display_rules:
+      D.
+        [ port_name_is ~wave_format:Wave_format.Hex "ir"
+        ; port_name_is ~wave_format:Wave_format.Hex "pc"
+        ; port_name_is ~wave_format:Wave_format.Hex "regmux"
+        ]
+    ~wave_width:4
+    ~display_width:58
+    waves;
+  [%expect
+    {|
+    ┌Signals─────┐┌Waves─────────────────────────────────────┐
+    │            ││──────────┬─────────┬─────────┬─────────  │
+    │ir          ││ F7000003 │00000000 │E1000008 │00000000   │
+    │            ││──────────┴─────────┴─────────┴─────────  │
+    │            ││──────────┬─────────┬─────────┬─────────  │
+    │pc          ││ 000100   │000104   │000100   │000101     │
+    │            ││──────────┴─────────┴─────────┴─────────  │
+    │            ││──────────┬─────────┬─────────┬─────────  │
+    │regmux      ││ 00000404 │00000000 │00080000 │00000000   │
+    │            ││──────────┴─────────┴─────────┴─────────  │
+    └────────────┘└──────────────────────────────────────────┘
     |}]
 ;;
