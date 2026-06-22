@@ -46,7 +46,8 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | file | role |
 |---|---|
 | `dump_fp.ml` | one dumper for all FP units: drive `Risc5.Fp_<unit>` (chosen by the unit-name argument) over the stimuli, dump `"x y [u v] z cycles"` lines (`cycles` = the port's stall length) — the stimulus source |
-| `<unit>.cpp` | Verilator harness, one per unit: replay each line through `<Unit>.v`, compare `z` and the RTL's own stall length against the port's |
+| `fp_cosim.h` | shared harness: `tick` + the `run → drain → count` protocol, templated over the Verilator top type so all three units reuse one definition (and one cycle-count) |
+| `<unit>.cpp` | Verilator harness, one per unit: just the stimulus loop — replay each line through `<Unit>.v` (via `fp_cosim.h`'s `drain`), compare `z` and the RTL's stall length against the port's |
 | `run.sh` | glue: build → dump → verilate → cross-check, per unit |
 
 The OCaml dumper builds under `dune build @check` (Verilator-free), so it can't silently rot

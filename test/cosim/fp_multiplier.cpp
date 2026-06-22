@@ -3,41 +3,12 @@
 // AND RTL stall-length == port stall-length. Exit 0 iff the Hardcaml port is bit-exact AND
 // cycle-exact to FPMultiplier.v over the set.
 //   usage:  cosim <port_dump_path>          (lines: "x y port_z port_cycles")
-// Driven by test/cosim/run.sh; see test/cosim/README.md.
+// The tick + run->drain->count protocol is shared via fp_cosim.h; this file is just the
+// multiplier's stimulus loop. Driven by test/cosim/run.sh; see test/cosim/README.md.
 
 #include "VFPMultiplier.h"
-#include "verilated.h"
-#include <cstdint>
+#include "fp_cosim.h"
 #include <cstdio>
-
-static VFPMultiplier* dut;
-
-static void tick() {
-  dut->clk = 0;
-  dut->eval();
-  dut->clk = 1;
-  dut->eval();
-}
-
-// hold inputs, run, drain until stall drops (S 0->25), read z, release run for one cycle.
-// *cycles = clock cycles with run asserted until stall drops (the stall length), counted
-// identically to dump_fp's port-side drive so the two are directly comparable.
-static uint32_t run_op(uint32_t x, uint32_t y, int* cycles) {
-  dut->x = x;
-  dut->y = y;
-  dut->run = 1;
-  tick();
-  int c = 1;
-  while (dut->stall && c < 40) {
-    tick();
-    c++;
-  }
-  uint32_t z = dut->z;
-  dut->run = 0;
-  tick();
-  *cycles = c;
-  return z;
-}
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
@@ -50,14 +21,16 @@ int main(int argc, char** argv) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
     return 2;
   }
-  dut = new VFPMultiplier;
+  VFPMultiplier* dut = new VFPMultiplier;
 
   unsigned int x, y, pz;
   int pcyc;
   long n = 0, mismatch = 0, cyc_mismatch = 0;
   while (fscanf(f, "%x %x %x %d", &x, &y, &pz, &pcyc) == 4) {
+    dut->x = x;
+    dut->y = y;
     int rcyc = 0;
-    uint32_t rz = run_op(x, y, &rcyc);
+    uint32_t rz = drain(dut, &rcyc);
     n++;
     if (rz != (uint32_t)pz) {
       mismatch++;
