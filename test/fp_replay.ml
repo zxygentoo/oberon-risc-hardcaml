@@ -38,8 +38,9 @@ let drive sim ~run ~stall ~z =
   result
 ;;
 
-(* a deterministic 32-bit fuzz draw from [rng] *)
-let rand32 rng = (Random.State.int rng 0x10000 lsl 16) lor Random.State.int rng 0x10000
+(* QCheck's [int32] gives full 32-bit coverage with edge cases (0, min, max) and
+   shrinking; reinterpret it as an unsigned 32-bit word for the units/oracle *)
+let u32 (x : int32) = Int32.to_int x land 0xFFFF_FFFF
 
 (* apply [f] to the space-separated fields *after the tag* of every [tag]-line in the
    vectors *)
@@ -60,13 +61,9 @@ let iter_vectors ~tag ~f =
       | End_of_file -> ())
 ;;
 
-(* No-steering value test, for a unit with no compiler-unreachable / divergent domain
-   (FML, FDV): replay every [tag]-vector ([tag x y result]) and a 20k random fuzz pass
-   against the port's [run ~x ~y] — the frozen vectors compared to their result column,
-   the fuzz to [oracle]. Prints a summary and exits 1 on any mismatch. (The adder cannot
-   use this: its FLT/FLOOR domain needs steering, so test_fp_adder drives the shared
-   helpers directly.) *)
-let simple_value_test ~name ~tag ~run ~oracle =
+(* replay every frozen [tag]-vector ([tag x y result]) against the port's [run ~x ~y],
+   comparing to the result column. Prints a summary; returns the mismatch count. *)
+let replay_simple ~name ~tag ~run =
   let fails = ref 0
   and n = ref 0
   and shown = ref 0 in
@@ -86,24 +83,31 @@ let simple_value_test ~name ~tag ~run ~oracle =
           Printf.printf "  vec FAIL x=%08X y=%08X: got %08X want %08X\n" x y got want))
     | _ -> ());
   Printf.printf "%s frozen: %d/%d %s-vectors pass\n" name (!n - !fails) !n tag;
-  let rng = Random.State.make [| 0x5d_21 |] in
-  let fuzz_fails = ref 0
-  and fuzz_n = ref 0
-  and fshown = ref 0 in
-  for _ = 1 to 20000 do
-    let x = rand32 rng
-    and y = rand32 rng in
-    incr fuzz_n;
-    let got = run ~x ~y in
-    let want = oracle x y in
-    if got <> want
-    then (
-      incr fuzz_fails;
-      if !fshown < 10
-      then (
-        incr fshown;
-        Printf.printf "  fuzz FAIL x=%08X y=%08X: got %08X want %08X\n" x y got want))
-  done;
-  Printf.printf "%s fuzz: %d cases vs Oracle.Fp, %d fail\n" name !fuzz_n !fuzz_fails;
-  if !fails > 0 || !fuzz_fails > 0 then exit 1
+  !fails
+;;
+
+(* fuzz the full operand domain against [oracle] (QCheck int32 — boundary coverage +
+   shrinking); raises (test fails) on any mismatch *)
+let fuzz_xy ~name ~run ~oracle =
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:20_000
+       ~name:(name ^ " fuzz")
+       (QCheck.set_print
+          (fun (x, y) -> Printf.sprintf "x=%08lx y=%08lx" x y)
+          (QCheck.pair QCheck.int32 QCheck.int32))
+       (fun (x, y) ->
+         let x = u32 x
+         and y = u32 y in
+         run ~x ~y = oracle x y));
+  Printf.printf "%s fuzz: 20000 QCheck cases vs Oracle.Fp, ok\n" name
+;;
+
+(* No-steering value test for a unit with no compiler-unreachable / divergent domain (FML,
+   FDV): replay the frozen vectors, then fuzz against [oracle]. (The adder can't use this
+   — its FLT/FLOOR domain needs steering — so test_fp_adder drives the helpers directly.) *)
+let simple_value_test ~name ~tag ~run ~oracle =
+  let fails = replay_simple ~name ~tag ~run in
+  fuzz_xy ~name ~run ~oracle;
+  if fails > 0 then exit 1
 ;;
