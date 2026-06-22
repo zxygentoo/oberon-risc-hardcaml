@@ -46,9 +46,10 @@ let create (i : _ I.t) : _ O.t =
   (* ── State registers (RISC5.v:13-17, written in the always block 171-183) ── Faithful
      no-reset registers: there is no clear port. [rst_n] (active low) reaches the datapath
      as ordinary logic (pcmux below), exactly as the RTL does it. Up now: the three
-     fetch-timing registers (4.0) and the condition flags N/Z/C/OV (4.1); [H] joins with
-     MUL/DIV (4.2), the interrupt state in 4.5. [pc]/[ir]/[stall] and the flags are named
-     (--) so the waveform tests can watch them. *)
+     fetch-timing registers (4.0), the condition flags N/Z/C/OV (4.1), and the aux
+     register H (4.2, MUL high word / DIV remainder); the interrupt state joins in 4.5.
+     [pc]/[ir]/[stall]/[regmux], the flags, and [h] are named (--) so the waveform and
+     lockstep tests can watch and poke them. *)
   let pc = Always.Variable.reg spec ~width:22 in
   let ir = Always.Variable.reg spec ~width:32 in
   let stall_l1 = Always.Variable.reg spec ~width:1 in
@@ -56,6 +57,7 @@ let create (i : _ I.t) : _ O.t =
   let z = Always.Variable.reg spec ~width:1 in
   let c = Always.Variable.reg spec ~width:1 in
   let ov = Always.Variable.reg spec ~width:1 in
+  let h = Always.Variable.reg spec ~width:32 in
   let pc_v = pc.value -- "pc" in
   let ir_v = ir.value -- "ir" in
   let stall_l1_v = stall_l1.value in
@@ -63,6 +65,7 @@ let create (i : _ I.t) : _ O.t =
   let z_v = z.value -- "z" in
   let c_v = c.value -- "c" in
   let ov_v = ov.value -- "ov" in
+  let h_v = h.value -- "h" in
   (* ── Instruction decode (RISC5.v:70-96) ── the mode bits, the register-op fields, and
      the op-classes the wired slices need; the rest is decoded as later slices land. *)
   let p = select ir_v ~high:31 ~low:31 in
@@ -80,12 +83,17 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:94 *)
   let br = p &: q in
   (* RISC5.v:95 *)
-  (* ── Stall aggregation (RISC5.v:168-169) ── the multi-cycle unit stalls (M/D/FA/FM/FD)
-     OR into [stall] in 4.2; for now it is the load/store stall and the external stall. *)
+  let is_op k = ~:p &: (op ==:. k) in
+  let mul = is_op 10
+  and div = is_op 11
+  and fad = is_op 12
+  and fsb = is_op 13
+  and fml = is_op 14
+  and fdv = is_op 15 in
+  (* RISC5.v:85-91 — the multi-cycle op-classes (run signals for the units) *)
   let stall_l0 = ldr |: str &: ~:stall_l1_v in
-  (* RISC5.v:168 *)
-  let stall = (stall_l0 |: i.stall_x) -- "stall" in
-  (* RISC5.v:169 (partial) *)
+  (* RISC5.v:168 — the load/store stall; the full [stall] (RISC5.v:169) also ORs the unit
+     stalls, so it is built below, once the units exist *)
   (* ── Operand path: register file + C1 (RISC5.v:48-49, 99-100) ── three async reads
      A/B/C0 (A is store data, wired in 4.4); the write port commits [regmux] to R[ira0] at
      the edge. That read->compute->write is a loop the sequential write breaks, so [din]
@@ -93,13 +101,13 @@ let create (i : _ I.t) : _ O.t =
   let ira0 = mux2 br (of_unsigned_int ~width:4 15) ira in
   (* RISC5.v:99 — a branch links PC+1 to R15 *)
   let regmux_w = wire 32 in
-  let regwr = ~:p &: ~:stall in
-  (* RISC5.v:127 (partial) — a register op writes when not stalled; LDR/BR terms at
-     4.3/4.4 *)
+  let regwr_w = wire 1 in
+  (* [regwr] = ~p & ~stall needs the full [stall] (unit stalls, below), but the register
+     file's write enable is wanted here — a forward [wire], like [regmux]. *)
   let regs =
     Registers.create
       { Registers.I.clock = i.clock
-      ; wr = regwr
+      ; wr = regwr_w
       ; rno0 = ira0
       ; rno1 = irb
       ; rno2 = irc
@@ -113,9 +121,9 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:100 — C1 = q ? {{16{v}}, imm} : C0 *)
   let shamt = sel_bottom c1 ~width:5 in
   (* C1[4:0] — the shift count *)
-  (* ── Arithmetic units + result mux (RISC5.v:57,59,106-125) ── B/C1 fan out to the
-     shifters and the ALU (the MOV/logic/ADD-SUB unit, already built) every cycle; the mux
-     selects one by [op]. The MUL/DIV/FP slots read 0 until their units land in 4.2. *)
+  (* ── Arithmetic units + result mux (RISC5.v:57,59,106-125) ── B/C1 fan out every cycle
+     to the combinational shifters and ALU (the MOV/logic/ADD-SUB unit) and to the
+     multi-cycle units (below); the mux selects one result by [op]. *)
   let { Left_shifter.O.y = lshout } =
     Left_shifter.create { Left_shifter.I.x = b; sc = shamt }
   in
@@ -131,12 +139,34 @@ let create (i : _ I.t) : _ O.t =
       ; imm
       ; b
       ; c1
-      ; h = zero 32 (* H register + MUL/DIV-high join in 4.2 *)
+      ; h = h_v (* H = MUL high word / DIV remainder; the MOV' H-read source *)
       ; n_in = n_v
       ; z_in = z_v
       ; c_in = c_v
       ; ov_in = ov_v
       }
+  in
+  (* ── The multi-cycle units (RISC5.v:51-68) ── MUL/DIV take B/C1 and the *inverted*
+     u-bit ([~u]: signed MUL/DIV is u=1, RISC5.v:52/55). The FP units are
+     register-register, so operand 2 is C0 (not C1); FSB reuses the adder with operand 2's
+     sign bit flipped ([{FSB^C0[31], C0[30:0]}], RISC5.v:62). Each asserts [stall] until
+     its counter ends. *)
+  let { Multiplier.O.stall = stall_m; z = product } =
+    Multiplier.create { Multiplier.I.clock = i.clock; run = mul; u = ~:u; x = b; y = c1 }
+  in
+  let { Divider.O.stall = stall_d; quot = quotient; rem = remainder } =
+    Divider.create { Divider.I.clock = i.clock; run = div; u = ~:u; x = b; y = c1 }
+  in
+  let fsb_y = (fsb ^: msb c0) @: select c0 ~high:30 ~low:0 in
+  let { Fp_adder.O.stall = stall_fa; z = fsum } =
+    Fp_adder.create
+      { Fp_adder.I.clock = i.clock; run = fad |: fsb; u; v; x = b; y = fsb_y }
+  in
+  let { Fp_multiplier.O.stall = stall_fm; z = fprod } =
+    Fp_multiplier.create { Fp_multiplier.I.clock = i.clock; run = fml; x = b; y = c0 }
+  in
+  let { Fp_divider.O.stall = stall_fd; z = fquot } =
+    Fp_divider.create { Fp_divider.I.clock = i.clock; run = fdv; x = b; y = c0 }
   in
   let res =
     mux
@@ -151,21 +181,30 @@ let create (i : _ I.t) : _ O.t =
       ; alu_res (* 7 XOR *)
       ; alu_res (* 8 ADD *)
       ; alu_res (* 9 SUB *)
-      ; zero 32 (* 10 MUL — 4.2 *)
-      ; zero 32 (* 11 DIV — 4.2 *)
-      ; zero 32 (* 12 FAD — 4.2 *)
-      ; zero 32 (* 13 FSB — 4.2 *)
-      ; zero 32 (* 14 FML — 4.2 *)
-      ; zero 32 (* 15 FDV — 4.2 *)
+      ; sel_bottom product ~width:32 (* 10 MUL — product[31:0] *)
+      ; quotient (* 11 DIV *)
+      ; fsum (* 12 FAD *)
+      ; fsum (* 13 FSB *)
+      ; fprod (* 14 FML *)
+      ; fquot (* 15 FDV *)
       ]
   in
-  (* ── Writeback + flags (RISC5.v:131,155-166) ── [regmux] is the value written back: the
-     ALU result for a register op (the LDR/BR forms join at 4.3/4.4). N/Z derive from the
-     written value, C/OV from the ALU's arithmetic flags (ADD/SUB set them, else pass
-     through); the RTI-restore term on each is added with interrupts in 4.5. *)
+  (* full stall (RISC5.v:169): load/store + external + every unit's stall *)
+  let stall_all =
+    stall_l0 |: i.stall_x |: stall_m |: stall_d |: stall_fa |: stall_fm |: stall_fd
+  in
+  let stall = stall_all -- "stall" in
+  (* ── Writeback + flags (RISC5.v:127,131,155-166) ── [regmux] is the value written back
+     (the ALU/unit result; the LDR/BR forms join at 4.3/4.4). [regwr] is now resolvable
+     ([stall] exists). N/Z derive from the written value, C/OV from the ALU's arithmetic
+     flags; the RTI-restore term joins with interrupts in 4.5. *)
   let regmux = res -- "regmux" in
   (* RISC5.v:131 *)
   assign regmux_w regmux;
+  let regwr = ~:p &: ~:stall in
+  (* RISC5.v:127 (partial) — a register op writes when not stalled (= on a unit's last
+     cycle); LDR/BR terms at 4.3/4.4 *)
+  assign regwr_w regwr;
   let nn = mux2 regwr (msb regmux) n_v in
   (* RISC5.v:159 *)
   let zz = mux2 regwr (regmux ==:. 0) z_v in
@@ -174,6 +213,8 @@ let create (i : _ I.t) : _ O.t =
   (* RISC5.v:161-163 *)
   let vv = alu_ov in
   (* RISC5.v:164-166 *)
+  let h_next = mux2 mul (select product ~high:63 ~low:32) (mux2 div remainder h_v) in
+  (* RISC5.v:176 — H <= MUL ? product[63:32] : DIV ? remainder : H *)
   (* ── Control unit: next PC (RISC5.v:138, 150-153) ── 4.0 keeps the reset/stall/step
      ladder; intAck, RTI, and the branch target layer in at 4.3 (branches) / 4.5 (ints). *)
   let nxpc = pc_v +:. 1 in
@@ -206,6 +247,7 @@ let create (i : _ I.t) : _ O.t =
       ; z <-- zz
       ; c <-- cx
       ; ov <-- vv
+      ; h <-- h_next (* RISC5.v:176 *)
       ]);
   { O.adr; rd; wr; ben; outbus }
 ;;
@@ -348,5 +390,99 @@ let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [wa
     │ov                ││                                                                       │
     │                  ││────────────────────────────────────────────────────────────────────── │
     └──────────────────┘└───────────────────────────────────────────────────────────────────────┘
+    |}]
+;;
+
+(* 4.2 — a multi-cycle op (MUL) freezes the whole core. We poke operands + a signed MUL
+   R3,R1,R2 (7*6=42) and run it to completion: the multiplier asserts [stall], which holds
+   PC and IR frozen for 33 cycles (the unit's state counter running), then on the cycle
+   [stall] drops the result mux's product[31:0] writes back (regmux) and product[63:32]
+   lands in H. DIV/FP work identically through the same stall path. The product is too
+   wide for a tight window, so we show the head (stall onset, PC/IR frozen) and the tail
+   (stall drops, the writeback). *)
+
+let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write back \
+                 [waveform]"
+  =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let some = function
+    | Some x -> x
+    | None -> failwith "lookup"
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let regfile = some (Cyclesim.lookup_mem_by_name sim "regfile") in
+  let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
+  let stall = some (Cyclesim.lookup_node_by_name sim "stall") in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  inp.stall_x := Bits.of_unsigned_int ~width:1 0;
+  inp.codebus := Bits.of_unsigned_int ~width:32 0;
+  Cyclesim.Memory.of_int regfile ~address:1 7;
+  Cyclesim.Memory.of_int regfile ~address:2 6;
+  Cyclesim.Reg.of_int (reg "ir") 0x031A_0002 (* signed MUL R3,R1,R2 *);
+  Cyclesim.Reg.of_int (reg "pc") 0x100;
+  Cyclesim.cycle sim;
+  while Cyclesim.Node.to_int stall = 1 do
+    Cyclesim.cycle sim
+  done;
+  Cyclesim.cycle sim;
+  let rules =
+    D.
+      [ port_name_is ~wave_format:Wave_format.Hex "ir"
+      ; port_name_is ~wave_format:Wave_format.Hex "pc"
+      ; port_name_is ~wave_format:Wave_format.Bit "stall"
+      ; port_name_is ~wave_format:Wave_format.Hex "regmux"
+      ; port_name_is ~wave_format:Wave_format.Hex "h"
+      ]
+  in
+  (* head: IR latched with the MUL, stall asserts, PC frozen at 0x100 *)
+  Waveform.print ~display_rules:rules ~start_cycle:0 ~wave_width:4 ~display_width:70 waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │               ││───────────────────────────────────────────────────│
+    │ir             ││ 031A0002                                          │
+    │               ││───────────────────────────────────────────────────│
+    │               ││───────────────────────────────────────────────────│
+    │pc             ││ 000100                                            │
+    │               ││───────────────────────────────────────────────────│
+    │stall          ││───────────────────────────────────────────────────│
+    │               ││                                                   │
+    │               ││──────────┬─────────┬─────────┬─────────┬─────────┬│
+    │regmux         ││ 00000000 │00000007 │00000003 │80000001 │40000000 ││
+    │               ││──────────┴─────────┴─────────┴─────────┴─────────┴│
+    │               ││──────────────────────────────┬─────────┬─────────┬│
+    │h              ││ 00000000                     │00000003 │00000004 ││
+    │               ││──────────────────────────────┴─────────┴─────────┴│
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}];
+  (* tail: stall drops, regmux = product[31:0] = 42 (0x2A), H = product[63:32] = 0, PC++ *)
+  Waveform.print
+    ~display_rules:rules
+    ~start_cycle:31
+    ~wave_width:4
+    ~display_width:70
+    waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │               ││──────────────────────────────                     │
+    │ir             ││ 031A0002                                          │
+    │               ││──────────────────────────────                     │
+    │               ││──────────────────────────────                     │
+    │pc             ││ 000100                                            │
+    │               ││──────────────────────────────                     │
+    │stall          ││────────────────────┐                              │
+    │               ││                    └─────────                     │
+    │               ││──────────┬─────────┬─────────                     │
+    │regmux         ││ 000000A8 │00000054 │0000002A                      │
+    │               ││──────────┴─────────┴─────────                     │
+    │               ││──────────────────────────────                     │
+    │h              ││ 00000000                                          │
+    │               ││──────────────────────────────                     │
+    └───────────────┘└───────────────────────────────────────────────────┘
     |}]
 ;;
