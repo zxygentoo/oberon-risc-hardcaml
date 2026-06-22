@@ -9,3 +9,4 @@ module Left_shifter = Left_shifter
 module Fp_adder = Fp_adder
 module Fp_multiplier = Fp_multiplier
 module Fp_divider = Fp_divider
+module Risc5_core = Risc5_core
