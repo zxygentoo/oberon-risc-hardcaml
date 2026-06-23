@@ -97,6 +97,16 @@ Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
    transliterating wires. *Caveat (learning build, §0):* idiomatic code can hide the hardware
    — still walk the structure for instructive blocks before shipping the idiom.
 
+   *Semantics, not surface.* The Phases 0–8 mandate is cycle- and bit-exact *behaviour*, not
+   surface-syntax/style matching to `RISC5.v` — so write **idiomatic, clean, readable**
+   Hardcaml. Factor dense logic into named stages; bind sub-modules and stages to meaningful
+   names and reach their outputs by dot-notation (a free *namespace* — `mul.stall` /
+   `ex.result` reads better than a wall of destructured renames). Comment the **why** and the
+   load-bearing design/mechanic, **not** a line-by-line footnote back to the RTL. The only
+   surface we deliberately hold fixed is the timing skeleton (above) and the **register
+   names** — the lockstep reaches `pc`/`ir`/the flags/`h` by name (`lookup_reg_by_name`), so
+   those keep their RTL names; everything else is ours to make legible.
+
    *What cycle-fidelity is — and isn't — for.* The OCaml oracle is **instruction-level** (its
    ms-clock is injected via `set_time`, not cycle-derived; it steps by instruction), so it
    proves *behavioral* correctness and needs **no** cycle-accuracy — both lockstep levels (§6)
