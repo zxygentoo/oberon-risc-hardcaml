@@ -204,7 +204,7 @@ let steered { op; instr; regs; c; _ } =
   || (op = 11 && (c1 = 0 || c1_neg))
 ;;
 
-let arbitrary =
+let seed =
   QCheck.set_print
     (fun (instr31, ob, oc, f, h) ->
       Printf.sprintf
@@ -257,7 +257,7 @@ let decode_branch (bctrl, target32, disp, flags4) =
   }
 ;;
 
-let arbitrary_branch =
+let seed_branch =
   QCheck.set_print
     (fun (bctrl, target, disp, f) ->
       Printf.sprintf "bctrl=%08x target=%08lx disp=%d flags=%x" bctrl target disp f)
@@ -316,7 +316,7 @@ let agree_load t ~case ~adr_word ~load_val =
    the word index never aliases base_pc); [off] is a small signed offset (we set R[b] =
    addr-off so R[b]+off lands on addr); [load_word] is what memory returns; [h] is the aux
    register. *)
-let arbitrary_load =
+let seed_load =
   QCheck.set_print
     (fun (ctrl, addr, off, w, h) ->
       Printf.sprintf "ctrl=%x addr=%x off=%d load=%08lx h=%08lx" ctrl addr off w h)
@@ -399,7 +399,7 @@ let agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane =
   && hw_h = R.For_tests.h t.oracle
 ;;
 
-let arbitrary_store =
+let seed_store =
   QCheck.set_print
     (fun (ctrl, addr, off, data, init) ->
       Printf.sprintf
@@ -457,7 +457,7 @@ let () =
        ~count:50_000
        ~max_gen:60_000
        ~name:"cpu register-op lockstep (ops 0..15)"
-       arbitrary
+       seed
        (fun raw ->
           let case = decode raw in
           QCheck.assume (not (steered case));
@@ -471,7 +471,7 @@ let () =
        ~count:50_000
        ~max_gen:55_000
        ~name:"cpu branch lockstep (taken/not-taken, relative/register, link)"
-       arbitrary_branch
+       seed_branch
        (fun raw ->
           let case = decode_branch raw in
           QCheck.assume (not (steered_branch case));
@@ -482,7 +482,7 @@ let () =
     (QCheck.Test.make
        ~count:50_000
        ~name:"cpu load lockstep (word/byte)"
-       arbitrary_load
+       seed_load
        (fun raw ->
           let case, adr_word, load_val = decode_load raw in
           agree_load t ~case ~adr_word ~load_val));
@@ -492,7 +492,7 @@ let () =
     (QCheck.Test.make
        ~count:50_000
        ~name:"cpu store lockstep (word/byte)"
-       arbitrary_store
+       seed_store
        (fun raw ->
           let case, adr_word, init_word, byte_mode, lane = decode_store raw in
           agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane));
