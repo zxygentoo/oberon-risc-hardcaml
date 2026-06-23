@@ -130,16 +130,16 @@ type execute_out =
    (operand 2 is C0), and FSB reuses the adder with operand 2's sign bit flipped. Each
    iterative unit asserts stall until its counter ends. The current flags N/Z/C/OV feed
    the ALU (the add/sub carry-in and the MOV' flags read). *)
-let execute ~clock ~(d : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_out =
+let execute ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_out =
   let lsh = Left_shifter.create { Left_shifter.I.x = b; sc = shamt } in
-  let rsh = Right_shifter.create { Right_shifter.I.x = b; sc = shamt; md = lsb d.op } in
+  let rsh = Right_shifter.create { Right_shifter.I.x = b; sc = shamt; md = lsb dec.op } in
   let alu =
     Alu.create
-      { Alu.I.op = d.op
-      ; u = d.u
-      ; q = d.q
-      ; v = d.v
-      ; imm = d.imm
+      { Alu.I.op = dec.op
+      ; u = dec.u
+      ; q = dec.q
+      ; v = dec.v
+      ; imm = dec.imm
       ; b
       ; c1
       ; h
@@ -150,24 +150,28 @@ let execute ~clock ~(d : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_ou
       }
   in
   let mul =
-    Multiplier.create { Multiplier.I.clock; run = d.mul; u = ~:(d.u); x = b; y = c1 }
+    Multiplier.create { Multiplier.I.clock; run = dec.mul; u = ~:(dec.u); x = b; y = c1 }
   in
-  let div = Divider.create { Divider.I.clock; run = d.div; u = ~:(d.u); x = b; y = c1 } in
+  let div =
+    Divider.create { Divider.I.clock; run = dec.div; u = ~:(dec.u); x = b; y = c1 }
+  in
   let fpa =
     Fp_adder.create
       { Fp_adder.I.clock
-      ; run = d.fad |: d.fsb
-      ; u = d.u
-      ; v = d.v
+      ; run = dec.fad |: dec.fsb
+      ; u = dec.u
+      ; v = dec.v
       ; x = b
-      ; y = (d.fsb ^: msb c0) @: select c0 ~high:30 ~low:0
+      ; y = (dec.fsb ^: msb c0) @: select c0 ~high:30 ~low:0
       }
   in
-  let fpm = Fp_multiplier.create { Fp_multiplier.I.clock; run = d.fml; x = b; y = c0 } in
-  let fpd = Fp_divider.create { Fp_divider.I.clock; run = d.fdv; x = b; y = c0 } in
+  let fpm =
+    Fp_multiplier.create { Fp_multiplier.I.clock; run = dec.fml; x = b; y = c0 }
+  in
+  let fpd = Fp_divider.create { Fp_divider.I.clock; run = dec.fdv; x = b; y = c0 } in
   let res =
     mux
-      d.op
+      dec.op
       [ alu.res (* 0 MOV *)
       ; lsh.y (* 1 LSL *)
       ; rsh.y (* 2 ASR *)
@@ -212,10 +216,10 @@ type memory_out =
    select (a byte load picks the lane at adr[1:0] and zero-extends; a word load passes
    inbus through), the store byte replicate, and the rd/wr strobes. [stall_l0] is the
    first of the two load/store stall cycles. *)
-let memory ~(d : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
-  let stall_l0 = d.ldr |: d.str &: ~:stall_l1 in
-  let data_adr = sel_bottom b ~width:24 +: sresize d.off ~width:24 in
-  let ben = d.p &: ~:(d.q) &: d.v &: ~:stall_x &: ~:stall_l1 in
+let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
+  let stall_l0 = dec.ldr |: dec.str &: ~:stall_l1 in
+  let data_adr = sel_bottom b ~width:24 +: sresize dec.off ~width:24 in
+  let ben = dec.p &: ~:(dec.q) &: dec.v &: ~:stall_x &: ~:stall_l1 in
   let byte_lane = sel_bottom data_adr ~width:2 in
   let load_byte =
     mux
@@ -238,8 +242,8 @@ let memory ~(d : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
       ]
   in
   let outbus = mux2 ben store_byte a in
-  let rd = d.ldr &: ~:stall_x &: ~:stall_l1 in
-  let wr = d.str &: ~:stall_x &: ~:stall_l1 in
+  let rd = dec.ldr &: ~:stall_x &: ~:stall_l1 in
+  let wr = dec.str &: ~:stall_x &: ~:stall_l1 in
   { load_data = inbus1
   ; data_adr
   ; read = rd
@@ -287,13 +291,13 @@ let create (i : _ I.t) : _ O.t =
   let int_md_v = int_md.value -- "int_md" in
   let spc_v = spc.value -- "spc" in
   (* ── Decode ── slice the IR word into its fields; see [decode] above. *)
-  let d = decode ir_v in
+  let dec = decode ir_v in
   (* ── Fetch operands ── the register file's three async reads A/B/C0 (A is the store
      data); the write port commits [regmux] to R[ira0] at the edge. That
      read->compute->write is a loop the sequential write breaks, so [din]/[wr] are forward
      [wire]s, assigned once [regmux]/[regwr] exist below. C1 is operand 2 (the v-extended
      immediate, or C0). *)
-  let ira0 = mux2 d.br (of_unsigned_int ~width:4 15) d.ira in
+  let ira0 = mux2 dec.br (of_unsigned_int ~width:4 15) dec.ira in
   (* a branch links PC+1 to R15 *)
   let regmux_w = wire 32 in
   let regwr_w = wire 1 in
@@ -302,36 +306,36 @@ let create (i : _ I.t) : _ O.t =
       { Registers.I.clock = i.clock
       ; wr = regwr_w
       ; rno0 = ira0
-      ; rno1 = d.irb
-      ; rno2 = d.irc
+      ; rno1 = dec.irb
+      ; rno2 = dec.irc
       ; din = regmux_w
       }
   in
   let a = regs.dout0 in
   let b = regs.dout1 in
   let c0 = regs.dout2 in
-  let c1 = mux2 d.q (repeat d.v ~count:16 @: d.imm) c0 in
+  let c1 = mux2 dec.q (repeat dec.v ~count:16 @: dec.imm) c0 in
   let shamt = sel_bottom c1 ~width:5 in
   (* ── Execute ── run B/C1/C0 through the shifters, ALU and the five iterative units;
      [op] picks the result. See [execute] above. *)
-  let ex =
-    execute ~clock:i.clock ~d ~b ~c1 ~c0 ~shamt ~h:h_v ~n:n_v ~z:z_v ~c:c_v ~ov:ov_v
+  let exe =
+    execute ~clock:i.clock ~dec ~b ~c1 ~c0 ~shamt ~h:h_v ~n:n_v ~z:z_v ~c:c_v ~ov:ov_v
   in
   (* ── Memory access ── data address, byte-lane load select, byte store replicate, and
      the rd/wr/ben strobes. See [memory] above. *)
-  let mem = memory ~d ~a ~b ~inbus:i.inbus ~stall_x:i.stall_x ~stall_l1:stall_l1_v in
+  let mem = memory ~dec ~a ~b ~inbus:i.inbus ~stall_x:i.stall_x ~stall_l1:stall_l1_v in
   (* ── Control ── [stall] freezes the loop (load/store + external + the iterative units);
      [cond]/[pcmux0] are the branch (the §7 cc table, negated by IR[27]; a taken branch
      targets PC+1+disp or R.c>>2); [int_ack] fires for an enabled, pending interrupt when
      not already in a handler and not stalling. *)
-  let stall = (mem.stall_l0 |: i.stall_x |: ex.unit_stall) -- "stall" in
+  let stall = (mem.stall_l0 |: i.stall_x |: exe.unit_stall) -- "stall" in
   let int_ack = int_pnd_v &: int_enb_v &: ~:int_md_v &: ~:stall in
   let nxpc = pc_v +:. 1 in
   let s = n_v ^: ov_v in
   let cond =
-    d.neg
+    dec.neg
     ^: mux
-         d.cc
+         dec.cc
          [ n_v (* 0 MI/PL *)
          ; z_v (* 1 EQ/NE *)
          ; c_v (* 2 CS/CC *)
@@ -343,37 +347,41 @@ let create (i : _ I.t) : _ O.t =
          ]
   in
   let pcmux0 =
-    mux2 (d.br &: cond) (mux2 d.u (nxpc +: d.disp) (select c0 ~high:23 ~low:2)) nxpc
+    mux2 (dec.br &: cond) (mux2 dec.u (nxpc +: dec.disp) (select c0 ~high:23 ~low:2)) nxpc
   in
   (* ── Writeback ── [regmux] writes a load's data, a linking branch's return address,
      else the result; [regwr] is its enable; the flags take their next values (but RTI
      restores all four from SPC); H takes the MUL high word / DIV remainder. *)
   let link = zero 8 @: nxpc @: zero 2 in
   (* the return byte address {PC+1, 2'b0} *)
-  let regmux = mux2 d.ldr mem.load_data (mux2 (d.br &: d.v) link ex.result) -- "regmux" in
+  let regmux =
+    mux2 dec.ldr mem.load_data (mux2 (dec.br &: dec.v) link exe.result) -- "regmux"
+  in
   assign regmux_w regmux;
   let regwr =
-    ~:(d.p)
+    ~:(dec.p)
     &: ~:stall
-    |: (d.br &: cond &: d.v &: ~:(i.stall_x))
-    |: (d.ldr &: ~:(i.stall_x) &: ~:stall_l1_v)
+    |: (dec.br &: cond &: dec.v &: ~:(i.stall_x))
+    |: (dec.ldr &: ~:(i.stall_x) &: ~:stall_l1_v)
   in
   (* fires for a register op (not stalled), a taken linking branch, or a load *)
   assign regwr_w regwr;
   (* N/Z from the written value, C/OV from the ALU — except RTI restores all four from SPC *)
-  let nn = mux2 d.rti (select spc_v ~high:25 ~low:25) (mux2 regwr (msb regmux) n_v) in
-  let zz = mux2 d.rti (select spc_v ~high:24 ~low:24) (mux2 regwr (regmux ==:. 0) z_v) in
-  let cx = mux2 d.rti (select spc_v ~high:23 ~low:23) ex.alu_c in
-  let vv = mux2 d.rti (select spc_v ~high:22 ~low:22) ex.alu_ov in
-  let h_next = mux2 d.mul ex.product_hi (mux2 d.div ex.remainder h_v) in
+  let nn = mux2 dec.rti (select spc_v ~high:25 ~low:25) (mux2 regwr (msb regmux) n_v) in
+  let zz =
+    mux2 dec.rti (select spc_v ~high:24 ~low:24) (mux2 regwr (regmux ==:. 0) z_v)
+  in
+  let cx = mux2 dec.rti (select spc_v ~high:23 ~low:23) exe.alu_c in
+  let vv = mux2 dec.rti (select spc_v ~high:22 ~low:22) exe.alu_ov in
+  let h_next = mux2 dec.mul exe.product_hi (mux2 dec.div exe.remainder h_v) in
   (* ── Interrupt next-state ── on intAck, SPC latches [{flags, return PC}]; intPnd sets
      on a rising IRQ edge and clears on intAck; intMd marks "in handler" (set on intAck,
      cleared by RTI); intEnb is reset-cleared and written by STI/CLI (its enable bit is
      IR[0]). *)
   let spc_next = mux2 int_ack (nn @: zz @: cx @: vv @: pcmux0) spc_v in
   let int_pnd_next = i.rst_n &: ~:int_ack &: (~:irq1_v &: i.irq |: int_pnd_v) in
-  let int_md_next = i.rst_n &: ~:(d.rti) &: (int_ack |: int_md_v) in
-  let int_enb_next = mux2 ~:(i.rst_n) (zero 1) (mux2 d.sti_cli (lsb ir_v) int_enb_v) in
+  let int_md_next = i.rst_n &: ~:(dec.rti) &: (int_ack |: int_md_v) in
+  let int_enb_next = mux2 ~:(i.rst_n) (zero 1) (mux2 dec.sti_cli (lsb ir_v) int_enb_v) in
   (* ── Next PC ── priority reset > stall > intAck (the interrupt vector, address 1) > RTI
      (restore SPC[21:0]) > branch/step; intAck is [~stall]-gated so it never collides with
      the stall term above it. *)
@@ -388,7 +396,7 @@ let create (i : _ I.t) : _ O.t =
       (mux2
          stall
          pc_v
-         (mux2 int_ack (of_unsigned_int ~width:22 1) (mux2 d.rti spc_pc pcmux0)))
+         (mux2 int_ack (of_unsigned_int ~width:22 1) (mux2 dec.rti spc_pc pcmux0)))
   in
   (* ── Commit ── the one clocked update: PC/IR/stallL1 + flags + H + the interrupt state,
      all latched at the edge (and frozen by [stall]). *)
