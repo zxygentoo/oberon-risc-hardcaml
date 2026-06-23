@@ -47,6 +47,63 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+(* The post-normalize shift count. Stage 2's rounded magnitude [s] has its leading one
+   somewhere in [s[25:2]]; this finds it (a leading-one detector — [z(2k)] is high iff
+   [s[25:2k]] are all zero) and encodes, as a 5-bit count [sc[4:0]], how far to shift [s]
+   left so that one lands at the hidden-bit position. Transliterated bit-for-bit from the
+   RTL (§2 — a priority encoder is exactly where an idiomatic rewrite could silently
+   diverge), so it reads as dense boolean logic by design. *)
+let shift_count s =
+  let sb n = select s ~high:n ~low:n in
+  let z24 = ~:(sb 25) &: ~:(sb 24) in
+  let z22 = z24 &: ~:(sb 23) &: ~:(sb 22) in
+  let z20 = z22 &: ~:(sb 21) &: ~:(sb 20) in
+  let z18 = z20 &: ~:(sb 19) &: ~:(sb 18) in
+  let z16 = z18 &: ~:(sb 17) &: ~:(sb 16) in
+  let z14 = z16 &: ~:(sb 15) &: ~:(sb 14) in
+  let z12 = z14 &: ~:(sb 13) &: ~:(sb 12) in
+  let z10 = z12 &: ~:(sb 11) &: ~:(sb 10) in
+  let z8 = z10 &: ~:(sb 9) &: ~:(sb 8) in
+  let z6 = z8 &: ~:(sb 7) &: ~:(sb 6) in
+  let z4 = z6 &: ~:(sb 5) &: ~:(sb 4) in
+  let z2 = z4 &: ~:(sb 3) &: ~:(sb 2) in
+  let sc4 = z10 in
+  let sc3 =
+    z18 &: (sb 17 |: sb 16 |: sb 15 |: sb 14 |: sb 13 |: sb 12 |: sb 11 |: sb 10) |: z2
+  in
+  let sc2 =
+    z22
+    &: (sb 21 |: sb 20 |: sb 19 |: sb 18)
+    |: (z14 &: (sb 13 |: sb 12 |: sb 11 |: sb 10))
+    |: (z6 &: (sb 5 |: sb 4 |: sb 3 |: sb 2))
+  in
+  let sc1 =
+    z24
+    &: (sb 23 |: sb 22)
+    |: (z20 &: (sb 19 |: sb 18))
+    |: (z16 &: (sb 15 |: sb 14))
+    |: (z12 &: (sb 11 |: sb 10))
+    |: (z8 &: (sb 7 |: sb 6))
+    |: (z4 &: (sb 3 |: sb 2))
+  in
+  let sc0 =
+    ~:(sb 25)
+    &: sb 24
+    |: (z24 &: ~:(sb 23) &: sb 22)
+    |: (z22 &: ~:(sb 21) &: sb 20)
+    |: (z20 &: ~:(sb 19) &: sb 18)
+    |: (z18 &: ~:(sb 17) &: sb 16)
+    |: (z16 &: ~:(sb 15) &: sb 14)
+    |: (z14 &: ~:(sb 13) &: sb 12)
+    |: (z12 &: ~:(sb 11) &: sb 10)
+    |: (z10 &: ~:(sb 9) &: sb 8)
+    |: (z8 &: ~:(sb 7) &: sb 6)
+    |: (z6 &: ~:(sb 5) &: sb 4)
+    |: (z4 &: ~:(sb 3) &: sb 2)
+  in
+  sc4 @: sc3 @: sc2 @: sc1 @: sc0
+;;
+
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* Sequential skeleton (final): 2-bit State, run-gated with no reset, stall = run &
@@ -91,56 +148,7 @@ let create (i : _ I.t) : _ O.t =
   (* ---- Stage 2: sign-magnitude + guard round, leading-one detect, post-normalize ---- *)
   (* back to sign-magnitude, then +1 rounds via the guard bit *)
   let s = mux2 (msb sum) (negate sum) sum +:. 1 in
-  let sb n = select s ~high:n ~low:n in
-  (* leading-one detector: z(2k) is high iff s[25:2k] are all zero *)
-  let z24 = ~:(sb 25) &: ~:(sb 24) in
-  let z22 = z24 &: ~:(sb 23) &: ~:(sb 22) in
-  let z20 = z22 &: ~:(sb 21) &: ~:(sb 20) in
-  let z18 = z20 &: ~:(sb 19) &: ~:(sb 18) in
-  let z16 = z18 &: ~:(sb 17) &: ~:(sb 16) in
-  let z14 = z16 &: ~:(sb 15) &: ~:(sb 14) in
-  let z12 = z14 &: ~:(sb 13) &: ~:(sb 12) in
-  let z10 = z12 &: ~:(sb 11) &: ~:(sb 10) in
-  let z8 = z10 &: ~:(sb 9) &: ~:(sb 8) in
-  let z6 = z8 &: ~:(sb 7) &: ~:(sb 6) in
-  let z4 = z6 &: ~:(sb 5) &: ~:(sb 4) in
-  let z2 = z4 &: ~:(sb 3) &: ~:(sb 2) in
-  (* shift count sc, MSB..LSB (the RTL's sc[4]..sc[0]) *)
-  let sc4 = z10 in
-  let sc3 =
-    z18 &: (sb 17 |: sb 16 |: sb 15 |: sb 14 |: sb 13 |: sb 12 |: sb 11 |: sb 10) |: z2
-  in
-  let sc2 =
-    z22
-    &: (sb 21 |: sb 20 |: sb 19 |: sb 18)
-    |: (z14 &: (sb 13 |: sb 12 |: sb 11 |: sb 10))
-    |: (z6 &: (sb 5 |: sb 4 |: sb 3 |: sb 2))
-  in
-  let sc1 =
-    z24
-    &: (sb 23 |: sb 22)
-    |: (z20 &: (sb 19 |: sb 18))
-    |: (z16 &: (sb 15 |: sb 14))
-    |: (z12 &: (sb 11 |: sb 10))
-    |: (z8 &: (sb 7 |: sb 6))
-    |: (z4 &: (sb 3 |: sb 2))
-  in
-  let sc0 =
-    ~:(sb 25)
-    &: sb 24
-    |: (z24 &: ~:(sb 23) &: sb 22)
-    |: (z22 &: ~:(sb 21) &: sb 20)
-    |: (z20 &: ~:(sb 19) &: sb 18)
-    |: (z18 &: ~:(sb 17) &: sb 16)
-    |: (z16 &: ~:(sb 15) &: sb 14)
-    |: (z14 &: ~:(sb 13) &: sb 12)
-    |: (z12 &: ~:(sb 11) &: sb 10)
-    |: (z10 &: ~:(sb 9) &: sb 8)
-    |: (z8 &: ~:(sb 7) &: sb 6)
-    |: (z6 &: ~:(sb 5) &: sb 4)
-    |: (z4 &: ~:(sb 3) &: sb 2)
-  in
-  let sc = sc4 @: sc3 @: sc2 @: sc1 @: sc0 in
+  let sc = shift_count s in
   let e1 = e0 -: uresize sc ~width:9 +:. 1 in
   (* post-normalize: shift the leading one up to the hidden-bit position *)
   let t3 = reg spec (log_shift ~f:sll (select s ~high:25 ~low:1) ~by:sc) in
