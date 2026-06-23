@@ -4,8 +4,7 @@
    skeleton exactly: the registered signals (the 24-bit remainder [R], the 26-bit quotient
    [Q] and the 5-bit state [S]) and the stall timing are the spec the oracle checks
    cycle-by-cycle and synthesis preserves; the combinational FP wrapper is idiomatic
-   Hardcaml. The original RTL is [_po/verilog/src/FPDivider.v] (45 lines); each line below
-   is tagged with the wire it ports.
+   Hardcaml. The original RTL is [_po/verilog/src/FPDivider.v] (45 lines).
 
    Restoring division — the dual of the integer/FP multiplier's shift-and-add. Each step
    doubles the remainder ([{R, 1'b0}], a left shift) and trial-subtracts the divisor
@@ -57,55 +56,50 @@ let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 5-bit state counter; [run] is both enable and synchronous clear (no reset). *)
   let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) in
-  (* {2'b01, v[22:0]} : a 24-bit mantissa (hidden bit + frac) in a 25-bit field, top bit 0. *)
+  (* a 24-bit mantissa (restored hidden bit + frac) in a 25-bit field, top bit 0 (room for
+     the trial-subtraction borrow) *)
   let mant25 v = gnd @: vdd @: select v ~high:22 ~low:0 in
   (* R (24-bit remainder) and Q (26-bit quotient): forward-declared, assigned through reg
      below so the restoring step can read the current values. *)
   let r = wire 24 in
   let q = wire 26 in
   (* ---- restoring-division step (combinational, off the current R) ---- *)
+  (* double the remainder (shift left one), then trial-subtract the divisor; d's top bit
+     is the borrow *)
   let r0 = mux2 (s ==:. 0) (mant25 i.x) (r @: gnd) in
-  (* S==0 ? {2'b01, x[22:0]} : {R, 1'b0} *)
   let d = r0 -: mant25 i.y in
-  (* r0 - {2'b01, y[22:0]} ; d[24] = borrow *)
+  (* on borrow the divisor didn't fit: restore the old remainder, quotient bit 0 *)
   let r1 = mux2 (msb d) r0 d in
-  (* d[24] ? r0 : d — restore the remainder on borrow *)
   let q0 = mux2 (s ==:. 0) (zero 26) q in
-  (* S==0 ? 0 : Q *)
   assign r (reg spec (select r1 ~high:23 ~low:0));
-  (* R <= r1[23:0] *)
+  (* shift the quotient bit [~d[24]] in from the LSB *)
   assign q (reg spec (select q0 ~high:24 ~low:0 @: ~:(msb d)));
-  (* Q <= {q0[24:0], ~d[24]} *)
   (* ---- combinational FP wrapper off the held inputs + Q ---- *)
   let sign = msb i.x ^: msb i.y in
   let xe = select i.x ~high:30 ~low:23 in
   let ye = select i.y ~high:30 ~low:23 in
   let e0 = uresize xe ~width:9 -: uresize ye ~width:9 in
-  (* {1'b0, xe} - {1'b0, ye} *)
+  (* subtracting the exponents cancels the bias, so re-add it; [Q[25]] folds in the
+     normalize shift *)
   let e1 = e0 +:. 126 +: uresize (msb q) ~width:9 in
-  (* e0 + 126 + Q[25] *)
+  (* normalize on Q[25] (quotient >= 1), then round *)
   let z0 = mux2 (msb q) (select q ~high:25 ~low:1) (select q ~high:24 ~low:0) in
-  (* Q[25] ? Q[25:1] : Q[24:0] — normalize *)
   let z1 = z0 +:. 1 in
-  (* round *)
   let normal = sign @: select e1 ~high:7 ~low:0 @: select z1 ~high:23 ~low:1 in
-  (* {sign, e1[7:0], z1[23:1]} *)
   let inf = sign @: ones 8 @: zero 23 in
-  (* {sign, 8'b11111111, 0} : divide-by-zero infinity *)
+  (* divide-by-zero infinity *)
   let inf_ov = sign @: ones 8 @: select z0 ~high:23 ~low:1 in
-  (* {sign, 8'b11111111, z0[23:1]} : overflow infinity *)
+  (* overflow infinity *)
+  (* zero dividend -> 0; zero divisor -> signed inf; exponent in range -> normal; overflow
+     -> inf; underflow -> 0 *)
   let z =
     mux2
       (xe ==:. 0)
-      (zero 32) (* xe==0 : x is zero *)
+      (zero 32)
       (mux2
          (ye ==:. 0)
-         inf (* ye==0 : divide by zero *)
-         (mux2
-            ~:(msb e1)
-            normal (* ~e1[8] : exponent in range *)
-            (mux2 ~:(select e1 ~high:7 ~low:7) inf_ov (zero 32))))
-    (* ~e1[7] : overflow -> inf, else underflow -> 0 *)
+         inf
+         (mux2 ~:(msb e1) normal (mux2 ~:(select e1 ~high:7 ~low:7) inf_ov (zero 32))))
   in
   { O.stall = i.run &: ~:(s ==:. 26); z }
 ;;

@@ -41,15 +41,16 @@ end
 let create (i : _ I.t) : _ O.t =
   let cin = i.u &: i.c_in in
   let flags_word =
-    (* MOV' flags-read: {N,Z,C,OV, 20'b0, 8'h53} — the 0x53 id byte, AGENT.md §8 *)
+    (* MOV' flags-read: the four flags in the top nibble over the 0x53 id byte (AGENT.md
+       §8 — the hardware id byte, not the C reference's 0xD0) *)
     concat_msb [ i.n_in; i.z_in; i.c_in; i.ov_in; zero 20; of_unsigned_int ~width:8 0x53 ]
   in
   let mov =
-    (* MOV's four forms as a mux2 tree on u/q/v (cf. RISC5.v:111's nested ?:); see the
-       MOV-forms waveform. Read each mux2 as a hardware if: u ? (q ? imm<<16 : v ?
-       flags_word : H) : C1. So u=0 -> C1 (normal move; C1 already encodes the q imm/R.c
-       choice); u=1,q=1 -> imm<<16; u=1,q=0,v=1 -> flags word (N,Z,C,OV); u=1,q=0,v=0 -> H
-       (MUL high word / DIV remainder). *)
+    (* MOV's four forms as a mux2 tree on u/q/v; see the MOV-forms waveform. Read each
+       mux2 as a hardware if: u ? (q ? imm<<16 : v ? flags_word : H) : C1. So u=0 -> C1
+       (normal move; C1 already encodes the q imm/R.c choice); u=1,q=1 -> imm<<16;
+       u=1,q=0,v=1 -> flags word (N,Z,C,OV); u=1,q=0,v=0 -> H (MUL high word / DIV
+       remainder). *)
     mux2 i.u (mux2 i.q (i.imm @: zero 16) (mux2 i.v flags_word i.h)) i.c1
   in
   (* ADD and SUB, each one bit wider, via [addsub op] (op is +: or -:). The unsigned widen

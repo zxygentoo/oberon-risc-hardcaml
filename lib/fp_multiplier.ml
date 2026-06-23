@@ -4,8 +4,7 @@
    skeleton exactly: the registered signals (the 48-bit product [P] and the 5-bit state
    [S]) and the stall timing are the spec the oracle checks cycle-by-cycle and synthesis
    preserves; the combinational FP wrapper between the register boundaries is idiomatic
-   Hardcaml. The original RTL is [_po/verilog/src/FPMultiplier.v] (34 lines); each line
-   below is tagged with the wire it ports.
+   Hardcaml. The original RTL is [_po/verilog/src/FPMultiplier.v] (34 lines).
 
    The mantissa engine is the integer {!Multiplier} in miniature. [P] is a 48-bit
    dual-role register: its low half holds [x]'s 24-bit mantissa being consumed (LSB =
@@ -53,43 +52,37 @@ let create (i : _ I.t) : _ O.t =
      so P's feedback can test S==0 for the load. *)
   let p =
     reg_fb spec ~width:48 ~f:(fun p ->
+      (* y's mantissa (with restored hidden bit), gated by the current x-mantissa bit P[0] *)
       let w0 = mux2 (lsb p) (vdd @: select i.y ~high:22 ~low:0) (zero 24) in
-      (* P[0] ? {1'b1, y[22:0]} : 0 *)
+      (* 25-bit add of the accumulator's top 24 bits, the carry becoming the new MSB *)
       let w1 = uresize (select p ~high:47 ~low:24) ~width:25 +: uresize w0 ~width:25 in
-      (* {1'b0, P[47:24]} + {1'b0, w0} *)
+      (* S=0 loads x's mantissa into the low half; else accumulate-then-shift-right-by-one *)
       mux2
         (s ==:. 0)
-        (zero 24 @: vdd @: select i.x ~high:22 ~low:0) (* load {24'b0, 1'b1, x[22:0]} *)
-        (w1 @: select p ~high:23 ~low:1)
-      (* {w1, P[23:1]} *))
+        (zero 24 @: vdd @: select i.x ~high:22 ~low:0)
+        (w1 @: select p ~high:23 ~low:1))
   in
   (* ---- combinational FP wrapper off the held inputs + P ---- *)
   let sign = msb i.x ^: msb i.y in
   let xe = select i.x ~high:30 ~low:23 in
   let ye = select i.y ~high:30 ~low:23 in
   let e0 = uresize xe ~width:9 +: uresize ye ~width:9 in
-  (* xe + ye *)
+  (* remove one exponent bias; bump by one when the product reached bit 47 (>= 2.0) *)
   let e1 = e0 -:. 127 +: uresize (msb p) ~width:9 in
-  (* e0 - 127 + P[47] *)
+  (* round (+1) and normalize, from bit 47 or 46 depending on that carry *)
   let z0 =
     mux2 (msb p) (select p ~high:47 ~low:23 +:. 1) (select p ~high:46 ~low:22 +:. 1)
   in
-  (* P[47] ? P[47:23]+1 : P[46:22]+1 — round and normalize *)
   let mant = select z0 ~high:23 ~low:1 in
-  (* z0[23:1] *)
   let normal = sign @: select e1 ~high:7 ~low:0 @: mant in
-  (* {sign, e1[7:0], z0[23:1]} *)
   let inf = sign @: ones 8 @: mant in
-  (* {sign, 8'b11111111, z0[23:1]} *)
+  (* a zero operand -> 0; exponent in range -> normal; overflow -> inf; underflow -> 0
+     (the borrow/sign bits of e1 distinguish the three exponent cases) *)
   let z =
     mux2
       (xe ==:. 0 |: (ye ==:. 0))
-      (zero 32) (* xe==0 | ye==0 *)
-      (mux2
-         ~:(msb e1)
-         normal (* ~e1[8] : exponent in range *)
-         (mux2 ~:(select e1 ~high:7 ~low:7) inf (zero 32)))
-    (* ~e1[7] : overflow -> inf, else underflow -> 0 *)
+      (zero 32)
+      (mux2 ~:(msb e1) normal (mux2 ~:(select e1 ~high:7 ~low:7) inf (zero 32)))
   in
   { O.stall = i.run &: ~:(s ==:. 25); z }
 ;;

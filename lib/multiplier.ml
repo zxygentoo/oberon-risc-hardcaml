@@ -3,9 +3,7 @@
    Implementation note. This is a *sequential* unit, so per AGENT.md §2 we mirror
    RISC5.v's skeleton exactly — which signals are registered and the state/stall timing
    are the spec the oracle checks cycle-by-cycle and synthesis preserves. The original RTL
-   is [_po/verilog/src/Multiplier.v] (25 lines); each [create] line below is tagged with
-   the wire it ports (formatting these as verbatim multi-line code in a comment doesn't
-   survive ocamlformat, so they stay inline).
+   is [_po/verilog/src/Multiplier.v] (25 lines).
 
    The 64-bit [P] register is dual-role: its low half is the multiplier being consumed
    (its LSB is the current bit), its high half is the running accumulator. Each step adds
@@ -46,18 +44,15 @@ let create (i : _ I.t) : _ O.t =
   (* P : 64-bit dual-role register. [s] is in scope, so P's feedback can test S==0/S==32. *)
   let p =
     reg_fb spec ~width:64 ~f:(fun p ->
+      (* the multiplicand, gated by the current multiplier bit P[0] *)
       let w0 = mux2 (lsb p) i.y (zero 32) in
-      (* P[0] ? y : 0 *)
+      (* sign-extend both to 33 bits so the add's carry/sign becomes the new MSB *)
       let hi = sresize (select p ~high:63 ~low:32) ~width:33 in
-      (* {P[63],P[63:32]} *)
       let pp = sresize w0 ~width:33 in
-      (* {w0[31],w0} *)
+      (* signed correction: the lone subtract on the last step (S=32; §8) *)
       let w1 = mux2 (s ==:. 32 &: i.u) (hi -: pp) (hi +: pp) in
-      mux2
-        (s ==:. 0)
-        (zero 32 @: i.x) (* load {32'b0, x} *)
-        (w1 @: select p ~high:31 ~low:1)
-      (* {w1[32:0], P[31:1]} *))
+      (* S=0 loads x into the low half; otherwise accumulate-then-shift-right-by-one *)
+      mux2 (s ==:. 0) (zero 32 @: i.x) (w1 @: select p ~high:31 ~low:1))
   in
   { O.stall = i.run &: ~:(s ==:. 33); z = p }
 ;;

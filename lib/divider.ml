@@ -3,8 +3,7 @@
    Implementation note. Sequential unit → mirror RISC5.v's skeleton exactly (AGENT.md §2);
    this is the Multiplier's twin — identical 6-bit [S] counter, [stall = run & ~(S==33)],
    run-gated with no reset, 33 cycles, and a dual-role 64-bit register [RQ]. Original RTL
-   is [_po/verilog/src/Divider.v] (28 lines); each [create] line is tagged with the wire
-   it ports.
+   is [_po/verilog/src/Divider.v] (28 lines).
 
    [RQ] holds [remainder | quotient] (high 32 | low 32). Load (S=0) puts [|x|] in the low
    half and 0 in the high. Each step is one round of *restoring division*: shift [{R,Q}]
@@ -43,29 +42,24 @@ let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 6-bit counter; run is enable + synchronous clear (no reset) — twin of Multiplier. *)
   let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) in
+  (* a negative signed dividend — divide [|x|], then sign-correct the outputs below *)
   let sign = msb i.x &: i.u in
-  (* x[31] & u : a negative signed dividend *)
   let x0 = mux2 sign (negate i.x) i.x in
-  (* sign ? -x : x (= |x|) *)
   (* RQ : 64-bit [remainder | quotient]; one restoring-division round per step. *)
   let rq =
     reg_fb spec ~width:64 ~f:(fun rq ->
+      (* shift [{R,Q}] left one, then trial-subtract the divisor *)
       let w0 = select rq ~high:62 ~low:31 in
-      (* RQ[62:31] : {R,Q} shifted left 1 *)
       let w1 = w0 -: i.y in
-      (* w0 - y : trial subtract *)
       mux2
         (s ==:. 0)
-        (zero 32 @: x0) (* load {32'b0, x0} *)
-        (mux2 (msb w1) w0 w1 (* w1[31] ? w0 (restore) : w1 (keep) *)
-         @: select rq ~high:30 ~low:0 (* RQ[30:0] : quotient shifted left 1 *)
-         @: ~:(msb w1)))
-    (* ~w1[31] : new quotient bit *)
+        (zero 32 @: x0)
+        (* keep the difference (bit 1) or restore the old remainder (bit 0); the borrow
+           [~w1[31]] is the new quotient bit, shifted into the LSB *)
+        (mux2 (msb w1) w0 w1 @: select rq ~high:30 ~low:0 @: ~:(msb w1)))
   in
   let q = select rq ~high:31 ~low:0 in
-  (* RQ[31:0] : quotient of |x|/y *)
   let r = select rq ~high:63 ~low:32 in
-  (* RQ[63:32] : remainder of |x|/y *)
   (* floored-division sign-correction for negative dividends ([-q-1] = [~q]) *)
   let quot = mux2 sign (mux2 (r ==:. 0) (negate q) ~:q) q in
   let rem = mux2 sign (mux2 (r ==:. 0) (zero 32) (i.y -: r)) r in

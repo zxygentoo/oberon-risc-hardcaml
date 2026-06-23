@@ -4,8 +4,7 @@
    skeleton exactly: the registered signals (the three pipeline stages x3/y3, Sum, t3, plus
    the 2-bit State) and the stall timing are the spec the oracle checks and synthesis
    preserves; the combinational datapath between the register boundaries is idiomatic
-   Hardcaml. Original RTL is [_po/verilog/src/FPAdder.v] (132 lines); each block below is
-   tagged with the stage it implements.
+   Hardcaml. Original RTL is [_po/verilog/src/FPAdder.v] (132 lines).
 
    The pipeline. Stage 0 unpacks x/y into sign, 8-bit exponent and 25-bit mantissa (restored
    hidden bit + a low guard bit), takes the exponent difference to pick the larger exponent
@@ -56,27 +55,25 @@ let create (i : _ I.t) : _ O.t =
   let stall = i.run &: ~:(state ==:. 3) in
   (* ---- unpack (combinational off the held inputs) ---- *)
   let xs = msb i.x in
-  (* sign *)
   let ys = msb i.y in
+  (* FLT feeds the integer through with a fixed exponent (0x96 = 150 = 2^23's bias) *)
   let xe = mux2 i.u (of_unsigned_int ~width:8 0x96) (select i.x ~high:30 ~low:23) in
-  (* u ? 8'h96 : x[30:23] *)
   let ye = select i.y ~high:30 ~low:23 in
+  (* 25-bit mantissa: restored hidden bit (forced for FLT) + low guard bit *)
   let xm =
     (~:(i.u) |: select i.x ~high:23 ~low:23) @: select i.x ~high:22 ~low:0 @: gnd
   in
-  (* {~u|x[23], x[22:0], 0} : restored hidden bit + guard *)
   let ym = (~:(i.u) &: ~:(i.v)) @: select i.y ~high:22 ~low:0 @: gnd in
-  (* {~u&~v, y[22:0], 0} *)
+  (* null operands (exponent and fraction both zero) — masked into the output below *)
   let xn = select i.x ~high:30 ~low:0 ==:. 0 in
-  (* x[30:0]==0 : null *)
   let yn = select i.y ~high:30 ~low:0 ==:. 0 in
   (* ---- exponent difference -> larger exponent e0 + the two right-shift counts ---- *)
   let dx = uresize xe ~width:9 -: uresize ye ~width:9 in
   let dy = uresize ye ~width:9 -: uresize xe ~width:9 in
+  (* the larger exponent wins; each operand shifts right by its exponent deficit (0 if it
+     is the larger), the borrow bit distinguishing the two cases *)
   let e0 = mux2 (msb dx) (uresize ye ~width:9) (uresize xe ~width:9) in
-  (* dx[8] ? ye : xe *)
   let sx = mux2 (msb dy) (zero 8) (select dy ~high:7 ~low:0) in
-  (* dy[8] ? 0 : dy *)
   let sy = mux2 (msb dx) (zero 8) (select dx ~high:7 ~low:0) in
   (* ---- Stage 0: two's-complement convert + denormalize the smaller operand -> x3, y3
      ---- *)
@@ -84,17 +81,16 @@ let create (i : _ I.t) : _ O.t =
      with the operand sign; saturates to all-sign past 32) — the RTL's staged radix-4
      shifter *)
   let denorm m ~sign ~by = select (log_shift ~f:sra (sign @: m) ~by) ~high:24 ~low:0 in
+  (* convert a negative operand to two's complement before the add (not for FLT) *)
   let x0 = mux2 (xs &: ~:(i.u)) (negate xm) xm in
-  (* xs&~u ? -xm : xm *)
   let y0 = mux2 (ys &: ~:(i.u)) (negate ym) ym in
   let x3 = reg spec (denorm x0 ~sign:xs ~by:sx) in
   let y3 = reg spec (denorm y0 ~sign:ys ~by:sy) in
-  (* ---- Stage 1: two's-complement add -> Sum ---- *)
+  (* ---- Stage 1: two's-complement add -> Sum (sign-extended by 2 to hold the carry) ---- *)
   let sum = reg spec ((xs @: xs @: x3) +: (ys @: ys @: y3)) in
-  (* {xs,xs,x3} + {ys,ys,y3} *)
   (* ---- Stage 2: sign-magnitude + guard round, leading-one detect, post-normalize ---- *)
+  (* back to sign-magnitude, then +1 rounds via the guard bit *)
   let s = mux2 (msb sum) (negate sum) sum +:. 1 in
-  (* (Sum[26] ? -Sum : Sum) + 1 *)
   let sb n = select s ~high:n ~low:n in
   (* leading-one detector: z(2k) is high iff s[25:2k] are all zero *)
   let z24 = ~:(sb 25) &: ~:(sb 24) in
@@ -146,12 +142,12 @@ let create (i : _ I.t) : _ O.t =
   in
   let sc = sc4 @: sc3 @: sc2 @: sc1 @: sc0 in
   let e1 = e0 -: uresize sc ~width:9 +:. 1 in
+  (* post-normalize: shift the leading one up to the hidden-bit position *)
   let t3 = reg spec (log_shift ~f:sll (select s ~high:25 ~low:1) ~by:sc) in
   (* ---- output assembly ---- *)
+  (* FLOOR reads the integer straight out of the aligned sum (sign-extended) *)
   let floor_z = sresize (select sum ~high:26 ~low:1) ~width:32 in
-  (* {{7{Sum[26]}}, Sum[25:1]} *)
   let normal_z = msb sum @: select e1 ~high:7 ~low:0 @: select t3 ~high:23 ~low:1 in
-  (* {Sum[26], e1[7:0], t3[23:1]} *)
   let z =
     mux2
       i.v
