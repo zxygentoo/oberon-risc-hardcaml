@@ -21,5 +21,4 @@
   hardcaml_waveterm
   ppx_hardcaml
   ppx_expect
-  qcheck-core
-  core))
+  qcheck-core))
