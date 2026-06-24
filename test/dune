@@ -1,11 +1,23 @@
 ; Phase 0 scaffold test: proves the toolchain wiring end to end on the ox switch
-;  - risc5        : our (placeholder) Hardcaml design library
+;  - risc5        : our Hardcaml design library
 ;  - oracle       : the OCaml emulator core, compiled from the vendored submodule
 ;  - hardcaml     : build + simulate a circuit
-;  - hardcaml_waveterm : render an ASCII waveform of the counter smoke
+;  - hardcaml_waveterm : render an ASCII waveform
+;
+; The fast suite (FP replays/fuzz + single-instruction CPU lockstep + the lib's inline
+; tests) runs on `dune runtest` in a few seconds. The heavyweight boot-handoff checkpoint
+; (~22 s — it boots the real Oberon disk to the OS handoff) is OPT-IN, like the RTL co-sim
+; (AGENT.md §6); run it with:  dune build @boot_checkpoint
 
 (tests
  (names
+  test_scaffold
+  test_fp_adder
+  test_fp_multiplier
+  test_fp_divider
+  test_cpu_lockstep)
+ (modules
+  fp_replay
   test_scaffold
   test_fp_adder
   test_fp_multiplier
@@ -16,3 +28,17 @@
  (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
  (preprocess
   (pps ppx_hardcaml)))
+
+; Phase 5: boot-handoff checkpoint (AGENT.md §6 layer 5). Built by @check so it can't rot,
+; but run only on demand (it boots the real disk image for millions of interpreter cycles).
+
+(executable
+ (name test_boot_checkpoint)
+ (modules test_boot_checkpoint)
+ (libraries risc5 oracle hardcaml))
+
+(rule
+ (alias boot_checkpoint)
+ (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./test_boot_checkpoint.exe)))

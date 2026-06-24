@@ -99,7 +99,7 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
       { Spi.I.clock = i.clock
       ; rst_n = i.rst_n
       ; start = core.wr &: ioenb &: (iowadr ==:. 4)
-      ; fast = select spi_ctrl.value ~high:2 ~low:2
+      ; fast = select (spi_ctrl.value -- "spi_ctrl") ~high:2 ~low:2
       ; data_tx = core.outbus
       ; miso = i.miso
       }
