@@ -198,8 +198,8 @@ Vivado-specific layer.
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
 | **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
 | **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
-| **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** on the plain Cyclesim interpreter (profiled fast enough — §6) |
-| **6** | Peripherals + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/SPI/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
+| **5** | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter (§6) |
+| **6** | **Remaining** peripherals (framebuffer/VGA, PS/2 kbd+mouse, UART) + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
 | **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + full-boot: Oberon still boots & runs); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
@@ -220,7 +220,7 @@ Each layer's oracle already exists next door — this is our biggest leverage.
 **Two oracles, split by the question they answer.** The OCaml `risc_core` emulator is the
 *system-state* oracle: bit-exact architectural state (`pc`/`r[]`/`H`/`flags`) at *instruction*
 granularity (its ms-clock is injected, not cycle-derived — it sees no wire and no cycle). Its
-home is whole-machine lockstep and boot (layers 4–5). The **original Verilog itself**, run
+home is single-instruction lockstep (layer 4) and the boot-handoff checkpoint (layer 5). The **original Verilog itself**, run
 through **Verilator** (our `test/cosim/`), is the *wire-state* oracle: any signal at *cycle*
 granularity, against the spec directly — the §2 fidelity authority (layer 3, exhaustively at
 layer 6). They answer orthogonal questions — *is the result correct?* vs *did we copy the
@@ -244,19 +244,25 @@ dumps, fine for a periodic fidelity check.)
 4. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
    compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
    `qcheck`-fuzzed, like the OCaml repo's `test/cosim/test_cosim_cpu.ml` (steering §8).
-5. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
-   cycles, compare CPU state / framebuffer. Runs on the **plain Cyclesim interpreter**: profiled
-   fast enough (~0.39 M cycles/s → boot golden ≈ 1 min; `trace_all` for `lookup_*` is free), so
-   the `lookup_reg`/`lookup_mem` harness (layer 4) carries straight over. `hardcaml_c` was
-   profiled and rejected (~3.5× only, plus minutes per `-O2` compile of a 1M-line `eval.c`);
-   `hardcaml_verilator` won't build vs Verilator 5.048 (§9).
+5. **Boot-handoff checkpoint** — *not* per-instruction lockstep, which a booting machine defeats
+   (the §8 code-address skew while running from ROM, the interrupt-free oracle, its injected vs our
+   cycle-derived ms-clock, and SD/timer poll timing all diverge step-by-step without diverging in
+   *result*). Instead: drive our SoC's SD card from the **same `Oracle.Disk` + `.dsk`** the oracle
+   boots, run both through the SD load to the **OS handoff** (the boot loader jumps to the inner
+   core at `pc=0` in low RAM — empirically ~403 K instructions, ~21 K SPI transactions), and compare
+   the **loaded image + architectural state there**. Exact because the handoff is where
+   representations realign: low-RAM code is bit-identical (§8 self-heals), the bootstrap is
+   interrupt-free, and only the end result — not per-step timing — is compared. Plain Cyclesim
+   interpreter (~0.39 M cycles/s, `trace_all`/`lookup_*` free; `hardcaml_c` rejected at ~3.5× with
+   multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). The full
+   boot past the handoff + framebuffer is the Phase-6 visual golden.
 6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
    `hardcaml_verify` (installed); the exhaustive form of layer 3.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
 in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
-system-level harness (full-boot, the Phase 0 scaffold). Module tests live *inline in the design
+system-level harness (the boot checkpoint, the Phase 0 scaffold). Module tests live *inline in the design
 module's own `.ml`* via
 `ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
 freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
@@ -354,8 +360,14 @@ against the RTL itself they can't arise.*
   (2^23; exponent 150, positive), so no divergent shift occurs. Our port follows the hardware
   and is verified bit-exact to `FPAdder.v` over 26k stimuli (`test/cosim/`); the FP-vector
   replay (§6) steers around the non-`0x4B000000` forms.
-- **Addressing.** FPGA uses a 20-bit address bus (out-of-range aliases into 1 MB); emulators
-  decode 32 bits. Identical for well-behaved software.
+- **Addressing.** FPGA uses a 20-bit RAM window (out-of-range aliases into 1 MB) + a 22-bit word
+  PC; emulators decode 32 bits. Identical for well-behaved software. The divergence is confined to
+  *code addresses*: the oracle's ROM base (byte `0xFFFFF800`, pc word `0x3FFFFE00`) differs from
+  ours (`RISC5.v`'s `StartAdr` word `0x3FF800`), so `pc` and `R15` links differ by a constant
+  offset *while running from ROM* — not a low-bit mask (the ROMs sit at different offsets-from-top).
+  Data addresses and **all low-RAM code are bit-identical**, so it self-heals the moment the OS runs
+  from low RAM — which is why boot is verified by a handoff checkpoint, not per-instruction lockstep
+  (§6 layer 5).
 - **Register file timing:** **async read** (combinational `dout` from the read address),
   **sync write** on `clk`. Three read ports; `rno0` is *also* the write address. `ira0 = BR
   ? 15 : ira` (branch links to R15).
