@@ -109,8 +109,8 @@ Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
 
    *What cycle-fidelity is — and isn't — for.* The OCaml oracle is **instruction-level** (its
    ms-clock is injected via `set_time`, not cycle-derived; it steps by instruction), so it
-   proves *behavioral* correctness and needs **no** cycle-accuracy — both lockstep levels (§6)
-   would pass a faster MUL just the same. Cycle-accuracy earns its keep on three *other* counts:
+   proves *behavioral* correctness and needs **no** cycle-accuracy — both the single-instruction lockstep and
+   the boot checkpoint (§6) would pass a faster MUL just the same. Cycle-accuracy earns its keep on three *other* counts:
    the **exhaustive** Phase-8 equivalence proof vs `RISC5.v` (catching rare corners that
    sampling misses), `RISC5.v` as a **cycle-level debugging oracle** through the hard core/SoC
    phases, and the **bright-line discipline** (match the RTL exactly ⇒ no per-deviation "is this
@@ -198,11 +198,11 @@ Vivado-specific layer.
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
 | **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
 | **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
-| **5** | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter (§6) |
+| **5** ✅ | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter, opt-in via `dune build @boot_checkpoint` (§6) |
 | **6** | **Remaining** peripherals (framebuffer/VGA, PS/2 kbd+mouse, UART) + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
-| **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + full-boot: Oberon still boots & runs); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
+| **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
 `RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
@@ -254,7 +254,8 @@ dumps, fine for a periodic fidelity check.)
    representations realign: low-RAM code is bit-identical (§8 self-heals), the bootstrap is
    interrupt-free, and only the end result — not per-step timing — is compared. Plain Cyclesim
    interpreter (~0.39 M cycles/s, `trace_all`/`lookup_*` free; `hardcaml_c` rejected at ~3.5× with
-   multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). The full
+   multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). **Opt-in** — the ~22 s boot is too slow for the default
+   `dune runtest` (like the RTL co-sim), so run it with `dune build @boot_checkpoint`. The full
    boot past the handoff + framebuffer is the Phase-6 visual golden.
 6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
    `hardcaml_verify` (installed); the exhaustive form of layer 3.
@@ -291,7 +292,7 @@ they *never reach the generated Verilog*: `Rtl.print` lowers the circuit graph, 
 OCaml deps, so the netlist is identical with or without them. (Escape hatch, unused: `(pps …
 -inline-test-drop)` strips the test bodies and their deps — at the cost of those tests in that
 build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
-(single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/` (depending on `risc5` +
+(single-instruction lockstep Phase 4, the boot checkpoint Phase 5) live in `test/` (depending on `risc5` +
 `oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
 `(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the Phase 0 `test_scaffold` smoke
 stays in `test/`.
@@ -389,7 +390,8 @@ oberon-risc-hardcaml/
   dune-project, dune      ← root build config (dune restricted to: lib test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
                             real modules — shifters, ALU, CPU core… — from Phase 1)
-  test/                   ← tests (`test_scaffold` = the Phase 0 wiring smoke)
+  test/                   ← tests; `test_scaffold` = Phase-0 smoke, `test_boot_checkpoint` =
+                            Phase-5 boot checkpoint (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
@@ -422,7 +424,7 @@ Phase-5 boot speed and **both rejected** (profiled 2026-06-25): `hardcaml_verila
 (Verilator-backed `Cyclesim.t`) won't build against the system Verilator 5.048
 (`__Vscope_*`→`__Vscopep_*` rename), and `hardcaml_c` (installed) ran only ~3.5× the interpreter
 while needing minutes to compile its 63 MB / ~1M-line `eval.c` per design change. The boot
-lockstep runs on the **plain Cyclesim interpreter** instead (§6) — fast enough, and it keeps the
+checkpoint runs on the **plain Cyclesim interpreter** instead (§6) — fast enough, and it keeps the
 full `lookup_*` introspection the harness needs.
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
@@ -459,6 +461,12 @@ full `lookup_*` introspection the harness needs.
 - Verified end to end by `test/test_scaffold.ml` (`dune test`): `oracle` (`Oracle.Risc`)
   callable on ox, `ppx_hardcaml` interfaces + `Cyclesim.With_interface` (sim `0xFF<<4=0xFF0`),
   and a `hardcaml_waveterm` waveform render of a counter.
+- **Running tests.** `dune runtest` = the fast always-on suite (FP replays/fuzz, single-instruction
+  CPU lockstep, the lib's co-located inline tests) — a few seconds. Two heavyweight checks are
+  **opt-in** (built by `@check` so they can't rot, but kept out of `dune runtest`): `dune build
+  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s), and
+  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator). `dune build @check` is the
+  type-check/pre-commit gate.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** — the ox
   `ocamlformat` reports a git-hash version, so a normal pin (e.g. the emulator's `0.29.0`)
   would mismatch and disable formatting. Format with `dune fmt`.
