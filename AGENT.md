@@ -198,7 +198,7 @@ Vivado-specific layer.
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
 | **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
 | **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
-| **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
+| **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** on the plain Cyclesim interpreter (profiled fast enough — §6) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/SPI/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
@@ -245,8 +245,11 @@ dumps, fine for a periodic fidelity check.)
    compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
    `qcheck`-fuzzed, like the OCaml repo's `test/cosim/test_cosim_cpu.ml` (steering §8).
 5. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
-   cycles, compare CPU state / framebuffer. Fast backend: `hardcaml_c` or `hardcaml_verilator`
-   (Verilator-backed `Cyclesim.t`, clean deps — §9).
+   cycles, compare CPU state / framebuffer. Runs on the **plain Cyclesim interpreter**: profiled
+   fast enough (~0.39 M cycles/s → boot golden ≈ 1 min; `trace_all` for `lookup_*` is free), so
+   the `lookup_reg`/`lookup_mem` harness (layer 4) carries straight over. `hardcaml_c` was
+   profiled and rejected (~3.5× only, plus minutes per `-O2` compile of a 1M-line `eval.c`);
+   `hardcaml_verilator` won't build vs Verilator 5.048 (§9).
 6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
    `hardcaml_verify` (installed); the exhaustive form of layer 3.
 
@@ -402,9 +405,13 @@ out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~previ
 move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardcaml_of_verilog`
 (yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
 OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
-**Verilator** out-of-process (`test/cosim/`, §6). `hardcaml_verilator` (Verilator-backed
-`Cyclesim.t`; deps `hardcaml`+`ctypes`, no `jsonaf` → installs clean) is the planned Phase-5
-fast-sim backend, not a Verilog importer. `hardcaml_c` when Phase 5 arrives.
+**Verilator** out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
+Phase-5 boot speed and **both rejected** (profiled 2026-06-25): `hardcaml_verilator`
+(Verilator-backed `Cyclesim.t`) won't build against the system Verilator 5.048
+(`__Vscope_*`→`__Vscopep_*` rename), and `hardcaml_c` (installed) ran only ~3.5× the interpreter
+while needing minutes to compile its 63 MB / ~1M-line `eval.c` per design change. The boot
+lockstep runs on the **plain Cyclesim interpreter** instead (§6) — fast enough, and it keeps the
+full `lookup_*` introspection the harness needs.
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).

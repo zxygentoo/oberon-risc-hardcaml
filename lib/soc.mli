@@ -11,10 +11,10 @@
     [stall_x] is tied low (no video DMA until Phase 6). [irq] and the millisecond counter
     come from a free-running timer: a [clocks_per_ms]-cycle prescaler raises [limit] (the
     IRQ source) which ticks [cnt1], readable at MMIO word 0; the other MMIO words read 0
-    (peripherals are Phase 6). Architectural state-as-outputs for the hardcaml_c boot
-    lockstep comes next (5.2c). [~clocks_per_ms] defaults to 25000 (1 ms at 25 MHz); the
-    boot ROM image is a [~contents] parameter, keeping the design library free of
-    [prom.mem]. *)
+    (peripherals are Phase 6). The boot lockstep (5.3) runs on the plain Cyclesim
+    interpreter, where lookup_reg/lookup_mem reach this state directly. [~clocks_per_ms]
+    defaults to 25000 (1 ms at 25 MHz); the boot ROM image is a [~contents] parameter,
+    keeping the design library free of [prom.mem]. *)
 
 open Hardcaml
 

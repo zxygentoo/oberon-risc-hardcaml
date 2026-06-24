@@ -92,8 +92,9 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Integration on the interpreter (no oracle): a hand-assembled boot stub at ROM[0]
    exercises fetch from ROM, a word store into RAM, and a load back — verified through the
-   core's named register file (lookup works on the interpreter; on hardcaml_c we surface
-   state as outputs, 5.2c). Reset jumps to StartAdr=0x3FF800 → byte 0xFFE000 → ROM word 0. *)
+   core's named register file (lookup works on the interpreter — which is what the
+   Phase-5.3 boot lockstep uses too). Reset jumps to StartAdr=0x3FF800 → byte 0xFFE000 →
+   ROM word 0. *)
 
 let%expect_test "soc — fetch ROM, store + load round-trip through RAM" =
   let module Sim = Cyclesim.With_interface (I) (O) in
