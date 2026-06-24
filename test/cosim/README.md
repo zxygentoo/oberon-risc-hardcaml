@@ -18,17 +18,24 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 ## Run
 
 ```sh
-bash test/cosim/run.sh                  # all FP units
-bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider)
+bash test/cosim/run.sh                  # everything (FP units + SPI)
+bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi)
+bash test/cosim/run.sh spi              # just the SPI master
 ```
 
 Ensures the reference RTL is present (fetching it on first run), builds the OCaml dumper, then
-for each unit dumps the Hardcaml port's output over the frozen `fp_vectors` stimuli for that unit
-(`A`/`M`/`D` lines) **+ 20 000 random fuzz** cases, verilates the reference `.v`, and asserts
-`RTL z == port z` **and** `RTL stall-length == port stall-length` for every stimulus (expect
-`0 value-mismatch, 0 cycle-mismatch`). Scratch (the downloaded zip,
-Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the only tree write is the
-fetched `_po/verilog/src/*.v` (git-ignored).
+for each unit dumps the Hardcaml port's output over a stimulus set, verilates the reference `.v`,
+and asserts the RTL matches the port in **both result and timing** for every stimulus (expect
+`0 value-mismatch, 0 cycle-mismatch`):
+
+- **FP units** — the frozen `fp_vectors` stimuli for that unit (`A`/`M`/`D` lines) **+ 20 000
+  random fuzz**; asserts `RTL z == port z` **and** `RTL stall-length == port stall-length`.
+- **SPI** — corner data words in both rates **+ ~640 random fuzz transfers** with a recorded
+  per-cycle MISO stimulus; asserts, **cycle-by-cycle**, `RTL (rdy, sclk, mosi) == port's`, plus
+  final `dataRx` and total cycle count (`0 value-, wave-, cycle-mismatch`).
+
+Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
+only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
 
 ## Reference RTL (fetch-on-demand + checksum pin)
 
@@ -46,16 +53,17 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | file | role |
 |---|---|
 | `dump_fp.ml` | one dumper for all FP units: drive `Risc5.Fp_<unit>` (chosen by the unit-name argument) over the stimuli, dump `"x y [u v] z cycles"` lines (`cycles` = the port's stall length) — the stimulus source |
-| `fp_cosim.h` | shared harness: `tick` + the `run → drain → count` protocol, templated over the Verilator top type so all three units reuse one definition (and one cycle-count) |
-| `<unit>.cpp` | Verilator harness, one per unit: just the stimulus loop — replay each line through `<Unit>.v` (via `fp_cosim.h`'s `drain`), compare `z` and the RTL's stall length against the port's |
+| `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
+| `fp_cosim.h` | shared harness: `tick` + the FP `run → drain → count` protocol, templated over the Verilator top type so all three FP units reuse one definition (`spi.cpp` reuses only `tick`) |
+| `<unit>.cpp` | Verilator harness, one per unit: replay each dumped line through `<Unit>.v` and compare outputs + timing against the port's — FP via `fp_cosim.h`'s `drain` (`z` + stall length); `spi.cpp` cycle-by-cycle (`rdy/sclk/mosi` + `dataRx` + cycle count) |
 | `run.sh` | glue: build → dump → verilate → cross-check, per unit |
 
-The OCaml dumper builds under `dune build @check` (Verilator-free), so it can't silently rot
+The OCaml dumpers build under `dune build @check` (Verilator-free), so they can't silently rot
 even though the cross-check itself only runs via `run.sh`.
 
 ## Adding another unit (the CPU core, peripherals)
 
-The dumper is shared, so adding a stall-based unit is three small steps:
+**Stall-based units** (`run`/`stall`/`z`) reuse the shared `dump_fp` dumper — three small steps:
 
 1. a `*_driver ()` in `dump_fp.ml` (build its sim, set its inputs, return `drive`'s
    `(z, cycles)`) plus one arm in the unit-name `match` — the `run` → drain on `stall` → read
@@ -66,3 +74,9 @@ The dumper is shared, so adding a stall-based unit is three small steps:
 
 The adder carries `u`/`v` modifiers and a 6-field vector line (`A`); the mul/div units don't
 (`M`/`D`, 4-field). The `driver` record's `has_uv`/`tag` fields capture exactly that difference.
+
+**Other interfaces** (handshake/serial peripherals, the SoC) don't fit `run`/`stall`/`z`, so
+they get their own dumper + harness — see `dump_spi.ml` / `spi.cpp` as the template: dump a
+per-cycle trace (MISO stimulus + the outputs to check), and have the `.cpp` drain the RTL on its
+own terminal condition (here `rdy` re-raising) while comparing every cycle. Wire it in with a
+`cosim_spi`-style function and a `run_one` arm.

@@ -7,7 +7,7 @@
 # checksum-verified against test/cosim/rtl-sources.txt — so a fresh clone with verilator just
 # works. See test/cosim/README.md.
 #
-#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | all]  (default: all)
+#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | spi | all]  (default: all)
 set -euo pipefail
 cd "$(dirname "$0")/../.." # repo root
 eval "$(opam env --switch 5.2.0+ox --set-switch)"
@@ -76,6 +76,24 @@ cosim_unit() {
   "$work/obj_dir/cosim" "$work/port_z.txt"
 }
 
+# the SPI is a serial handshake unit, not stall-based, so it has its own dumper (dump_spi, no
+# fp_vectors arg) and harness (spi.cpp); otherwise the build → dump → verilate → check flow is
+# the same as cosim_unit.
+cosim_spi() {
+  local work="$work_root/spi"
+  mkdir -p "$work"
+  echo "=== spi ==="
+  echo "[1/3] dumping Hardcaml spi outputs over the stimulus set ..."
+  dune build test/cosim/dump_spi.exe
+  _build/default/test/cosim/dump_spi.exe >"$work/port.txt"
+  echo "[2/3] verilating $rtl_dir/SPI.v + harness ..."
+  verilator --cc --exe --build -Wno-fatal --top-module SPI \
+    --Mdir "$work/obj_dir" \
+    "$(pwd)/$rtl_dir/SPI.v" "$(pwd)/test/cosim/spi.cpp" -o cosim 2>&1 | tail -2
+  echo "[3/3] cross-checking RTL vs port ..."
+  "$work/obj_dir/cosim" "$work/port.txt"
+}
+
 run_one() {
   case "$1" in
     fp_adder)
@@ -87,8 +105,11 @@ run_one() {
     fp_divider)
       cosim_unit fp_divider FPDivider.v FPDivider test/cosim/fp_divider.cpp
       ;;
+    spi)
+      cosim_spi
+      ;;
     *)
-      echo "unknown unit: $1 (expected fp_adder | fp_multiplier | fp_divider | all)" >&2
+      echo "unknown unit: $1 (expected fp_adder | fp_multiplier | fp_divider | spi | all)" >&2
       exit 2
       ;;
   esac
@@ -97,7 +118,7 @@ run_one() {
 ensure_rtl
 unit="${1:-all}"
 if [ "$unit" = all ]; then
-  for u in fp_adder fp_multiplier fp_divider; do run_one "$u"; done
+  for u in fp_adder fp_multiplier fp_divider spi; do run_one "$u"; done
 else
   run_one "$unit"
 fi

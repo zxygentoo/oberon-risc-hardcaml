@@ -1,10 +1,11 @@
-; RTL-fidelity co-sim helper (Phase-8-style preview, OPT-IN — not a dune test).
-; dump_fp <unit> runs the named Hardcaml FP unit over a stimulus set and dumps its outputs; the
-; Verilator harness (<unit>.cpp + shared fp_cosim.h, driven by run.sh) replays them through the
-; reference _po/verilog/src/<Unit>.v and asserts RTL z == port z AND equal stall length. The
-; dumper builds under `dune build
-; @check` (Verilator-free, so it can't silently rot); the actual cross-check is run.sh.
+; RTL-fidelity co-sim helpers (Phase-8-style preview, OPT-IN — not a dune test).
+; dump_fp <unit> runs the named Hardcaml FP unit over a stimulus set and dumps its outputs;
+; dump_spi does the same for the SPI master (its own dumper — a serial handshake unit, not
+; stall-based). The Verilator harness (<unit>.cpp + shared fp_cosim.h, driven by run.sh) replays
+; them through the reference _po/verilog/src/<Unit>.v and asserts RTL outputs == port outputs AND
+; equal cycle timing. The dumpers build under `dune build @check` (Verilator-free, so they can't
+; silently rot); the actual cross-check is run.sh.
 
-(executable
- (name dump_fp)
+(executables
+ (names dump_fp dump_spi)
  (libraries risc5 hardcaml))
