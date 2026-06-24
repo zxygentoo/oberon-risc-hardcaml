@@ -263,7 +263,7 @@ dumps, fine for a periodic fidelity check.)
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
 in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
-system-level harness (the boot checkpoint, the Phase 0 scaffold). Module tests live *inline in the design
+system-level harness (the boot checkpoint). Module tests live *inline in the design
 module's own `.ml`* via
 `ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
 freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
@@ -294,8 +294,7 @@ OCaml deps, so the netlist is identical with or without them. (Escape hatch, unu
 build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
 (single-instruction lockstep Phase 4, the boot checkpoint Phase 5) live in `test/` (depending on `risc5` +
 `oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
-`(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the Phase 0 `test_scaffold` smoke
-stays in `test/`.
+`(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`.
 
 ---
 
@@ -390,8 +389,9 @@ oberon-risc-hardcaml/
   dune-project, dune      ← root build config (dune restricted to: lib test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
                             real modules — shifters, ALU, CPU core… — from Phase 1)
-  test/                   ← tests; `test_scaffold` = Phase-0 smoke, `test_boot_checkpoint` =
-                            Phase-5 boot checkpoint (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
+  test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
+                            `test_boot_checkpoint` = Phase-5 boot checkpoint
+                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
@@ -458,9 +458,12 @@ full `lookup_*` introspection the harness needs.
     `of_unsigned_int ~width` / `of_signed_int ~width` (use these instead of v0.17's `to_int`/`of_int`).
   - `mux sel list` and `mux2 sel t f` stay positional; `Signal.input`/`Signal.output` unchanged.
 - Hardcaml → Verilog: `Rtl.print Rtl.Language.Verilog circuit`.
-- Verified end to end by `test/test_scaffold.ml` (`dune test`): `oracle` (`Oracle.Risc`)
-  callable on ox, `ppx_hardcaml` interfaces + `Cyclesim.With_interface` (sim `0xFF<<4=0xFF0`),
-  and a `hardcaml_waveterm` waveform render of a counter.
+- The toolchain wiring (the `oracle` callable on ox, `ppx_hardcaml` interfaces +
+  `Cyclesim.With_interface`, `hardcaml_waveterm` waveform render) is now exercised by the real
+  suite itself — every FP replay and the CPU lockstep link and call `oracle`, all the `test_*`
+  build and simulate Hardcaml circuits, and the lib's co-located `let%expect_test` waveforms drive
+  `hardcaml_waveterm`. (The standalone Phase-0 `test_scaffold` smoke that originally certified this
+  was retired once those real tests subsumed it.)
 - **Running tests.** `dune runtest` = the fast always-on suite (FP replays/fuzz, single-instruction
   CPU lockstep, the lib's co-located inline tests) — a few seconds. Two heavyweight checks are
   **opt-in** (built by `@check` so they can't rot, but kept out of `dune runtest`): `dune build
