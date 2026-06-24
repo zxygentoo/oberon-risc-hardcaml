@@ -1,7 +1,7 @@
 # Oberon RISC5 → Hardcaml
 
 A **cycle-accurate, synthesizable Hardcaml port** of Niklaus Wirth's Project Oberon
-**RISC5** machine — the OberonStation FPGA system — targeting a **Digilent Nexys 4 DDR
+**RISC5** machine — the OberonStation FPGA system — targeting a **Digilent Nexys 4
 (Xilinx Artix-7 XC7A100T)**, verified in lockstep against an existing OCaml emulator.
 
 The end state: a Hardcaml design that **boots Project Oberon on real silicon**, built up
@@ -63,7 +63,7 @@ demand — §6) and the three sibling emulator repos.
 | `SPI.v` | SPI master (SD card + net) | |
 | `VID60.v` | Video controller (1024×768×1, DMA from RAM) | drives `stallX` on the core |
 | `PS2.v` / `MousePM.v` | PS/2 keyboard / PS/2 mouse | |
-| `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 DDR `.xdc` in Phase 7 |
+| `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 `.xdc` in Phase 7 |
 
 Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
 
@@ -109,19 +109,20 @@ Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
 
    *What cycle-fidelity is — and isn't — for.* The OCaml oracle is **instruction-level** (its
    ms-clock is injected via `set_time`, not cycle-derived; it steps by instruction), so it
-   proves *behavioral* correctness and needs **no** cycle-accuracy — both lockstep levels (§6)
-   would pass a faster MUL just the same. Cycle-accuracy earns its keep on three *other* counts:
+   proves *behavioral* correctness and needs **no** cycle-accuracy — both the single-instruction lockstep and
+   the boot checkpoint (§6) would pass a faster MUL just the same. Cycle-accuracy earns its keep on three *other* counts:
    the **exhaustive** Phase-8 equivalence proof vs `RISC5.v` (catching rare corners that
    sampling misses), `RISC5.v` as a **cycle-level debugging oracle** through the hard core/SoC
    phases, and the **bright-line discipline** (match the RTL exactly ⇒ no per-deviation "is this
    behavior-preserving?" judgment, nothing hiding in the oracle's blind spots). Trading these
    away for idiom or speed is deliberately deferred to Phase 9 (§5).
 2. **Synthesizable** and aimed at a real bitstream (not sim-only).
-3. **Board:** Digilent **Nexys 4 DDR (XC7A100T)**, Vivado flow.
+3. **Board:** Digilent **Nexys 4 (XC7A100T)**, Vivado flow.
 4. **Scope:** the **full SoC that boots** Project Oberon end-to-end.
 5. **Memory:** build the **faithful shared single-port RAM + video-DMA stall** design first
-   (free & exact in simulation); the **DDR2 memory adapter** is a **deferred refactor** for
-   board bring-up (see §4 — it's mandatory on *this* board, not optional).
+   (free & exact in simulation); the **PSRAM async-SRAM adapter** (16↔32-bit width + stall-path
+   wait-states) is a **deferred refactor** for board bring-up (see §4 — still needed since BRAM
+   < 1 MB, but **far lighter than a DDR2/MIG** one).
 6. **Oracle:** the OCaml `risc_core` emulator, in-process, plus its FP vectors + boot ROM.
 7. **Toolchain:** **OxCaml** (opam switch `5.2.0+ox`) + Hardcaml **`v0.18~preview`** — chosen so
    the official `docs.hardcaml.org` matches our API exactly (it documents the OxCaml/preview
@@ -142,35 +143,45 @@ all peripheral logic (RS232 R/T, SPI, PS/2, mouse, VID controller, MMIO decode).
 **Board shim (the only Xilinx-specific layer, Phase 7):**
 - **Clock:** original `DCM_SP ×5/÷12` (60→25 MHz) → Nexys `MMCM` 100→25 MHz. 25 MHz is a
   very relaxed target — timing closure is easy.
-- **Main memory + video DMA:** the DDR2 adapter (see §4).
+- **Main memory + video DMA:** the Cellular-RAM (PSRAM) async-SRAM adapter (see §4).
 - **IO pads:** `IOBUF` for genuinely bidirectional pins (gpio, mouse `msclk`/`msdat`);
-  `ODDR` only if a DDR output trick survives. The original `ODDR2`/SRAM-`IOBUF` write
-  path disappears once memory is DDR2-backed.
+  `ODDR` only if a DDR output trick survives. `IOBUF` on the bidirectional 16-bit PSRAM data
+  bus **stays**; the original `ODDR2` clock-forwarding likely goes (async PSRAM forwards no clock).
 - **Pins:** VGA (drive 1-bit mono onto the 12-bit DAC), PS/2, microSD (SPI), UART → `.xdc`.
 
 ---
 
-## 4. The Nexys 4 DDR memory reality (important)
+## 4. The Nexys 4 memory reality (important)
 
-The board is a great I/O match for the OberonStation (12-bit VGA, PS/2 via USB-HID bridge,
-microSD/SPI, USB-UART, 100 MHz), **but its memory does not match**:
+The board is an excellent match for the OberonStation — 12-bit VGA, PS/2 via USB-HID bridge,
+microSD/SPI, USB-UART, 100 MHz — and **unlike its DDR sibling, its external memory matches too**:
 
-- External memory is **128 MiB DDR2** — needs the Xilinx **MIG** controller, has
-  latency/refresh/bursts, and **cannot** be driven as the single-cycle async SRAM that
-  `RISC5Top` assumes. (The older non-DDR Nexys 4 had async PSRAM; the DDR rev dropped it.)
-- Internal **BRAM is only ~607 KB** (4,860 Kbit) — **below** Oberon's standard **1 MB** map
-  (the framebuffer sits at `0xE7F00–0xFFEFF`, the top ~98 KB of that 1 MB). So the full
-  faithful memory can't live in BRAM on the `100T`.
+- External memory is **16 MiB Cellular PSRAM** (Micron **M45W8MW16**, 128 Mbit pseudo-static
+  DRAM) presenting an **asynchronous SRAM interface** (`CE#`/`OE#`/`WE#`/`UB#`/`LB#`, `ADDR`/`DATA`).
+  In async mode the chip **auto-refreshes its own DRAM arrays**, so — in the manual's words —
+  it needs only *"a simplified memory controller (similar to any SRAM controller)."* **No MIG, no
+  refresh/burst/latency handling** — the thing that made the DDR rev hard is simply absent here.
+- Two genuine-but-light mismatches remain: (1) the bus is **16-bit wide** while the core presents a
+  **32-bit word** (our `sram.ml` models exactly that), so each word is **two halfword accesses**
+  (`UB#`/`LB#` carry the byte-store lanes); (2) async cycle time is **~70 ns** ≈ 2 clocks at 25 MHz,
+  so a word costs a **handful of clocks** of wait-state.
+- Internal **BRAM is only ~607 KB** (4,860 Kbit) — **below** Oberon's standard **1 MB** map (the
+  framebuffer sits at `0xE7F00–0xFFEFF`, the top ~98 KB). So the full faithful memory still can't
+  live in BRAM on the `100T`; the external PSRAM holds it (16 MiB ≫ 1 MB — we map a 1 MB window).
 
-**Consequence & why deferral is safe:** all verification happens in *simulation*, where a
-flat 1 MB BRAM model makes the faithful shared-RAM design exact and free. On the bitstream,
-the memory layer is the one place that must adapt — a DDR2-via-MIG adapter fronted by a
-cache/line-buffer that **presents the same SRAM-like interface and inserts wait-states
-through `RISC5.v`'s existing stall path**. The CPU core stays byte-for-byte unchanged, so
-nothing in Phases 0–6 depends on how memory is eventually backed.
+**Consequence & why deferral is safe:** all verification happens in *simulation*, where a flat 1 MB
+BRAM model makes the faithful shared-RAM design exact and free. On the bitstream the memory layer is
+the one place that adapts — but the adapter is now a **small 16↔32-bit width FSM over an async-SRAM
+controller** that **presents the same word interface and inserts its ~70 ns wait-states through
+`RISC5.v`'s existing stall path** (the `stallL0/L1` load/store mechanism). The CPU core stays
+byte-for-byte unchanged, so nothing in Phases 0–6 depends on how memory is backed — and the original
+async-SRAM write path is **retained and adapted, not replaced** (the PSRAM *is* SRAM-like), keeping
+us close to `RISC5Top`'s native design.
 
-*(If zero memory refactor were ever a priority, an Artix `200T`-class part has ~1.6 MB BRAM
-— enough to hold the whole 1 MB internally. We're keeping the Nexys 4 DDR.)*
+*(Synchronous 104 MHz burst mode exists if we ever want the bandwidth, at the cost of a clocked burst
+controller; async is the simple default and ample at 25 MHz. And if zero memory refactor were ever a
+priority, an Artix `200T`-class part has ~1.6 MB BRAM — enough to hold the whole 1 MB internally — but
+the PSRAM adapter is light enough that we're keeping the Nexys 4.)*
 
 ---
 
@@ -187,11 +198,11 @@ Vivado-specific layer.
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
 | **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
 | **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
-| **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
-| **6** | Peripherals + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/SPI/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
-| **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **DDR2-via-MIG adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
+| **5** ✅ | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter, opt-in via `dune build @boot_checkpoint` (§6) |
+| **6** | **Remaining** peripherals (framebuffer/VGA, PS/2 kbd+mouse, UART) + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
+| **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
-| **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + full-boot: Oberon still boots & runs); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
+| **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
 `RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
@@ -209,7 +220,7 @@ Each layer's oracle already exists next door — this is our biggest leverage.
 **Two oracles, split by the question they answer.** The OCaml `risc_core` emulator is the
 *system-state* oracle: bit-exact architectural state (`pc`/`r[]`/`H`/`flags`) at *instruction*
 granularity (its ms-clock is injected, not cycle-derived — it sees no wire and no cycle). Its
-home is whole-machine lockstep and boot (layers 4–5). The **original Verilog itself**, run
+home is single-instruction lockstep (layer 4) and the boot-handoff checkpoint (layer 5). The **original Verilog itself**, run
 through **Verilator** (our `test/cosim/`), is the *wire-state* oracle: any signal at *cycle*
 granularity, against the spec directly — the §2 fidelity authority (layer 3, exhaustively at
 layer 6). They answer orthogonal questions — *is the result correct?* vs *did we copy the
@@ -233,16 +244,26 @@ dumps, fine for a periodic fidelity check.)
 4. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
    compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
    `qcheck`-fuzzed, like the OCaml repo's `test/cosim/test_cosim_cpu.ml` (steering §8).
-5. **Full-boot lockstep** — load `prom.mem` + disk image, run both machines for millions of
-   cycles, compare CPU state / framebuffer. Fast backend: `hardcaml_c` or `hardcaml_verilator`
-   (Verilator-backed `Cyclesim.t`, clean deps — §9).
+5. **Boot-handoff checkpoint** — *not* per-instruction lockstep, which a booting machine defeats
+   (the §8 code-address skew while running from ROM, the interrupt-free oracle, its injected vs our
+   cycle-derived ms-clock, and SD/timer poll timing all diverge step-by-step without diverging in
+   *result*). Instead: drive our SoC's SD card from the **same `Oracle.Disk` + `.dsk`** the oracle
+   boots, run both through the SD load to the **OS handoff** (the boot loader jumps to the inner
+   core at `pc=0` in low RAM — empirically ~403 K instructions, ~21 K SPI transactions), and compare
+   the **loaded image + architectural state there**. Exact because the handoff is where
+   representations realign: low-RAM code is bit-identical (§8 self-heals), the bootstrap is
+   interrupt-free, and only the end result — not per-step timing — is compared. Plain Cyclesim
+   interpreter (~0.39 M cycles/s, `trace_all`/`lookup_*` free; `hardcaml_c` rejected at ~3.5× with
+   multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). **Opt-in** — the ~22 s boot is too slow for the default
+   `dune runtest` (like the RTL co-sim), so run it with `dune build @boot_checkpoint`. The full
+   boot past the handoff + framebuffer is the Phase-6 visual golden.
 6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
    `hardcaml_verify` (installed); the exhaustive form of layer 3.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
 in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
-system-level harness (full-boot, the Phase 0 scaffold). Module tests live *inline in the design
+system-level harness (the boot checkpoint, the Phase 0 scaffold). Module tests live *inline in the design
 module's own `.ml`* via
 `ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
 freeze the ASCII waveform in an `[%expect]` block (`dune promote` updates it) — plus `qcheck`
@@ -271,7 +292,7 @@ they *never reach the generated Verilog*: `Rtl.print` lowers the circuit graph, 
 OCaml deps, so the netlist is identical with or without them. (Escape hatch, unused: `(pps …
 -inline-test-drop)` strips the test bodies and their deps — at the cost of those tests in that
 build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
-(single-instruction lockstep Phase 4, full-boot Phase 5) live in `test/` (depending on `risc5` +
+(single-instruction lockstep Phase 4, the boot checkpoint Phase 5) live in `test/` (depending on `risc5` +
 `oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
 `(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`; the Phase 0 `test_scaffold` smoke
 stays in `test/`.
@@ -340,8 +361,14 @@ against the RTL itself they can't arise.*
   (2^23; exponent 150, positive), so no divergent shift occurs. Our port follows the hardware
   and is verified bit-exact to `FPAdder.v` over 26k stimuli (`test/cosim/`); the FP-vector
   replay (§6) steers around the non-`0x4B000000` forms.
-- **Addressing.** FPGA uses a 20-bit address bus (out-of-range aliases into 1 MB); emulators
-  decode 32 bits. Identical for well-behaved software.
+- **Addressing.** FPGA uses a 20-bit RAM window (out-of-range aliases into 1 MB) + a 22-bit word
+  PC; emulators decode 32 bits. Identical for well-behaved software. The divergence is confined to
+  *code addresses*: the oracle's ROM base (byte `0xFFFFF800`, pc word `0x3FFFFE00`) differs from
+  ours (`RISC5.v`'s `StartAdr` word `0x3FF800`), so `pc` and `R15` links differ by a constant
+  offset *while running from ROM* — not a low-bit mask (the ROMs sit at different offsets-from-top).
+  Data addresses and **all low-RAM code are bit-identical**, so it self-heals the moment the OS runs
+  from low RAM — which is why boot is verified by a handoff checkpoint, not per-instruction lockstep
+  (§6 layer 5).
 - **Register file timing:** **async read** (combinational `dout` from the read address),
   **sync write** on `clk`. Three read ports; `rno0` is *also* the write address. `ira0 = BR
   ? 15 : ira` (branch links to R15).
@@ -363,7 +390,8 @@ oberon-risc-hardcaml/
   dune-project, dune      ← root build config (dune restricted to: lib test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
                             real modules — shifters, ALU, CPU core… — from Phase 1)
-  test/                   ← tests (`test_scaffold` = the Phase 0 wiring smoke)
+  test/                   ← tests; `test_scaffold` = Phase-0 smoke, `test_boot_checkpoint` =
+                            Phase-5 boot checkpoint (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
@@ -391,9 +419,13 @@ out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~previ
 move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardcaml_of_verilog`
 (yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
 OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
-**Verilator** out-of-process (`test/cosim/`, §6). `hardcaml_verilator` (Verilator-backed
-`Cyclesim.t`; deps `hardcaml`+`ctypes`, no `jsonaf` → installs clean) is the planned Phase-5
-fast-sim backend, not a Verilog importer. `hardcaml_c` when Phase 5 arrives.
+**Verilator** out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
+Phase-5 boot speed and **both rejected** (profiled 2026-06-25): `hardcaml_verilator`
+(Verilator-backed `Cyclesim.t`) won't build against the system Verilator 5.048
+(`__Vscope_*`→`__Vscopep_*` rename), and `hardcaml_c` (installed) ran only ~3.5× the interpreter
+while needing minutes to compile its 63 MB / ~1M-line `eval.c` per design change. The boot
+checkpoint runs on the **plain Cyclesim interpreter** instead (§6) — fast enough, and it keeps the
+full `lookup_*` introspection the harness needs.
 
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The project
   lives on `5.2.0+ox`, **not** `default` (the v0.17.1 install there is unused).
@@ -429,6 +461,12 @@ fast-sim backend, not a Verilog importer. `hardcaml_c` when Phase 5 arrives.
 - Verified end to end by `test/test_scaffold.ml` (`dune test`): `oracle` (`Oracle.Risc`)
   callable on ox, `ppx_hardcaml` interfaces + `Cyclesim.With_interface` (sim `0xFF<<4=0xFF0`),
   and a `hardcaml_waveterm` waveform render of a counter.
+- **Running tests.** `dune runtest` = the fast always-on suite (FP replays/fuzz, single-instruction
+  CPU lockstep, the lib's co-located inline tests) — a few seconds. Two heavyweight checks are
+  **opt-in** (built by `@check` so they can't rot, but kept out of `dune runtest`): `dune build
+  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s), and
+  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator). `dune build @check` is the
+  type-check/pre-commit gate.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** — the ox
   `ocamlformat` reports a git-hash version, so a normal pin (e.g. the emulator's `0.29.0`)
   would mismatch and disable formatting. Format with `dune fmt`.

@@ -13,7 +13,7 @@
  (allow_empty)
  (synopsis "Cycle-accurate Hardcaml port of Wirth's Oberon RISC5 CPU/SoC")
  (description
-  "A synthesizable Hardcaml port of the Project Oberon RISC5 machine, built one\nmodule at a time from the original Verilog and verified in lockstep against the\nOCaml risc_core emulator. Targets the Digilent Nexys 4 DDR (Xilinx Artix-7).")
+  "A synthesizable Hardcaml port of the Project Oberon RISC5 machine, built one\nmodule at a time from the original Verilog and verified in lockstep against the\nOCaml risc_core emulator. Targets the Digilent Nexys 4 (Xilinx Artix-7).")
  (depends
   (ocaml
    (>= 5.2.0))
