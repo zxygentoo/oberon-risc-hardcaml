@@ -4,14 +4,17 @@
     - fetch: [codebus = adr[23:14] = 0x3FF ? rom : ram] (top 16 KiB decodes to the boot
       ROM)
     - load: [inbus  = adr[23:6] = 0x3FFFF ? io : ram] (top 64 B is the MMIO window)
-    - store: [Sram] takes the core's write port directly — the SRAM has no [ioenb] gate, so
-      it aliases MMIO/ROM-region stores harmlessly (the lockstep filters those by
+    - store: [Sram] takes the core's write port directly — the SRAM has no [ioenb] gate,
+      so it aliases MMIO/ROM-region stores harmlessly (the lockstep filters those by
       address).
 
-    This is the skeleton. [irq] and [stall_x] are tied low and the MMIO read mux is a stub
-    (reads 0): the millisecond timer + IO read mux arrive next (5.2b), and architectural
-    state-as-outputs for the hardcaml_c boot lockstep after that (5.2c). The boot ROM
-    image is a [~contents] parameter so the design library stays free of [prom.mem]. *)
+    [stall_x] is tied low (no video DMA until Phase 6). [irq] and the millisecond counter
+    come from a free-running timer: a [clocks_per_ms]-cycle prescaler raises [limit] (the
+    IRQ source) which ticks [cnt1], readable at MMIO word 0; the other MMIO words read 0
+    (peripherals are Phase 6). Architectural state-as-outputs for the hardcaml_c boot
+    lockstep comes next (5.2c). [~clocks_per_ms] defaults to 25000 (1 ms at 25 MHz); the
+    boot ROM image is a [~contents] parameter, keeping the design library free of
+    [prom.mem]. *)
 
 open Hardcaml
 
@@ -36,4 +39,4 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-val create : contents:int array -> Signal.t I.t -> Signal.t O.t
+val create : contents:int array -> ?clocks_per_ms:int -> Signal.t I.t -> Signal.t O.t
