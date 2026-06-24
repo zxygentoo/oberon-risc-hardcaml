@@ -1,7 +1,7 @@
 # Oberon RISC5 → Hardcaml
 
 A **cycle-accurate, synthesizable Hardcaml port** of Niklaus Wirth's Project Oberon
-**RISC5** machine — the OberonStation FPGA system — targeting a **Digilent Nexys 4 DDR
+**RISC5** machine — the OberonStation FPGA system — targeting a **Digilent Nexys 4
 (Xilinx Artix-7 XC7A100T)**, verified in lockstep against an existing OCaml emulator.
 
 The end state: a Hardcaml design that **boots Project Oberon on real silicon**, built up
@@ -63,7 +63,7 @@ demand — §6) and the three sibling emulator repos.
 | `SPI.v` | SPI master (SD card + net) | |
 | `VID60.v` | Video controller (1024×768×1, DMA from RAM) | drives `stallX` on the core |
 | `PS2.v` / `MousePM.v` | PS/2 keyboard / PS/2 mouse | |
-| `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 DDR `.xdc` in Phase 7 |
+| `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 `.xdc` in Phase 7 |
 
 Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
 
@@ -117,11 +117,12 @@ Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
    behavior-preserving?" judgment, nothing hiding in the oracle's blind spots). Trading these
    away for idiom or speed is deliberately deferred to Phase 9 (§5).
 2. **Synthesizable** and aimed at a real bitstream (not sim-only).
-3. **Board:** Digilent **Nexys 4 DDR (XC7A100T)**, Vivado flow.
+3. **Board:** Digilent **Nexys 4 (XC7A100T)**, Vivado flow.
 4. **Scope:** the **full SoC that boots** Project Oberon end-to-end.
 5. **Memory:** build the **faithful shared single-port RAM + video-DMA stall** design first
-   (free & exact in simulation); the **DDR2 memory adapter** is a **deferred refactor** for
-   board bring-up (see §4 — it's mandatory on *this* board, not optional).
+   (free & exact in simulation); the **PSRAM async-SRAM adapter** (16↔32-bit width + stall-path
+   wait-states) is a **deferred refactor** for board bring-up (see §4 — still needed since BRAM
+   < 1 MB, but **far lighter than a DDR2/MIG** one).
 6. **Oracle:** the OCaml `risc_core` emulator, in-process, plus its FP vectors + boot ROM.
 7. **Toolchain:** **OxCaml** (opam switch `5.2.0+ox`) + Hardcaml **`v0.18~preview`** — chosen so
    the official `docs.hardcaml.org` matches our API exactly (it documents the OxCaml/preview
@@ -142,35 +143,45 @@ all peripheral logic (RS232 R/T, SPI, PS/2, mouse, VID controller, MMIO decode).
 **Board shim (the only Xilinx-specific layer, Phase 7):**
 - **Clock:** original `DCM_SP ×5/÷12` (60→25 MHz) → Nexys `MMCM` 100→25 MHz. 25 MHz is a
   very relaxed target — timing closure is easy.
-- **Main memory + video DMA:** the DDR2 adapter (see §4).
+- **Main memory + video DMA:** the Cellular-RAM (PSRAM) async-SRAM adapter (see §4).
 - **IO pads:** `IOBUF` for genuinely bidirectional pins (gpio, mouse `msclk`/`msdat`);
-  `ODDR` only if a DDR output trick survives. The original `ODDR2`/SRAM-`IOBUF` write
-  path disappears once memory is DDR2-backed.
+  `ODDR` only if a DDR output trick survives. `IOBUF` on the bidirectional 16-bit PSRAM data
+  bus **stays**; the original `ODDR2` clock-forwarding likely goes (async PSRAM forwards no clock).
 - **Pins:** VGA (drive 1-bit mono onto the 12-bit DAC), PS/2, microSD (SPI), UART → `.xdc`.
 
 ---
 
-## 4. The Nexys 4 DDR memory reality (important)
+## 4. The Nexys 4 memory reality (important)
 
-The board is a great I/O match for the OberonStation (12-bit VGA, PS/2 via USB-HID bridge,
-microSD/SPI, USB-UART, 100 MHz), **but its memory does not match**:
+The board is an excellent match for the OberonStation — 12-bit VGA, PS/2 via USB-HID bridge,
+microSD/SPI, USB-UART, 100 MHz — and **unlike its DDR sibling, its external memory matches too**:
 
-- External memory is **128 MiB DDR2** — needs the Xilinx **MIG** controller, has
-  latency/refresh/bursts, and **cannot** be driven as the single-cycle async SRAM that
-  `RISC5Top` assumes. (The older non-DDR Nexys 4 had async PSRAM; the DDR rev dropped it.)
-- Internal **BRAM is only ~607 KB** (4,860 Kbit) — **below** Oberon's standard **1 MB** map
-  (the framebuffer sits at `0xE7F00–0xFFEFF`, the top ~98 KB of that 1 MB). So the full
-  faithful memory can't live in BRAM on the `100T`.
+- External memory is **16 MiB Cellular PSRAM** (Micron **M45W8MW16**, 128 Mbit pseudo-static
+  DRAM) presenting an **asynchronous SRAM interface** (`CE#`/`OE#`/`WE#`/`UB#`/`LB#`, `ADDR`/`DATA`).
+  In async mode the chip **auto-refreshes its own DRAM arrays**, so — in the manual's words —
+  it needs only *"a simplified memory controller (similar to any SRAM controller)."* **No MIG, no
+  refresh/burst/latency handling** — the thing that made the DDR rev hard is simply absent here.
+- Two genuine-but-light mismatches remain: (1) the bus is **16-bit wide** while the core presents a
+  **32-bit word** (our `sram.ml` models exactly that), so each word is **two halfword accesses**
+  (`UB#`/`LB#` carry the byte-store lanes); (2) async cycle time is **~70 ns** ≈ 2 clocks at 25 MHz,
+  so a word costs a **handful of clocks** of wait-state.
+- Internal **BRAM is only ~607 KB** (4,860 Kbit) — **below** Oberon's standard **1 MB** map (the
+  framebuffer sits at `0xE7F00–0xFFEFF`, the top ~98 KB). So the full faithful memory still can't
+  live in BRAM on the `100T`; the external PSRAM holds it (16 MiB ≫ 1 MB — we map a 1 MB window).
 
-**Consequence & why deferral is safe:** all verification happens in *simulation*, where a
-flat 1 MB BRAM model makes the faithful shared-RAM design exact and free. On the bitstream,
-the memory layer is the one place that must adapt — a DDR2-via-MIG adapter fronted by a
-cache/line-buffer that **presents the same SRAM-like interface and inserts wait-states
-through `RISC5.v`'s existing stall path**. The CPU core stays byte-for-byte unchanged, so
-nothing in Phases 0–6 depends on how memory is eventually backed.
+**Consequence & why deferral is safe:** all verification happens in *simulation*, where a flat 1 MB
+BRAM model makes the faithful shared-RAM design exact and free. On the bitstream the memory layer is
+the one place that adapts — but the adapter is now a **small 16↔32-bit width FSM over an async-SRAM
+controller** that **presents the same word interface and inserts its ~70 ns wait-states through
+`RISC5.v`'s existing stall path** (the `stallL0/L1` load/store mechanism). The CPU core stays
+byte-for-byte unchanged, so nothing in Phases 0–6 depends on how memory is backed — and the original
+async-SRAM write path is **retained and adapted, not replaced** (the PSRAM *is* SRAM-like), keeping
+us close to `RISC5Top`'s native design.
 
-*(If zero memory refactor were ever a priority, an Artix `200T`-class part has ~1.6 MB BRAM
-— enough to hold the whole 1 MB internally. We're keeping the Nexys 4 DDR.)*
+*(Synchronous 104 MHz burst mode exists if we ever want the bandwidth, at the cost of a clocked burst
+controller; async is the simple default and ample at 25 MHz. And if zero memory refactor were ever a
+priority, an Artix `200T`-class part has ~1.6 MB BRAM — enough to hold the whole 1 MB internally — but
+the PSRAM adapter is light enough that we're keeping the Nexys 4.)*
 
 ---
 
@@ -189,7 +200,7 @@ Vivado-specific layer.
 | **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
 | **5** | Memory + minimal SoC harness; run boot ROM | **full-boot lockstep** (`hardcaml_c` for speed) |
 | **6** | Peripherals + SoC top; framebuffer out | boot golden + visual; **evaluate `hardcaml_step_testbench`** here — the serial peripheral protocols (UART/SPI/PS2, concurrent driver/monitor agents) are its sweet spot, unlike the white-box core/lockstep tests; it runs on Cyclesim (no `event_driven_sim` — that's an event-driven paradigm with no role in this single-clock design). Pilot it on the UART, adopt for the rest only if it reads materially cleaner. Installs clean on ox (2 pkgs, deps already present) |
-| **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **DDR2-via-MIG adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
+| **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
 | **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
 | **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + full-boot: Oberon still boots & runs); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 

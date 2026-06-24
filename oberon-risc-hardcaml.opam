@@ -4,7 +4,7 @@ synopsis: "Cycle-accurate Hardcaml port of Wirth's Oberon RISC5 CPU/SoC"
 description: """
 A synthesizable Hardcaml port of the Project Oberon RISC5 machine, built one
 module at a time from the original Verilog and verified in lockstep against the
-OCaml risc_core emulator. Targets the Digilent Nexys 4 DDR (Xilinx Artix-7)."""
+OCaml risc_core emulator. Targets the Digilent Nexys 4 (Xilinx Artix-7)."""
 maintainer: ["zxy <zxygentoo@gmail.com>"]
 authors: ["zxy <zxygentoo@gmail.com>"]
 depends: [
