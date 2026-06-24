@@ -70,10 +70,21 @@ let%expect_test "ram = word-array model, word + byte writes [qcheck, 500 sequenc
   let module Sim = Cyclesim.With_interface (I) (O) in
   let win = 16 in
   (* words; addresses span 0..win*4-1 bytes *)
+  (* One sim, reused across all sequences. [Sim.create] of the 1 MiB memory (4 × 256 Ki
+     byte lanes) is the expensive part, so build it once and zero the small test window at
+     the start of each sequence rather than rebuilding it 500× (which made this qcheck ~50
+     s). *)
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
   let check_seq ops =
-    let sim = Sim.create create in
-    let inp = Cyclesim.inputs sim in
-    let outp = Cyclesim.outputs sim in
+    for w = 0 to win - 1 do
+      inp.adr := Bits.of_unsigned_int ~width:20 (w * 4);
+      inp.wr := Bits.of_unsigned_int ~width:1 1;
+      inp.ben := Bits.of_unsigned_int ~width:1 0;
+      inp.wdata := Bits.of_unsigned_int ~width:32 0;
+      Cyclesim.cycle sim
+    done;
     let model = Array.create ~len:win 0 in
     List.for_all ops ~f:(fun (wr, ben, adr, wdata) ->
       inp.adr := Bits.of_unsigned_int ~width:20 adr;
