@@ -1,13 +1,20 @@
 ; RTL-fidelity co-sim helpers (Phase-8-style preview, OPT-IN — not a dune test).
 ; dump_fp <unit> runs the named Hardcaml FP unit over a stimulus set and dumps its outputs;
 ; dump_spi does the same for the SPI master (its own dumper — a serial handshake unit, not
-; stall-based). The Verilator harness (<unit>.cpp + shared fp_cosim.h, driven by run.sh) replays
+; stall-based). The Verilator harness (<unit>.cpp + shared cosim.h, driven by run.sh) replays
 ; them through the reference _po/verilog/src/<Unit>.v and asserts RTL outputs == port outputs AND
 ; equal cycle timing. The dumpers build under `dune build @check` (Verilator-free, so they can't
 ; silently rot); the actual cross-check is run.sh.
 
 (executables
- (names dump_fp dump_spi)
+ (names
+  dump_fp
+  dump_spi
+  dump_rs232t
+  dump_rs232r
+  dump_ps2
+  dump_vid
+  dump_mouse)
  (libraries risc5 hardcaml))
 
 ; Uniform front door, mirroring @boot_checkpoint: `dune build @cosim` runs every unit. OPT-IN
@@ -22,9 +29,15 @@
   run.sh
   fetch-rtl.sh
   rtl-sources.txt
-  fp_cosim.h
+  cosim.h
   (glob_files *.cpp)
+  (glob_files *.v)
   dump_fp.exe
-  dump_spi.exe)
+  dump_spi.exe
+  dump_rs232t.exe
+  dump_rs232r.exe
+  dump_ps2.exe
+  dump_vid.exe
+  dump_mouse.exe)
  (action
   (run bash run.sh)))

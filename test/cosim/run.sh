@@ -5,7 +5,7 @@
 # OPT-IN — not part of `dune runtest`. Needs `verilator` on PATH (outside the ox toolchain). The
 # reference Verilog is fetched + checksum-verified on demand by fetch-rtl.sh (see README.md).
 #
-#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | spi | all]  (default: all)
+#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid | mouse | all]  (default: all)
 #   or:     dune build @cosim                                            (runs every unit)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)" # repo root (works standalone and from the @cosim action)
@@ -16,17 +16,24 @@ rtl_dir=_po/verilog/src
 work_root="${CLAUDE_JOB_DIR:-/tmp}/oberon-cosim"
 
 # The co-sim units, one row each — collapses the old per-unit functions to data:
-#   name           reference .v     top-module     harness .cpp        dumper
-# Stall-based FP units share dump_fp (selected by name) + fp_cosim.h; the SPI master is a serial
+#   name           reference .v     top-module     harness .cpp        dumper        [extra .v]
+# Stall-based FP units share dump_fp (selected by name) + cosim.h; the SPI master is a serial
 # handshake unit (not stall-based) with its own dump_spi + spi.cpp — captured as just the dumper
-# column. Adding a unit (CPU core, peripherals) is a new row + its .cpp (+ a dump_fp arm or a new
-# dumper); see README.md "Adding another unit".
+# column. The optional 6th column is an extra test/cosim/*.v handed to Verilator alongside the
+# reference .v: vid needs vid_cosim.v (stubs the Xilinx DCM/BUFG + forces VID's internal pixel
+# clock from the harness, so the two clocks run at the 13:5 ratio). Adding a unit (CPU core,
+# peripherals) is a new row + its .cpp (+ a dump_fp arm or a new dumper); see README.md.
 units_table=$(
   cat <<'TBL'
 fp_adder        FPAdder.v        FPAdder        fp_adder.cpp        dump_fp
 fp_multiplier   FPMultiplier.v   FPMultiplier   fp_multiplier.cpp   dump_fp
 fp_divider      FPDivider.v      FPDivider      fp_divider.cpp      dump_fp
 spi             SPI.v            SPI            spi.cpp             dump_spi
+rs232t          RS232T.v         RS232T         rs232t.cpp          dump_rs232t
+rs232r          RS232R.v         RS232R         rs232r.cpp          dump_rs232r
+ps2             PS2.v            PS2            ps2.cpp             dump_ps2
+vid             VID60.v          vid_cosim      vid.cpp             dump_vid            vid_cosim.v
+mouse           MousePM.v        mouse_cosim    mouse.cpp           dump_mouse          mouse_cosim.v
 TBL
 )
 
@@ -44,7 +51,7 @@ ensure_dumper() {
 # over the stimulus set, verilate the reference .v + harness, cross-check RTL vs port (value AND
 # timing). The harness .cpp self-asserts (exits nonzero on any mismatch).
 cosim_unit() {
-  local name=$1 rtl_file=$2 top=$3 cpp=$4 dumper=$5
+  local name=$1 rtl_file=$2 top=$3 cpp=$4 dumper=$5 extra=${6:-}
   local rtl="$rtl_dir/$rtl_file" work="$work_root/$name"
   mkdir -p "$work"
   echo "=== $name ==="
@@ -59,16 +66,16 @@ cosim_unit() {
   echo "[2/3] verilating $rtl + harness ..."
   verilator --cc --exe --build -Wno-fatal --top-module "$top" \
     --Mdir "$work/obj_dir" \
-    "$(pwd)/$rtl" "$(pwd)/test/cosim/$cpp" -o cosim 2>&1 | tail -2
+    "$(pwd)/$rtl" ${extra:+"$(pwd)/test/cosim/$extra"} "$(pwd)/test/cosim/$cpp" -o cosim 2>&1 | tail -2
   echo "[3/3] cross-checking RTL vs port ..."
   "$work/obj_dir/cosim" "$work/port.txt"
 }
 
 run_one() {
-  local want=$1 name rtl top cpp dumper
-  while read -r name rtl top cpp dumper; do
+  local want=$1 name rtl top cpp dumper extra
+  while read -r name rtl top cpp dumper extra; do
     [ "$name" = "$want" ] && {
-      cosim_unit "$name" "$rtl" "$top" "$cpp" "$dumper"
+      cosim_unit "$name" "$rtl" "$top" "$cpp" "$dumper" "$extra"
       return 0
     }
   done <<<"$units_table"
@@ -85,8 +92,8 @@ bash test/cosim/fetch-rtl.sh
 
 unit="${1:-all}"
 if [ "$unit" = all ]; then
-  while read -r name rtl top cpp dumper; do
-    [ -n "$name" ] && cosim_unit "$name" "$rtl" "$top" "$cpp" "$dumper"
+  while read -r name rtl top cpp dumper extra; do
+    [ -n "$name" ] && cosim_unit "$name" "$rtl" "$top" "$cpp" "$dumper" "$extra"
   done <<<"$units_table"
 else
   run_one "$unit"

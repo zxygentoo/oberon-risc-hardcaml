@@ -1,7 +1,7 @@
 (* RTL-fidelity dumper for the SPI master. Unlike the FP units — a stall-based run ->
    drain -> z protocol, shared in dump_fp — the SPI is a serial peripheral with a
    start/rdy handshake and a per-cycle MISO input, so it gets its own dumper (reusing only
-   fp_cosim.h's tick on the C side).
+   cosim.h's tick on the C side).
 
    For each transfer it drives Risc5.Spi over (fast, data_tx) with a deterministic
    per-cycle MISO sequence and records, for EVERY cycle, the MISO it drove and the (rdy,
