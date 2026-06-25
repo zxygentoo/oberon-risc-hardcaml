@@ -24,6 +24,8 @@ module I = struct
     ; sw : 'a
          [@bits 8] (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
     ; gpio_in : 'a [@bits 8] (* resolved GPIO pad inputs (RISC5Top [gpin]) *)
+    ; pclk : 'a [@bits 1]
+    (* 65 MHz pixel clock for VID (DCM/MMCM; a Phase-7 board input) *)
     }
   [@@deriving hardcaml]
 end
@@ -42,6 +44,9 @@ module O = struct
     ; leds : 'a [@bits 8] (* RISC5Top [leds] = the [Lreg] latch *)
     ; gpio_out : 'a [@bits 8] (* GPIO drive value (RISC5Top [gpout]) *)
     ; gpio_oe : 'a [@bits 8] (* GPIO output-enable / direction (RISC5Top [gpoc]) *)
+    ; hsync : 'a [@bits 1] (* VGA horizontal sync (active low) *)
+    ; vsync : 'a [@bits 1] (* VGA vertical sync (active low) *)
+    ; rgb : 'a [@bits 6] (* 1 bpp pixel replicated across the 6 RGB pins *)
     }
   [@@deriving hardcaml]
 end
@@ -64,26 +69,49 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
      [codebus]/[inbus] are wires assigned below. *)
   let codebus = wire 32 in
   let inbus = wire 32 in
+  (* Video controller (RISC5Top's [VID]). Two clocks: the system [clk] and the
+     DCM/MMCM-generated pixel clock [pclk] (a Phase-7 board-shim input). [inv] = switch 7
+     (RISC5Top [~nswi[7]], here the de-inverted [sw[7]]). Its framebuffer-read data
+     [viddata] is the shared SRAM read bus, assigned once [ram] exists below. *)
+  let viddata = wire 32 in
+  let vid =
+    Vid.create { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
+  in
+  let vidreq = vid.req -- "vidreq" in
+  let vidadr = vid.vidadr -- "vidadr" in
+  (* [vidreq] is the core's [stallX]: a one-cycle DMA hold every 32 px. While it is high
+     the core freezes — and [RISC5.v] gates its [wr]/[rd]/[ben] off with [~stallX] (our
+     core mirrors this), so no store can fire — and the single SRAM port is steered to the
+     framebuffer word [vidadr] instead of the CPU's address. The classic single-port video
+     cycle-steal. Because [wr ⇒ ~vidreq], the unconditional RAM write can never land at
+     [vidadr]. *)
   let core =
     Risc5_core.create
       { Risc5_core.I.clock = i.clock
       ; rst_n = i.rst_n
       ; irq = limit
-      ; stall_x = gnd
+      ; stall_x = vidreq
       ; inbus
       ; codebus
       }
   in
   let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
+  (* SRAM address arbitration ([SRadr = vidreq ? vidadr : adr[19:2]]). [vidadr] is an
+     18-bit word address; our [Sram] takes a 20-bit byte address, so shift in two zero
+     bits. *)
+  let sram_adr =
+    mux2 vidreq (vidadr @: zero 2) (select core.adr ~high:19 ~low:0) -- "sram_adr"
+  in
   let ram =
     Sram.create
       { Sram.I.clock = i.clock
-      ; adr = select core.adr ~high:19 ~low:0
+      ; adr = sram_adr
       ; wr = core.wr
       ; ben = core.ben
       ; wdata = core.outbus
       }
   in
+  assign viddata ram.rdata;
   let rom_region = select core.adr ~high:23 ~low:14 ==:. 0x3FF in
   let ioenb = select core.adr ~high:23 ~low:6 ==:. 0x3FFFF in
   let iowadr = select core.adr ~high:5 ~low:2 in
@@ -191,6 +219,9 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
   ; leds = lreg.value
   ; gpio_out = gpout.value
   ; gpio_oe = gpoc.value
+  ; hsync = vid.hsync
+  ; vsync = vid.vsync
+  ; rgb = vid.rgb
   }
 ;;
 
@@ -390,4 +421,66 @@ let%expect_test "soc — GPIO words 8/9: gpout/gpoc registers + gpin readback" =
     (r 3)
     (r 6);
   [%expect {| gpio_out=0x3C gpio_oe=0xFF   R3(gpin read)=0x5A R6(gpoc read)=0xFF |}]
+;;
+
+let%expect_test "soc — video DMA: vidreq steals a core cycle and steers the SRAM" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  (* A long run of nops: each is a 1-cycle instruction with no stall of its own, so [pc]
+     simply counts retired instructions — the only thing that can freeze it is the video
+     [stall_x]. (Default trace_all = All_one_domain, so the [pclk] raster advances 1:1
+     with [clk] here; the true 13:5 ratio is a By_input_clocks concern for a raster-timing
+     test.) *)
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (create ~contents:(Array.create ~len:400 nop))
+  in
+  let inp = Cyclesim.inputs sim in
+  let node name =
+    match Cyclesim.lookup_node_or_reg_by_name sim name with
+    | Some n -> n
+    | None -> failwith ("soc video test: no traced node " ^ name)
+  in
+  let pc = Option.value_exn (Cyclesim.lookup_reg_by_name sim "pc") in
+  let vidreq = node "vidreq"
+  and sram_adr = node "sram_adr"
+  and vidadr = node "vidadr" in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  (* fill the pipeline so [pc] is moving, then measure a clean window *)
+  for _ = 1 to 4 do
+    Cyclesim.cycle sim
+  done;
+  let pc0 = Cyclesim.Reg.to_int pc in
+  let n = 200 in
+  let stalls = ref 0
+  and addr_ok = ref true in
+  for _ = 1 to n do
+    Cyclesim.cycle sim;
+    if Cyclesim.Node.to_int vidreq = 1
+    then (
+      Int.incr stalls;
+      (* on a steal cycle the shared port carries the framebuffer word [vidadr << 2] *)
+      if Cyclesim.Node.to_int sram_adr <> Cyclesim.Node.to_int vidadr * 4
+      then addr_ok := false)
+  done;
+  let pc1 = Cyclesim.Reg.to_int pc in
+  Stdlib.Printf.printf
+    "over %d cycles: vidreq pulses=%d (>0 %b)\n\
+     pc advanced=%d; advanced+stalls=%d (≈ cycles)\n\
+     SRAM steered to vidadr<<2 on every steal: %b\n"
+    n
+    !stalls
+    (!stalls > 0)
+    (pc1 - pc0)
+    (pc1 - pc0 + !stalls)
+    !addr_ok;
+  [%expect
+    {|
+    over 200 cycles: vidreq pulses=6 (>0 true)
+    pc advanced=194; advanced+stalls=200 (≈ cycles)
+    SRAM steered to vidadr<<2 on every steal: true
+    |}]
 ;;
