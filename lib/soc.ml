@@ -21,8 +21,9 @@ module I = struct
     ; rst_n : 'a [@bits 1]
     ; miso : 'a [@bits 1]
     ; btn : 'a [@bits 4] (* buttons (RISC5Top [btn]); read-only via word 1 *)
-    ; sw : 'a [@bits 8]
-    (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
+    ; sw : 'a
+         [@bits 8] (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
+    ; gpio_in : 'a [@bits 8] (* resolved GPIO pad inputs (RISC5Top [gpin]) *)
     }
   [@@deriving hardcaml]
 end
@@ -39,6 +40,8 @@ module O = struct
     ; mosi : 'a [@bits 1]
     ; sclk : 'a [@bits 1]
     ; leds : 'a [@bits 8] (* RISC5Top [leds] = the [Lreg] latch *)
+    ; gpio_out : 'a [@bits 8] (* GPIO drive value (RISC5Top [gpout]) *)
+    ; gpio_oe : 'a [@bits 8] (* GPIO output-enable / direction (RISC5Top [gpoc]) *)
     }
   [@@deriving hardcaml]
 end
@@ -129,6 +132,32 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
                  (select core.outbus ~high:7 ~low:0)
                  lreg.value)
       ]);
+  (* GPIO (words 8/9): [gpout] (drive value, word 8) and [gpoc] (direction, word 9), each
+     8-bit. [gpoc] is reset-cleared; [gpout] is NOT (faithful — a pin powers up as input,
+     drive value undefined). The bidirectional pad is split mouse-style: [gpio_in] in,
+     [gpio_out] = [gpout] and [gpio_oe] = [gpoc] out; the Phase-7 shim rebuilds the IOBUFs
+     ([.T(~oe)]). *)
+  let gpout = Always.Variable.reg spec ~width:8 in
+  Always.(
+    compile
+      [ gpout
+        <-- mux2
+              (core.wr &: ioenb &: (iowadr ==:. 8))
+              (select core.outbus ~high:7 ~low:0)
+              gpout.value
+      ]);
+  let gpoc = Always.Variable.reg spec ~width:8 in
+  Always.(
+    compile
+      [ gpoc
+        <-- mux2
+              ~:(i.rst_n)
+              (zero 8)
+              (mux2
+                 (core.wr &: ioenb &: (iowadr ==:. 9))
+                 (select core.outbus ~high:7 ~low:0)
+                 gpoc.value)
+      ]);
   (* MMIO read mux, indexed by the word address [iowadr] (RISC5Top's [iowadr ==] chain).
      Slots fill in as their peripherals land; unmapped words read 0, like the RTL's [: 0]. *)
   let io_data =
@@ -142,8 +171,8 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
        ; uresize spi.rdy ~width:32 (* 5 SPI status *)
        ; zero 32 (* 6 mouse/kbd stat — Step 5 *)
        ; zero 32 (* 7 keyboard data — Step 5 *)
-       ; zero 32 (* 8 gpio data — Step 2 *)
-       ; zero 32 (* 9 gpio tristate — Step 2 *)
+       ; uresize i.gpio_in ~width:32 (* 8 gpio data (gpin) *)
+       ; uresize gpoc.value ~width:32 (* 9 gpio tristate (gpoc) *)
        ]
        @ List.init 6 ~f:(fun _ -> zero 32) (* 10..15 unmapped *))
   in
@@ -160,6 +189,8 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
   ; mosi = spi.mosi
   ; sclk = spi.sclk
   ; leds = lreg.value
+  ; gpio_out = gpout.value
+  ; gpio_oe = gpoc.value
   }
 ;;
 
@@ -319,4 +350,44 @@ let%expect_test "soc — word 1: read {btn, sw}; store latches the LEDs" =
     (r 2)
     (Bits.to_unsigned_int !(outp.leds));
   [%expect {| R2 (switches {btn,sw}) = 0x50F   leds = 0xAB |}]
+;;
+
+let%expect_test "soc — GPIO words 8/9: gpout/gpoc registers + gpin readback" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  let prog =
+    [| 0x640000FF (* MOV' R4, #0xFF<<16 R4 = 0xFF0000 *)
+     ; 0x4546FFE4 (* IOR R5, R4, #0xFFE4 R5 = 0xFFFFE4 (word 9) *)
+     ; 0x4446FFE0 (* IOR R4, R4, #0xFFE0 R4 = 0xFFFFE0 (word 8) *)
+     ; 0x410000FF (* MOV R1, #0xFF *)
+     ; 0xA1500000 (* ST R1, [R5] gpoc := 0xFF (all drive) *)
+     ; 0x4200003C (* MOV R2, #0x3C *)
+     ; 0xA2400000 (* ST R2, [R4] gpout := 0x3C *)
+     ; 0x83400000 (* LD R3, [R4] R3 = gpin, the pin input (word 8 read) *)
+     ; 0x86500000 (* LD R6, [R5] R6 = gpoc readback (word 9 read) *)
+     ; nop
+     ; nop
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  (* the pin input is independent of what we drive — word-8 read returns it verbatim *)
+  inp.gpio_in := Bits.of_unsigned_int ~width:8 0x5A;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  for _ = 1 to 24 do
+    Cyclesim.cycle sim
+  done;
+  let r k = Cyclesim.Memory.to_int regfile ~address:k in
+  Stdlib.Printf.printf
+    "gpio_out=0x%X gpio_oe=0x%X   R3(gpin read)=0x%X R6(gpoc read)=0x%X\n"
+    (Bits.to_unsigned_int !(outp.gpio_out))
+    (Bits.to_unsigned_int !(outp.gpio_oe))
+    (r 3)
+    (r 6);
+  [%expect {| gpio_out=0x3C gpio_oe=0xFF   R3(gpin read)=0x5A R6(gpoc read)=0xFF |}]
 ;;
