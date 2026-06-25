@@ -5,7 +5,7 @@
 # OPT-IN — not part of `dune runtest`. Needs `verilator` on PATH (outside the ox toolchain). The
 # reference Verilog is fetched + checksum-verified on demand by fetch-rtl.sh (see README.md).
 #
-#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid | all]  (default: all)
+#   usage:  bash test/cosim/run.sh [fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid | mouse | all]  (default: all)
 #   or:     dune build @cosim                                            (runs every unit)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)" # repo root (works standalone and from the @cosim action)
@@ -33,6 +33,7 @@ rs232t          RS232T.v         RS232T         rs232t.cpp          dump_rs232t
 rs232r          RS232R.v         RS232R         rs232r.cpp          dump_rs232r
 ps2             PS2.v            PS2            ps2.cpp             dump_ps2
 vid             VID60.v          vid_cosim      vid.cpp             dump_vid            vid_cosim.v
+mouse           MousePM.v        mouse_cosim    mouse.cpp           dump_mouse          mouse_cosim.v
 TBL
 )
 

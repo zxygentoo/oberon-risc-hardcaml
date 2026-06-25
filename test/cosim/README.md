@@ -18,14 +18,15 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 ## Run
 
 ```sh
-dune build @cosim                       # everything (FP units + SPI + UART R/T + PS/2 kbd + video), uniform with @boot_checkpoint
+dune build @cosim                       # everything (FP units + SPI + UART R/T + PS/2 kbd + video + mouse), uniform with @boot_checkpoint
 bash test/cosim/run.sh                  # everything — the same, run directly
-bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid)
+bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid | mouse)
 bash test/cosim/run.sh spi              # just the SPI master
 bash test/cosim/run.sh rs232t           # just the RS232 transmitter
 bash test/cosim/run.sh rs232r           # just the RS232 receiver
 bash test/cosim/run.sh ps2              # just the PS/2 keyboard
 bash test/cosim/run.sh vid              # just the video controller
+bash test/cosim/run.sh mouse            # just the PS/2 mouse
 ```
 
 `dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
@@ -59,6 +60,13 @@ and asserts the RTL matches the port in **both result and timing** for every sti
   visible pixels, the 32-word/line DMA, `vidadr`, `hblank` + the `hsync` pulse, the `hcnt` wrap +
   `vcnt` advance. `vblank`/`vsync` (`vcnt>=768`) need a whole frame to reach (the Phase-6 visual
   golden) and are the same comparator-free / SR-latch idiom as their `h` counterparts.
+- **PS/2 mouse** — bidirectional open-drain `msclk`/`msdat` (RTL `inout`, `line = drive ? 0 : z`).
+  A wrapper (`mouse_cosim.v`) splits each line like the Hardcaml port: `force`s the harness-driven
+  resolved value into the DUT and XMR-exports the DUT's pull-low (`req`, `~tx[0]`) as `*_oe`. The
+  dumper plays a mouse device through the **bidirectional init handshake to `run`, then 4 movement
+  reports** (+ve / −ve signs, buttons, overflow), recording the device's pull-lows; both sides
+  resolve `wire = ~(own DUT oe | device low)`, so a divergence shows as an output mismatch. Asserts,
+  **every cycle** over ~505 K cycles, `RTL (msclk_oe, msdat_oe, out) == port's` (`0 mismatch`).
 
 Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
 only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
@@ -84,6 +92,7 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_rs232r.ml` | the RS232 receiver dumper (input-driven): play the sender — drive a frame on `rxd` (+ a `done_` ack), dump `"fsel data hextrace"` (one hex digit/cycle = `done_·rxd·rdy`); fixed-length replay, so no cycles column |
 | `dump_ps2.ml` | the PS/2 keyboard dumper (input-driven): play the keyboard — clock a frame on `ps2c`/`ps2d` (+ a `done_` pop), dump `"data hextrace"` (one hex digit/cycle = `done_·ps2c·ps2d·rdy`); fixed-length replay |
 | `dump_vid.ml` + `vid_cosim.v` | the video dumper (two-clock, autonomous): run `Risc5.Vid` under `By_input_clocks` (13:5) over ~2 scanlines, dump `"inv viddata req vidadr hsync vsync rgb"` per base tick. `vid.cpp` replays the inputs through `vid_cosim.v` — the real `VID60.v` with `DCM`/`BUFG` stubbed and `pclk` `force`d from the harness — and compares every output each tick. The optional 6th `units_table` column hands `vid_cosim.v` to Verilator |
+| `dump_mouse.ml` + `mouse_cosim.v` | the mouse dumper (bidirectional, single-clock): play a PS/2 mouse against `Risc5.Mouse` through the init handshake + 4 reports, dump `"rstn dmc dmd mco mdo out"` per cycle (the device's open-drain pull-lows + the port outputs). `mouse.cpp` replays through `mouse_cosim.v` — the real `MousePM.v` with the `inout` lines split via `force` + XMR — resolving the open-drain against the RTL's own oe, and compares every cycle |
 | `fp_cosim.h` | shared harness: universal `cosim_open` + `Unit`, the `tick`, and the **full stall-based runner** `run_drain_cosim` (open → run → drain → compare → summary) with its `parse_xy`/`parse_xyuv` stimulus parsers — so each FP `.cpp` is a thin shell. The serial units reuse only `tick`; deduping them (a shared serial runner + a rename to `cosim.h`) is a deferred 6a-end clean-up |
 | `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial harnesses (`spi.cpp`, `rs232t.cpp`, `rs232r.cpp`, `ps2.cpp`) still carry a full `main` (cycle-by-cycle `rdy` + the unit's other outputs) pending the serial dedup |
 | `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |

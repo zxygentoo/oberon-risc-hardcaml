@@ -7,7 +7,14 @@
 ; silently rot); the actual cross-check is run.sh.
 
 (executables
- (names dump_fp dump_spi dump_rs232t dump_rs232r dump_ps2 dump_vid)
+ (names
+  dump_fp
+  dump_spi
+  dump_rs232t
+  dump_rs232r
+  dump_ps2
+  dump_vid
+  dump_mouse)
  (libraries risc5 hardcaml))
 
 ; Uniform front door, mirroring @boot_checkpoint: `dune build @cosim` runs every unit. OPT-IN
@@ -30,6 +37,7 @@
   dump_rs232t.exe
   dump_rs232r.exe
   dump_ps2.exe
-  dump_vid.exe)
+  dump_vid.exe
+  dump_mouse.exe)
  (action
   (run bash run.sh)))
