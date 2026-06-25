@@ -62,8 +62,8 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_fp.ml` | one dumper for all FP units: drive `Risc5.Fp_<unit>` (chosen by the unit-name argument) over the stimuli, dump `"x y [u v] z cycles"` lines (`cycles` = the port's stall length) — the stimulus source |
 | `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
 | `dump_rs232t.ml` | the RS232 transmitter dumper (output-only serial handshake): drive `Risc5.Rs232t` over (`fsel`, `data`), dump `"fsel data cycles hextrace"` (one hex digit/cycle = `rdy·txd`) |
-| `fp_cosim.h` | shared harness: `tick` + the FP `run → drain → count` protocol, templated over the Verilator top type so all three FP units reuse one definition (`spi.cpp` reuses only `tick`) |
-| `<unit>.cpp` | Verilator harness, one per unit: replay each dumped line through `<Unit>.v` and compare outputs + timing against the port's — FP via `fp_cosim.h`'s `drain` (`z` + stall length); `spi.cpp` cycle-by-cycle (`rdy/sclk/mosi` + `dataRx` + cycle count); `rs232t.cpp` likewise (`rdy/TxD` + frame length) |
+| `fp_cosim.h` | shared harness: universal `cosim_open` + `Unit`, the `tick`, and the **full stall-based runner** `run_drain_cosim` (open → run → drain → compare → summary) with its `parse_xy`/`parse_xyuv` stimulus parsers — so each FP `.cpp` is a thin shell. The serial units reuse only `tick`; deduping them (a shared serial runner + a rename to `cosim.h`) is a deferred 6a-end clean-up |
+| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); `spi.cpp`/`rs232t.cpp` still carry a full `main` (cycle-by-cycle `rdy/sclk/mosi` + `dataRx`; resp. `rdy/TxD` + frame length) pending the serial dedup |
 | `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
 | `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
 
@@ -81,8 +81,8 @@ new row plus its harness, with one fork on whether it fits the stall-based dumpe
 1. a `*_driver ()` in `dump_fp.ml` (build its sim, set its inputs, return `drive`'s
    `(z, cycles)`) plus one arm in the unit-name `match` — the `run` → drain on `stall` → read
    protocol (and its stall-cycle count) is already shared by `drive`;
-2. a `<unit>.cpp` Verilator harness (replay each dumped line through the unit's `.v`, compare
-   `z` and the RTL's stall length against the port's `cycles`);
+2. a ~8-line `<unit>.cpp` that names the `Unit` and passes `parse_xy` (or `parse_xyuv`, if it
+   carries `u`/`v`) to `run_drain_cosim` — the replay/compare/summary loop is shared;
 3. a `units_table` row in `run.sh` with `dump_fp` in the dumper column.
 
 The adder carries `u`/`v` modifiers and a 6-field vector line (`A`); the mul/div units don't
