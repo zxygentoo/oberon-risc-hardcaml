@@ -7,13 +7,8 @@
    self-heals in low RAM): the static loaded image is byte-identical; only runtime
    pc-links (R15, boot-stack saved links) carry the constant ROM-base offset.
 
-   The bridge is a faithful off-chip SD card watching the SoC's real [sclk]/[mosi]/[miso]
-   pins. At each transfer start it captures [data_tx] (the freshly-loaded [shreg]) and the
-   [fast]/select bits, exchanges the {b whole} value with [Oracle.Disk] (a byte in slow
-   mode, a 32-bit word in fast mode — exactly what risc.ml's store_io/load_io pass), and
-   clocks the response back on [miso] MSbit-first per byte, LSByte-first across the word —
-   advancing one bit per [sclk] falling edge, the bit-boundary common to the slow 50%-duty
-   clock and the fast one-cycle pulse. *)
+   The SD card is the shared {!Sd_bridge} — a faithful off-chip SPI slave over
+   [Oracle.Disk] watching the SoC's real [sclk]/[mosi]/[miso] pins. *)
 
 open Hardcaml
 module Soc = Risc5.Soc
@@ -82,56 +77,7 @@ let rm_temp tmp =
   | Sys_error _ -> ()
 ;;
 
-(* ── SD card: a bit-level SPI slave over Oracle.Disk ─────────────────────────── *)
-type bridge =
-  { spi : Oracle.Io.spi
-  ; mutable rx_seq :
-      int array (* miso bits for the current transfer, MSbit-first per byte *)
-  ; mutable rx_idx : int
-  ; mutable prev_sclk : int
-  ; mutable prev_rdy : int
-  ; mutable nbytes : int
-  }
-
-let bridge_create spi =
-  { spi; rx_seq = [||]; rx_idx = 0; prev_sclk = 0; prev_rdy = 1; nbytes = 0 }
-;;
-
-(* One transfer = one whole-value exchange with [Oracle.Disk] (write-then-read, the
-   emulator's order), gated on the SD slave being selected (spiCtrl[1:0]=1, the emulator's
-   [spi_selected]). The response value is unpacked into the [miso] bit sequence the master
-   will shift in. *)
-let bridge_begin b ~data_tx ~fast ~selected =
-  let rx =
-    if selected
-    then (
-      b.spi.spi_write_data data_tx;
-      b.spi.spi_read_data ())
-    else if fast
-    then 0xFFFF_FFFF
-    else 0xFF
-  in
-  b.nbytes <- b.nbytes + 1;
-  let nbits = if fast then 32 else 8 in
-  let seq = Array.make nbits 1 in
-  for byte = 0 to (nbits / 8) - 1 do
-    let bv = (rx asr (8 * byte)) land 0xFF in
-    for i = 0 to 7 do
-      seq.((byte * 8) + i) <- (bv asr (7 - i)) land 1
-    done
-  done;
-  b.rx_seq <- seq;
-  b.rx_idx <- 0
-;;
-
-let bridge_miso b = if b.rx_idx < Array.length b.rx_seq then b.rx_seq.(b.rx_idx) else 1
-
-let bridge_step b ~sclk ~rdy ~data_tx ~fast ~selected =
-  if b.prev_rdy = 1 && rdy = 0 then bridge_begin b ~data_tx ~fast ~selected;
-  if b.prev_sclk = 1 && sclk = 0 then b.rx_idx <- b.rx_idx + 1;
-  b.prev_sclk <- sclk;
-  b.prev_rdy <- rdy
-;;
+(* The off-chip SD card (bit-level SPI slave over Oracle.Disk) is the shared {!Sd_bridge}. *)
 
 (* ── A machine's architectural state at the handoff, for differential comparison ── *)
 type snapshot =
@@ -146,7 +92,7 @@ type snapshot =
    leaves the ROM within the cycle cap. *)
 let run_soc_to_handoff () =
   let tmp = copy_to_temp disk_image in
-  let bridge = bridge_create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
@@ -173,10 +119,10 @@ let run_soc_to_handoff () =
   let cycle = ref 0
   and handoff = ref false in
   while (not !handoff) && !cycle < soc_cycle_cap do
-    inp.miso := if bridge_miso bridge = 1 then hi else lo;
+    inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
     Cyclesim.cycle sim;
     let ctrl = Cyclesim.Reg.to_int spi_ctrl in
-    bridge_step
+    Sd_bridge.step
       bridge
       ~sclk:(Bits.to_unsigned_int !(outp.sclk))
       ~rdy:(Cyclesim.Reg.to_int rdy)
@@ -193,14 +139,14 @@ let run_soc_to_handoff () =
       "NO HANDOFF in %d cycles (pc=0x%X spi_bytes=%d)\n"
       soc_cycle_cap
       (read "pc")
-      bridge.nbytes;
+      (Sd_bridge.nbytes bridge);
     None)
   else (
     Printf.printf
       "HANDOFF at cycle %d → pc=0x%X (spi_bytes=%d)\n%!"
       !cycle
       (read "pc")
-      bridge.nbytes;
+      (Sd_bridge.nbytes bridge);
     let regfile = some "regfile" (Cyclesim.lookup_mem_by_name sim "regfile") in
     let lanes =
       Array.init 4 (fun k ->

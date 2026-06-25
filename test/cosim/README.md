@@ -27,6 +27,7 @@ bash test/cosim/run.sh rs232r           # just the RS232 receiver
 bash test/cosim/run.sh ps2              # just the PS/2 keyboard
 bash test/cosim/run.sh vid              # just the video controller
 bash test/cosim/run.sh mouse            # just the PS/2 mouse
+dune build @core_cosim                  # the CPU core — a different shape (boot-stream replay); see "CPU core" below
 ```
 
 `dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
@@ -100,6 +101,34 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 
 The OCaml dumpers build under `dune build @check` (Verilator-free), so they can't silently rot
 even though the cross-check itself only runs via `run.sh`.
+
+## CPU core (boot-stream RTL co-sim)
+
+The core gets a different *shape* of check — not a stimulus dump but a **whole-core, cycle-level
+replay of a real boot** (the core otherwise has no cycle-level RTL check before the Phase-8 proof,
+AGENT.md §6). Opt-in, like `@cosim` but its own front door:
+
+```sh
+dune build @core_cosim          # capture the boot trace, then replay it through RISC5.v
+bash test/cosim/run-core.sh     # the same, run directly
+```
+
+`test/dump_core_trace.ml` boots the SoC from the real disk (the shared `Sd_bridge` SD card) and
+records the CPU core's per-cycle I/O — `rst`/`irq`/`stallX`/`codebus`/`inbus` (inputs) and
+`adr`/`rd`/`wr`/`ben`/`outbus` (outputs) — to a 17-byte-per-cycle trace (~25 M cycles, ~400 MiB,
+cached). `risc5.cpp` Verilates `RISC5.v` + its 8 submodules (`ram16x1d.v` supplies the `RAM16X1D`
+distributed-RAM primitive `Registers.v` infers, the way `vid_cosim.v` stubs the `DCM`) and replays
+the trace: it drives `RISC5.v` with the captured **inputs** and asserts its **outputs** match the
+captured ones every cycle, reporting the **first divergence**.
+
+Why the first output mismatch pins any divergence exactly: both cores start from the same reset
+state, and as long as our outputs match the spec's, memory — hence the inputs, which are functions
+of memory — evolves identically, so the comparison stays valid right up to the first cycle our core
+does something `RISC5.v` wouldn't (there both are in identical state fed an identical instruction,
+a minimal reproducer). This is what found + verified the phase-6b ALU flag-leak. Unlike the unit
+co-sims it is *not* a `units_table` row (it replays a boot capture, not a stimulus set) — hence its
+own `run-core.sh`. `CAPTURE=1` forces a recapture; `CYC_FROM`/`CYC_TO`/`NOTRACE` on the capture
+print a windowed pc/ir/flags/regs dump for zooming in on a divergence.
 
 ## Adding another unit (the CPU core, peripherals)
 

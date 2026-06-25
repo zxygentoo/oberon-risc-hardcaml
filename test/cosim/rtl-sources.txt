@@ -23,3 +23,11 @@
 7d52a211cd92f9f6c8cf80f7350ff207a984fd1d9b53806aa54356a12c7539d3  _po/verilog/src/PS2.v
 f70697625d82689d4cd5f18f9f35acc8ec28e9262b3f40f1a2f1029c65025083  _po/verilog/src/VID60.v
 4904436add61d6dfcb72ed2d89aa350faec856b627675b0ac55893a0ba715cf8  _po/verilog/src/MousePM.v
+# The CPU core + its submodules — for the boot-stream RTL co-sim (test/cosim/run-core.sh).
+# Registers.v infers the RAM16X1D primitive; test/cosim/ram16x1d.v supplies its behaviour.
+105cfa1279073aa76c0f6891e00f3e820cdcd6459e3f56df17b840832eea64c8  _po/verilog/src/RISC5.v
+3ec0d48c236121c4e385677ae44b5b13ff4424cc3425ecb959293265f0c31a27  _po/verilog/src/Registers.v
+4181e68f309a3527d6aa580ad0322734e224f1265282ddb7bc43fe38f0a77870  _po/verilog/src/Multiplier.v
+ed6d9faacedce99d7f8ce353a33dff714e9661c2936d6ef893ab1f908cc2bc8c  _po/verilog/src/Divider.v
+f56609050314566a10cc3398992787dbfeda1ab5b83658d96eca9a7bb7b42d74  _po/verilog/src/LeftShifter.v
+6485bde13d7d2581b1bdcbcdd094eb7d4ec00fc37c621bdbcfc6ab976e9f532e  _po/verilog/src/RightShifter.v
