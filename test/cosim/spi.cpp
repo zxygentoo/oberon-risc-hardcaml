@@ -68,10 +68,5 @@ static bool replay_spi(VSPI* dut, FILE* f, Serial_mismatches* m) {
 }
 
 int main(int argc, char** argv) {
-  FILE* f = cosim_open(argc, argv);
-  if (!f) return 2;
-  VSPI* dut = new VSPI;
-  int rc = run_serial_cosim(Unit{ "spi", "Spi", "SPI.v" }, dut, f, reset_spi, replay_spi);
-  delete dut;
-  return rc;
+  return serial_cosim_main<VSPI>(argc, argv, { "spi", "Spi", "SPI.v" }, reset_spi, replay_spi);
 }

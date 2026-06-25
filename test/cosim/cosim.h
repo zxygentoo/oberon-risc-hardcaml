@@ -74,6 +74,18 @@ static int run_serial_cosim(Unit unit, Dut* dut, FILE* f, Reset reset, Replay re
   return ok ? 0 : 1;
 }
 
+// the serial .cpp entry point: open the dump, construct the DUT, run the cross-check, return its
+// exit code. Each serial harness's main() is one call to this, differing only in the DUT type, the
+// Unit names, and its (reset, replay) pair. [Dut] is an explicit template arg — it's the type to
+// construct, not deducible from the arguments.
+template <typename Dut, typename Reset, typename Replay>
+static int serial_cosim_main(int argc, char** argv, Unit unit, Reset reset, Replay replay) {
+  FILE* f = cosim_open(argc, argv);
+  if (!f) return 2;
+  Dut dut;
+  return run_serial_cosim(unit, &dut, f, reset, replay);
+}
+
 // assert run, drain until stall drops, read z, then release run for one cycle. Returns z;
 // *cycles = the clock cycles with run asserted until stall drops (the stall length),
 // counted identically to dump_fp's port-side drive so the two are directly comparable. The

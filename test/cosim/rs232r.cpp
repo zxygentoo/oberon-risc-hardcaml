@@ -48,11 +48,6 @@ static bool replay_rs232r(VRS232R* dut, FILE* f, Serial_mismatches* m) {
 }
 
 int main(int argc, char** argv) {
-  FILE* f = cosim_open(argc, argv);
-  if (!f) return 2;
-  VRS232R* dut = new VRS232R;
-  int rc =
-    run_serial_cosim(Unit{ "rs232r", "Rs232r", "RS232R.v" }, dut, f, reset_rs232r, replay_rs232r);
-  delete dut;
-  return rc;
+  return serial_cosim_main<VRS232R>(argc, argv, { "rs232r", "Rs232r", "RS232R.v" }, reset_rs232r,
+                                    replay_rs232r);
 }

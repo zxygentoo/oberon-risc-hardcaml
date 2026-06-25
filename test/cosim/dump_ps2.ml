@@ -14,11 +14,10 @@
    driven), bit0 = rdy (the output checked). *)
 
 open Hardcaml
+open Cosim_dump
 module Ps2 = Risc5.Ps2
 module Sim = Cyclesim.With_interface (Ps2.I) (Ps2.O)
 
-let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v
-let rd r = Bits.to_int_trunc !r
 let h = 4 (* ps2c half-period in clocks (>=2 for the synchronizer to see the edge) *)
 
 let odd_parity data =
@@ -54,7 +53,7 @@ let () =
         lor (rd inp.ps2d lsl 1)
         lor rd outp.rdy
       in
-      Buffer.add_char buf "0123456789ABCDEF".[nib]
+      Buffer.add_char buf (hex_digit nib)
     in
     let send_bit b =
       set inp.ps2d b;
