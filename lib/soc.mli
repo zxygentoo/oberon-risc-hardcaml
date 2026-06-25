@@ -13,12 +13,13 @@
     IRQ source) which ticks [cnt1], readable at MMIO word 0. The {!Spi} master — the one
     peripheral boot needs — sits at MMIO words 4 (data: read = received, write = start a
     transfer) and 5 (control: write [fast]/slave-select, read = [rdy]); its [miso] pin is
-    an input and [mosi]/[sclk] are outputs (the SD card is driven test-side). Word 1
-    (switches) reads 0 = disk boot; the remaining words read 0 (peripherals are Phase 6).
-    The boot-handoff checkpoint runs on the plain Cyclesim interpreter, where
-    lookup_reg/lookup_mem reach this state directly. [~clocks_per_ms] defaults to 25000 (1
-    ms at 25 MHz); the boot ROM image is a [~contents] parameter, keeping the design
-    library free of [prom.mem]. *)
+    an input and [mosi]/[sclk] are outputs (the SD card is driven test-side). Word 1 reads
+    the buttons/switches ([{btn, sw}], logical/active-high; default 0 = all-off = disk
+    boot) and a store there latches the LEDs ([leds]); the remaining unwired words read 0
+    (the rest of the MMIO map is Phase 6b, in progress). The boot-handoff checkpoint runs
+    on the plain Cyclesim interpreter, where lookup_reg/lookup_mem reach this state
+    directly. [~clocks_per_ms] defaults to 25000 (1 ms at 25 MHz); the boot ROM image is a
+    [~contents] parameter, keeping the design library free of [prom.mem]. *)
 
 open Hardcaml
 
@@ -27,6 +28,8 @@ module I : sig
     { clock : 'a
     ; rst_n : 'a
     ; miso : 'a
+    ; btn : 'a
+    ; sw : 'a
     }
   [@@deriving hardcaml]
 end
@@ -42,6 +45,7 @@ module O : sig
     ; inbus : 'a
     ; mosi : 'a
     ; sclk : 'a
+    ; leds : 'a
     }
   [@@deriving hardcaml]
 end

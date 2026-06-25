@@ -8,7 +8,8 @@
    is built. Stores go to RAM unconditionally, faithful to the SRAM (no [ioenb] gate). The
    {!Spi} master is wired per RISC5Top: a store to MMIO word 4 pulses [start]
    ([spiStart]); word 5 is the 4-bit [spiCtrl] (bit 2 = [fast]); reads of words 4/5 return
-   [data_rx]/[rdy]. *)
+   [data_rx]/[rdy]. Word 1 reads [{btn, sw}] and latches the LEDs ([lreg]) on a store; the
+   read mux is an [iowadr]-indexed [mux] with one labelled slot per MMIO word. *)
 
 open! Base
 open Hardcaml
@@ -19,6 +20,9 @@ module I = struct
     { clock : 'a
     ; rst_n : 'a [@bits 1]
     ; miso : 'a [@bits 1]
+    ; btn : 'a [@bits 4] (* buttons (RISC5Top [btn]); read-only via word 1 *)
+    ; sw : 'a [@bits 8]
+    (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
     }
   [@@deriving hardcaml]
 end
@@ -34,6 +38,7 @@ module O = struct
     ; inbus : 'a [@bits 32]
     ; mosi : 'a [@bits 1]
     ; sclk : 'a [@bits 1]
+    ; leds : 'a [@bits 8] (* RISC5Top [leds] = the [Lreg] latch *)
     }
   [@@deriving hardcaml]
 end
@@ -104,18 +109,43 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
       ; miso = i.miso
       }
   in
-  (* MMIO read mux: word 0 = ms counter; word 4 = SPI data; word 5 =
-     {31 'b0, spiRdy}
-     ; word 1 (switches) and the rest read 0 — 0 selects disk boot, remaining peripherals
-     are Phase 6 *)
+  (* Switches/buttons (word 1 read): [{btn, sw}] zero-extended to 32 bits. RISC5Top reads
+     [~nswi] — the OberonStation switches are active-low (board pullups); we take the
+     already-logical [sw] (Nexys switches are active-high) and leave that pad inversion to
+     the Phase-7 shim. Default 0 = all-off = the oracle's [switches], so disk boot is
+     unaffected. *)
+  let switches = uresize (i.btn @: i.sw) ~width:32 in
+  (* LEDs (word 1 write): [Lreg] — cleared by reset, else loaded from [outbus[7:0]] on a
+     store to word 1 (same shape as [spi_ctrl]); driven out on [leds]. *)
+  let lreg = Always.Variable.reg spec ~width:8 in
+  Always.(
+    compile
+      [ lreg
+        <-- mux2
+              ~:(i.rst_n)
+              (zero 8)
+              (mux2
+                 (core.wr &: ioenb &: (iowadr ==:. 1))
+                 (select core.outbus ~high:7 ~low:0)
+                 lreg.value)
+      ]);
+  (* MMIO read mux, indexed by the word address [iowadr] (RISC5Top's [iowadr ==] chain).
+     Slots fill in as their peripherals land; unmapped words read 0, like the RTL's [: 0]. *)
   let io_data =
-    mux2
-      (iowadr ==:. 0)
-      cnt1_v
-      (mux2
-         (iowadr ==:. 4)
-         spi.data_rx
-         (mux2 (iowadr ==:. 5) (uresize spi.rdy ~width:32) (zero 32)))
+    mux
+      iowadr
+      ([ cnt1_v (* 0 ms counter *)
+       ; switches (* 1  {btn, switches} *)
+       ; zero 32 (* 2 RS-232 data — Step 4 *)
+       ; zero 32 (* 3 RS-232 status — Step 4 *)
+       ; spi.data_rx (* 4 SPI data *)
+       ; uresize spi.rdy ~width:32 (* 5 SPI status *)
+       ; zero 32 (* 6 mouse/kbd stat — Step 5 *)
+       ; zero 32 (* 7 keyboard data — Step 5 *)
+       ; zero 32 (* 8 gpio data — Step 2 *)
+       ; zero 32 (* 9 gpio tristate — Step 2 *)
+       ]
+       @ List.init 6 ~f:(fun _ -> zero 32) (* 10..15 unmapped *))
   in
   (* fetch: ROM in the top 16 KiB, else RAM; load: MMIO in the top 64 B, else RAM *)
   assign codebus (mux2 rom_region prom.data ram.rdata);
@@ -129,6 +159,7 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
   ; inbus
   ; mosi = spi.mosi
   ; sclk = spi.sclk
+  ; leds = lreg.value
   }
 ;;
 
@@ -253,4 +284,39 @@ let%expect_test "soc — SPI slow byte transfer (loopback) via MMIO words 4/5" =
   let r k = Cyclesim.Memory.to_int regfile ~address:k in
   Stdlib.Printf.printf "R4 (SPI data_rx, loopback of 0xA5) = 0x%X\n" (r 4);
   [%expect {| R4 (SPI data_rx, loopback of 0xA5) = 0xA5 |}]
+;;
+
+let%expect_test "soc — word 1: read {btn, sw}; store latches the LEDs" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  let prog =
+    [| 0x640000FF (* MOV' R4, #0xFF<<16 R4 = 0xFF0000 *)
+     ; 0x4446FFC4 (* IOR R4, R4, #0xFFC4 R4 = 0xFFFFC4 (word 1) *)
+     ; 0x82400000 (* LD   R2, [R4]          R2 = {btn, sw} *)
+     ; 0x430000AB (* MOV R3, #0xAB *)
+     ; 0xA3400000 (* ST R3, [R4] Lreg := 0xAB *)
+     ; nop
+     ; nop
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  inp.sw := Bits.of_unsigned_int ~width:8 0x0F;
+  inp.btn := Bits.of_unsigned_int ~width:4 0x5;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  for _ = 1 to 20 do
+    Cyclesim.cycle sim
+  done;
+  let r k = Cyclesim.Memory.to_int regfile ~address:k in
+  (* {btn=5, sw=0x0F} = (5<<8) | 0x0F = 0x50F; the store latched 0xAB onto the LEDs *)
+  Stdlib.Printf.printf
+    "R2 (switches {btn,sw}) = 0x%X   leds = 0x%X\n"
+    (r 2)
+    (Bits.to_unsigned_int !(outp.leds));
+  [%expect {| R2 (switches {btn,sw}) = 0x50F   leds = 0xAB |}]
 ;;
