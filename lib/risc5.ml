@@ -12,4 +12,5 @@ module Fp_divider = Fp_divider
 module Risc5_core = Risc5_core
 module Spi = Spi
 module Rs232t = Rs232t
+module Rs232r = Rs232r
 module Soc = Soc

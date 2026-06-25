@@ -18,11 +18,12 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 ## Run
 
 ```sh
-dune build @cosim                       # everything (FP units + SPI + UART TX), uniform with @boot_checkpoint
+dune build @cosim                       # everything (FP units + SPI + UART R/T), uniform with @boot_checkpoint
 bash test/cosim/run.sh                  # everything — the same, run directly
-bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t)
+bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r)
 bash test/cosim/run.sh spi              # just the SPI master
 bash test/cosim/run.sh rs232t           # just the RS232 transmitter
+bash test/cosim/run.sh rs232r           # just the RS232 receiver
 ```
 
 `dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
@@ -40,6 +41,10 @@ and asserts the RTL matches the port in **both result and timing** for every sti
 - **RS232T (UART TX)** — corner bytes in both baud rates **+ ~72 random fuzz frames**; asserts,
   **cycle-by-cycle**, `RTL (rdy, TxD) == port's`, plus total frame length (`0 wave-,
   cycle-mismatch`). Output-only, so no value column — `TxD` *is* the value, checked every cycle.
+- **RS232R (UART RX)** — the testbench plays the sender, driving a frame on `RxD` (+ a `done`
+  ack) in both baud rates **+ ~36 fuzz frames**; a fixed-length trace replay asserts,
+  **cycle-by-cycle**, `RTL rdy == port's` plus `RTL data == port's` whenever `rdy` is high
+  (`0 value-, wave-mismatch`).
 
 Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
 only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
@@ -62,8 +67,9 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_fp.ml` | one dumper for all FP units: drive `Risc5.Fp_<unit>` (chosen by the unit-name argument) over the stimuli, dump `"x y [u v] z cycles"` lines (`cycles` = the port's stall length) — the stimulus source |
 | `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
 | `dump_rs232t.ml` | the RS232 transmitter dumper (output-only serial handshake): drive `Risc5.Rs232t` over (`fsel`, `data`), dump `"fsel data cycles hextrace"` (one hex digit/cycle = `rdy·txd`) |
+| `dump_rs232r.ml` | the RS232 receiver dumper (input-driven): play the sender — drive a frame on `rxd` (+ a `done_` ack), dump `"fsel data hextrace"` (one hex digit/cycle = `done_·rxd·rdy`); fixed-length replay, so no cycles column |
 | `fp_cosim.h` | shared harness: universal `cosim_open` + `Unit`, the `tick`, and the **full stall-based runner** `run_drain_cosim` (open → run → drain → compare → summary) with its `parse_xy`/`parse_xyuv` stimulus parsers — so each FP `.cpp` is a thin shell. The serial units reuse only `tick`; deduping them (a shared serial runner + a rename to `cosim.h`) is a deferred 6a-end clean-up |
-| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); `spi.cpp`/`rs232t.cpp` still carry a full `main` (cycle-by-cycle `rdy/sclk/mosi` + `dataRx`; resp. `rdy/TxD` + frame length) pending the serial dedup |
+| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial harnesses (`spi.cpp`, `rs232t.cpp`, `rs232r.cpp`) still carry a full `main` (cycle-by-cycle `rdy` + `sclk/mosi`+`dataRx` / `TxD` / `data`) pending the serial dedup |
 | `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
 | `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
 
