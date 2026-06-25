@@ -9,3 +9,22 @@
 (executables
  (names dump_fp dump_spi)
  (libraries risc5 hardcaml))
+
+; Uniform front door, mirroring @boot_checkpoint: `dune build @cosim` runs every unit. OPT-IN
+; (needs verilator + network on first fetch), so it's kept out of @runtest/@check. The dumper
+; exes are declared deps so dune pre-builds them — run.sh then skips its own `dune build`, so the
+; action never nests a dune invocation. Like @boot_checkpoint, dune caches the result: re-run with
+; `dune build @cosim --force`, or `bash test/cosim/run.sh <unit>` for a single unit.
+
+(rule
+ (alias cosim)
+ (deps
+  run.sh
+  fetch-rtl.sh
+  rtl-sources.txt
+  fp_cosim.h
+  (glob_files *.cpp)
+  dump_fp.exe
+  dump_spi.exe)
+ (action
+  (run bash run.sh)))

@@ -18,12 +18,15 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 ## Run
 
 ```sh
-bash test/cosim/run.sh                  # everything (FP units + SPI)
+dune build @cosim                       # everything (FP units + SPI), uniform with @boot_checkpoint
+bash test/cosim/run.sh                  # everything — the same, run directly
 bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi)
 bash test/cosim/run.sh spi              # just the SPI master
 ```
 
-Ensures the reference RTL is present (fetching it on first run), builds the OCaml dumper, then
+`dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
+with `--force`, or use `run.sh <unit>` for a single unit. Either way it ensures the reference RTL is
+present (fetching it on first run via `fetch-rtl.sh`), builds the OCaml dumper, then
 for each unit dumps the Hardcaml port's output over a stimulus set, verilates the reference `.v`,
 and asserts the RTL matches the port in **both result and timing** for every stimulus (expect
 `0 value-mismatch, 0 cycle-mismatch`):
@@ -39,7 +42,7 @@ only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
 
 ## Reference RTL (fetch-on-demand + checksum pin)
 
-`run.sh`'s `ensure_rtl` populates `_po/verilog/src/` once, on demand: if the pinned `.v` are
+`fetch-rtl.sh` populates `_po/verilog/src/` once, on demand: if the pinned `.v` are
 already cached and match, it does nothing; otherwise it downloads `OStationVerilog.zip` from the
 upstream URL, verifies the archive SHA-256, extracts `src/*.v`, and verifies each file against
 `rtl-sources.txt` before trusting it. The pins are **fidelity-critical**: a mismatch means
@@ -56,12 +59,17 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
 | `fp_cosim.h` | shared harness: `tick` + the FP `run → drain → count` protocol, templated over the Verilator top type so all three FP units reuse one definition (`spi.cpp` reuses only `tick`) |
 | `<unit>.cpp` | Verilator harness, one per unit: replay each dumped line through `<Unit>.v` and compare outputs + timing against the port's — FP via `fp_cosim.h`'s `drain` (`z` + stall length); `spi.cpp` cycle-by-cycle (`rdy/sclk/mosi` + `dataRx` + cycle count) |
-| `run.sh` | glue: build → dump → verilate → cross-check, per unit |
+| `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
+| `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
 
 The OCaml dumpers build under `dune build @check` (Verilator-free), so they can't silently rot
 even though the cross-check itself only runs via `run.sh`.
 
 ## Adding another unit (the CPU core, peripherals)
+
+Every unit is one row in `run.sh`'s `units_table` (`name  .v  top-module  .cpp  dumper`); the
+shared `cosim_unit` drives build → dump → verilate → cross-check off that row. Adding a unit is a
+new row plus its harness, with one fork on whether it fits the stall-based dumper:
 
 **Stall-based units** (`run`/`stall`/`z`) reuse the shared `dump_fp` dumper — three small steps:
 
@@ -70,7 +78,7 @@ even though the cross-check itself only runs via `run.sh`.
    protocol (and its stall-cycle count) is already shared by `drive`;
 2. a `<unit>.cpp` Verilator harness (replay each dumped line through the unit's `.v`, compare
    `z` and the RTL's stall length against the port's `cycles`);
-3. a `run_one` arm in `run.sh` pointing at the unit's `.v` + top-module name.
+3. a `units_table` row in `run.sh` with `dump_fp` in the dumper column.
 
 The adder carries `u`/`v` modifiers and a 6-field vector line (`A`); the mul/div units don't
 (`M`/`D`, 4-field). The `driver` record's `has_uv`/`tag` fields capture exactly that difference.
@@ -79,4 +87,6 @@ The adder carries `u`/`v` modifiers and a 6-field vector line (`A`); the mul/div
 they get their own dumper + harness — see `dump_spi.ml` / `spi.cpp` as the template: dump a
 per-cycle trace (MISO stimulus + the outputs to check), and have the `.cpp` drain the RTL on its
 own terminal condition (here `rdy` re-raising) while comparing every cycle. Wire it in with a
-`cosim_spi`-style function and a `run_one` arm.
+`units_table` row naming the new dumper (`cosim_unit`'s one conditional already handles "dumper
+takes no `fp_vectors` arg"); a genuinely different dump signature is the only case that needs more
+than a row.
