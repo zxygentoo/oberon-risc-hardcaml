@@ -21,11 +21,14 @@
     Word 1 reads the buttons/switches ([{btn, sw}], logical/active-high; default 0 =
     all-off = disk boot) and a store there latches the LEDs ([leds]). GPIO is words 8/9:
     [gpio_out] / [gpio_oe] drive the split bidirectional pads ([gpout]/[gpoc]) and
-    [gpio_in] reads them back; the remaining unwired words read 0 (the rest of the MMIO
-    map is Phase 6b, in progress). The boot-handoff checkpoint runs on the plain Cyclesim
-    interpreter, where lookup_reg/lookup_mem reach this state directly. [~clocks_per_ms]
-    defaults to 25000 (1 ms at 25 MHz); the boot ROM image is a [~contents] parameter,
-    keeping the design library free of [prom.mem]. *)
+    [gpio_in] reads them back. PS/2 keyboard + mouse ({!Ps2}/{!Mouse}) are words 6/7: word
+    6 = [{keyboard-ready, mouse state}], word 7 = the keyboard byte (a read pops the
+    FIFO); the mouse's open-drain [msclk]/[msdat] split into resolved-line inputs and
+    drive-low [msclk_oe]/[msdat_oe] outputs. That completes RISC5Top's MMIO map (words
+    0-9); words 10-15 are unmapped (read 0). The boot-handoff checkpoint runs on the plain
+    Cyclesim interpreter, where lookup_reg/lookup_mem reach this state directly.
+    [~clocks_per_ms] defaults to 25000 (1 ms at 25 MHz); the boot ROM image is a
+    [~contents] parameter, keeping the design library free of [prom.mem]. *)
 
 open Hardcaml
 
@@ -39,6 +42,10 @@ module I : sig
     ; sw : 'a
     ; gpio_in : 'a
     ; pclk : 'a
+    ; ps2c : 'a
+    ; ps2d : 'a
+    ; msclk : 'a
+    ; msdat : 'a
     }
   [@@deriving hardcaml]
 end
@@ -61,6 +68,8 @@ module O : sig
     ; hsync : 'a
     ; vsync : 'a
     ; rgb : 'a
+    ; msclk_oe : 'a
+    ; msdat_oe : 'a
     }
   [@@deriving hardcaml]
 end

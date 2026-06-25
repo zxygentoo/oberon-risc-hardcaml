@@ -25,8 +25,12 @@ module I = struct
     ; sw : 'a
          [@bits 8] (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
     ; gpio_in : 'a [@bits 8] (* resolved GPIO pad inputs (RISC5Top [gpin]) *)
-    ; pclk : 'a [@bits 1]
-    (* 65 MHz pixel clock for VID (DCM/MMCM; a Phase-7 board input) *)
+    ; pclk : 'a
+         [@bits 1] (* 65 MHz pixel clock for VID (DCM/MMCM; a Phase-7 board input) *)
+    ; ps2c : 'a [@bits 1] (* PS/2 keyboard clock *)
+    ; ps2d : 'a [@bits 1] (* PS/2 keyboard data *)
+    ; msclk : 'a [@bits 1] (* PS/2 mouse clock — resolved open-drain line in *)
+    ; msdat : 'a [@bits 1] (* PS/2 mouse data — resolved open-drain line in *)
     }
   [@@deriving hardcaml]
 end
@@ -49,6 +53,10 @@ module O = struct
     ; hsync : 'a [@bits 1] (* VGA horizontal sync (active low) *)
     ; vsync : 'a [@bits 1] (* VGA vertical sync (active low) *)
     ; rgb : 'a [@bits 6] (* 1 bpp pixel replicated across the 6 RGB pins *)
+    ; msclk_oe : 'a
+         [@bits 1] (* mouse msclk open-drain: 1 = host pulls low (req-to-send) *)
+    ; msdat_oe : 'a [@bits 1]
+    (* mouse msdat open-drain: 1 = host pulls low (command bit) *)
     }
   [@@deriving hardcaml]
 end
@@ -174,6 +182,25 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
       ; data = select core.outbus ~high:7 ~low:0
       }
   in
+  (* PS/2 keyboard ({!Ps2}) + mouse ({!Mouse}), words 6/7. Word 6 read carries the mouse
+     state [dataMs] in bits [27:0] and the keyboard-ready bit [rdyKbd] at bit 28; word 7
+     read returns the keyboard byte [dataKbd] and pulses [doneKbd] (pops the keyboard
+     FIFO). The mouse's open-drain [msclk]/[msdat] split into resolved-line inputs and
+     drive-low [*_oe] outputs (the Phase-7 pad / a testbench does the wired-AND). *)
+  let kbd =
+    Ps2.create
+      { Ps2.I.clock = i.clock
+      ; rst_n = i.rst_n
+      ; done_ = core.rd &: ioenb &: (iowadr ==:. 7)
+      ; ps2c = i.ps2c
+      ; ps2d = i.ps2d
+      }
+  in
+  let mouse =
+    Mouse.create
+      { Mouse.I.clock = i.clock; rst_n = i.rst_n; msclk = i.msclk; msdat = i.msdat }
+  in
+  let mouse_out = mouse.out -- "mouse_out" in
   (* Switches/buttons (word 1 read): [{btn, sw}] zero-extended to 32 bits. RISC5Top reads
      [~nswi] — the OberonStation switches are active-low (board pullups); we take the
      already-logical [sw] (Nexys switches are active-high) and leave that pad inversion to
@@ -233,8 +260,8 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
            ~width:32 (* 3 RS-232 status {rdyTx,rdyRx} *)
        ; spi.data_rx (* 4 SPI data *)
        ; uresize spi.rdy ~width:32 (* 5 SPI status *)
-       ; zero 32 (* 6 mouse/kbd stat — Step 5 *)
-       ; zero 32 (* 7 keyboard data — Step 5 *)
+       ; uresize (kbd.rdy @: mouse_out) ~width:32 (* 6 {rdyKbd, dataMs} *)
+       ; uresize kbd.data ~width:32 (* 7 keyboard data (dataKbd) *)
        ; uresize i.gpio_in ~width:32 (* 8 gpio data (gpin) *)
        ; uresize gpoc.value ~width:32 (* 9 gpio tristate (gpoc) *)
        ]
@@ -259,6 +286,8 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
   ; hsync = vid.hsync
   ; vsync = vid.vsync
   ; rgb = vid.rgb
+  ; msclk_oe = mouse.msclk_oe
+  ; msdat_oe = mouse.msdat_oe
   }
 ;;
 
@@ -564,4 +593,71 @@ let%expect_test "soc — UART loopback through MMIO words 2/3" =
     "R0 (UART data_rx, loopback of 0x5A) = 0x%X\n"
     (Cyclesim.Memory.to_int regfile ~address:0);
   [%expect {| R0 (UART data_rx, loopback of 0x5A) = 0x5A |}]
+;;
+
+let%expect_test "soc — PS/2 keyboard: a scancode frame surfaces at words 6/7" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  (* Poll word 6 bit 28 (rdyKbd) — [LSL #3] lifts it to the sign bit, [BPL] loops while
+     clear — then read the byte from word 7. The word-6 value captured at exit doubles as
+     a structural check: rdyKbd at bit 28, mouse state (idle = 0) in [27:0], top 3 bits
+     zero. (The mouse's own outputs/accumulation are covered by mouse.ml + its cosim.) *)
+  let prog =
+    [| 0x610000FF (* MOV' R1, #0xFF<<16 R1 = 0xFF0000 *)
+     ; 0x4216FFD8 (* IOR R2, R1, #0xFFD8 R2 = 0xFFFFD8 (word 6) *)
+     ; 0x4316FFDC (* IOR R3, R1, #0xFFDC R3 = 0xFFFFDC (word 7) *)
+     ; 0x84200000 (* LD   R4, [R2]          R4 = {rdyKbd, dataMs}    <- poll *)
+     ; 0x45410003 (* LSL R5, R4, #3 bit 28 -> bit 31; N = rdyKbd *)
+     ; 0xE8FFFFFD (* BPL -3 while rdyKbd==0, back to the LD *)
+     ; 0x80300000 (* LD R0, [R3] R0 = keyboard byte (pops the FIFO) *)
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  let b1 v = Bits.of_unsigned_int ~width:1 v in
+  (* Drive a device->host PS/2 frame: start(0), 8 data LSbit-first, odd parity, stop(1).
+     [ps2c] idles high; the module samples [ps2d] on each ps2c falling edge (2-FF
+     synchronized), so hold each level a few clk cycles. The CPU runs throughout. *)
+  let feed_bit b =
+    inp.ps2d := b1 b;
+    inp.ps2c := b1 1;
+    for _ = 1 to 4 do
+      Cyclesim.cycle sim
+    done;
+    inp.ps2c := b1 0;
+    for _ = 1 to 4 do
+      Cyclesim.cycle sim
+    done
+  in
+  let feed_byte byte =
+    let ones = ref 0 in
+    feed_bit 0;
+    for k = 0 to 7 do
+      let d = (byte lsr k) land 1 in
+      ones := !ones + d;
+      feed_bit d
+    done;
+    feed_bit ((!ones + 1) land 1) (* odd parity *);
+    feed_bit 1 (* stop *)
+  in
+  inp.rst_n := b1 0;
+  inp.ps2c := b1 1;
+  inp.ps2d := b1 1;
+  inp.msclk := b1 1;
+  inp.msdat := b1 1 (* mouse idle: open-drain lines released *);
+  Cyclesim.cycle sim;
+  inp.rst_n := b1 1;
+  feed_byte 0x1C;
+  for _ = 1 to 60 do
+    Cyclesim.cycle sim
+  done;
+  let r k = Cyclesim.Memory.to_int regfile ~address:k in
+  Stdlib.Printf.printf
+    "word6 @rdyKbd = 0x%X (rdyKbd=bit28, mouse=0)   R0 (word7 scancode) = 0x%X\n"
+    (r 4)
+    (r 0);
+  [%expect
+    {| word6 @rdyKbd = 0x10000000 (rdyKbd=bit28, mouse=0)   R0 (word7 scancode) = 0x1C |}]
 ;;
