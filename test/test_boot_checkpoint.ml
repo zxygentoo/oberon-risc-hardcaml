@@ -20,8 +20,32 @@ module Soc = Risc5.Soc
 module R = Oracle.Risc
 module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
 
-(* declared as a dep in test/dune; the path is relative to the test run directory *)
-let disk_image = "../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk"
+(* Locate the project root by walking up for [dune-project], so the disk resolves from any
+   cwd — the [@boot_checkpoint] rule (cwd [_build/default/test]) and a bare [dune exec]
+   from the repo root alike. The marker sits at both the real root and dune's
+   [_build/default] mirror, with the disk at the same [vendor/] offset under each
+   (declared as a dep so the rule copies it there). *)
+let project_root () =
+  let rec up dir =
+    if Sys.file_exists (Filename.concat dir "dune-project")
+    then dir
+    else (
+      let parent = Filename.dirname dir in
+      if String.equal parent dir
+      then
+        failwith
+          "test_boot_checkpoint: no dune-project found above cwd (project root not \
+           located)"
+      else up parent)
+  in
+  up (Sys.getcwd ())
+;;
+
+let disk_image =
+  Filename.concat
+    (project_root ())
+    "vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk"
+;;
 
 (* a SoC word pc below this left the ROM-decode region (0x3FF000..0x3FFFFF) for low RAM;
    the oracle's word pc below [oracle_ram_base] (= its mem_size/4) is likewise in low RAM *)
