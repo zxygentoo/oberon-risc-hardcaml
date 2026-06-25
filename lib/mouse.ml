@@ -143,11 +143,11 @@ let create (i : _ I.t) : _ O.t =
 ;;
 
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────────── A
-   basic sanity smoke here (elaborates + the request-to-send oscillator runs while the
-   lines are idle); the interactive device-model verification (playing a PS/2 mouse
-   through the bidirectional init dialogue + report accumulation) is built with
-   hardcaml_step_testbench next, and the exhaustive fidelity check vs MousePM.v is the
-   Verilator co-sim. *)
+   basic sanity smoke (elaborates + the request-to-send oscillator runs while idle), then
+   an interactive device-model test: a plain-Cyclesim loop plays a PS/2 mouse — through
+   the bidirectional init handshake to [run], then streaming movement reports — and checks
+   the accumulated [x]/[y]/[btns]. The exhaustive bit-for-bit fidelity check vs
+   [MousePM.v] is the Verilator co-sim. *)
 
 let%expect_test "mouse — smoke: elaborates; req (msclk_oe) oscillates while idle" =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -174,4 +174,121 @@ let%expect_test "mouse — smoke: elaborates; req (msclk_oe) oscillates while id
     (Bits.to_int_trunc !(outp.out));
   [%expect
     {| msclk_oe toggles=2  out=00000000  (idle: no device, init cannot complete) |}]
+;;
+
+(* The interactive PS/2-mouse device, played against the DUT on a plain Cyclesim loop. (We
+   evaluated hardcaml_step_testbench here — its coroutine fits an interactive protocol —
+   but the device is a single sequential task that uses none of its concurrency, and its
+   per-cycle overhead made this ~5x slower over the ~350K-cycle init; see the
+   step-testbench-deferred memory.) [cyc] advances one cycle after resolving the
+   open-drain lines; [pulse] is one device clock; [send_byte] streams a device->host
+   frame. *)
+
+let%expect_test "mouse — device model: init handshake, then a movement report accumulates"
+  =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let bit1 b = Bits.of_unsigned_int ~width:1 (if b then 1 else 0) in
+  let rd r = Bits.to_int_trunc !r in
+  let dev_msclk_low = ref false
+  and dev_msdat_low = ref false in
+  (* open-drain wired-AND: each line = ~(host pulls low | device pulls low) *)
+  let resolve () =
+    inp.msclk := bit1 (not (rd outp.msclk_oe = 1 || !dev_msclk_low));
+    inp.msdat := bit1 (not (rd outp.msdat_oe = 1 || !dev_msdat_low))
+  in
+  let cyc () =
+    resolve ();
+    Cyclesim.cycle sim
+  in
+  let wait_until cond cap =
+    let g = ref 0 in
+    while (not (cond ())) && !g < cap do
+      cyc ();
+      g := !g + 1
+    done
+  in
+  (* one device clock pulse: high a few cycles, then low long enough (>9 @ the 10-tap
+     [filter]) for the DUT to see a debounced falling edge and [shift] *)
+  let pulse () =
+    dev_msclk_low := false;
+    for _ = 1 to 6 do
+      cyc ()
+    done;
+    dev_msclk_low := true;
+    for _ = 1 to 16 do
+      cyc ()
+    done
+  in
+  (* out = {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]} — read state straight from the port *)
+  let run () = (rd outp.out lsr 27) land 1 = 1 in
+  let xpos () = rd outp.out land 0x3FF in
+  let ypos () = (rd outp.out lsr 12) land 0x3FF in
+  let btns () = (rd outp.out lsr 24) land 7 in
+  inp.rst_n := bit1 true;
+  inp.msclk := bit1 true;
+  inp.msdat := bit1 true;
+  (* INIT: clock each command through the request-to-send handshake (msclk_oe 0->1->0,
+     then clock the 9-bit frame, then idle so the DUT's [endcount] fires [done] ->
+     [sent]++). Completion shows as the next inhibit (msclk_oe->1) — or [run] for the last
+     command. *)
+  let guard = ref 0 in
+  while (not (run ())) && !guard < 8 do
+    wait_until (fun () -> rd outp.msclk_oe = 1 || run ()) 60000;
+    wait_until (fun () -> rd outp.msclk_oe = 0 || run ()) 60000;
+    if not (run ())
+    then (
+      for _ = 1 to 25 do
+        pulse ()
+      done;
+      dev_msclk_low := false;
+      wait_until (fun () -> rd outp.msclk_oe = 1 || run ()) 60000);
+    guard := !guard + 1
+  done;
+  Stdlib.Printf.printf "init: run=%d\n" (if run () then 1 else 0);
+  (* REPORT: the device streams 3-byte movement packets (drives msdat + clocks), then
+     idles so the DUT's [endcount]/[done] assembles each. Each byte is framed
+     start/8-data-LSB-first/odd-parity/stop; status 0x08 = no buttons, +ve, no overflow. *)
+  let parity b =
+    let n = ref 0 in
+    for i = 0 to 7 do
+      n := !n + ((b lsr i) land 1)
+    done;
+    1 - (!n land 1)
+  in
+  let send_bit v =
+    dev_msdat_low := not v;
+    pulse ()
+  in
+  let send_byte b =
+    send_bit false;
+    for i = 0 to 7 do
+      send_bit ((b lsr i) land 1 = 1)
+    done;
+    send_bit (parity b = 1);
+    send_bit true
+  in
+  let send_report ~status ~mx ~my =
+    let x0 = xpos ()
+    and y0 = ypos () in
+    send_byte status;
+    send_byte mx;
+    send_byte my;
+    dev_msdat_low := false;
+    (* idle for the DUT's [endcount] -> [done] -> accumulate *)
+    wait_until (fun () -> xpos () <> x0 || ypos () <> y0) 40000
+  in
+  send_report ~status:0x08 ~mx:3 ~my:5;
+  Stdlib.Printf.printf "report 1: x=%d y=%d btns=%d\n" (xpos ()) (ypos ()) (btns ());
+  (* a second report accumulates onto the first (x += dx), it does not overwrite *)
+  send_report ~status:0x08 ~mx:2 ~my:1;
+  Stdlib.Printf.printf "report 2: x=%d y=%d btns=%d\n" (xpos ()) (ypos ()) (btns ());
+  [%expect
+    {|
+    init: run=1
+    report 1: x=3 y=5 btns=0
+    report 2: x=5 y=6 btns=0
+    |}]
 ;;
