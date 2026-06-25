@@ -20,6 +20,7 @@ module I = struct
     { clock : 'a
     ; rst_n : 'a [@bits 1]
     ; miso : 'a [@bits 1]
+    ; rxd : 'a [@bits 1] (* RS-232 receive line; idles high *)
     ; btn : 'a [@bits 4] (* buttons (RISC5Top [btn]); read-only via word 1 *)
     ; sw : 'a
          [@bits 8] (* switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
@@ -41,6 +42,7 @@ module O = struct
     ; inbus : 'a [@bits 32]
     ; mosi : 'a [@bits 1]
     ; sclk : 'a [@bits 1]
+    ; txd : 'a [@bits 1] (* RS-232 transmit line; idles high *)
     ; leds : 'a [@bits 8] (* RISC5Top [leds] = the [Lreg] latch *)
     ; gpio_out : 'a [@bits 8] (* GPIO drive value (RISC5Top [gpout]) *)
     ; gpio_oe : 'a [@bits 8] (* GPIO output-enable / direction (RISC5Top [gpoc]) *)
@@ -140,6 +142,38 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
       ; miso = i.miso
       }
   in
+  (* UART (words 2/3): RS232R receiver + RS232T transmitter at [bitrate] baud. Word 2 read
+     returns the received byte [dataRx] and pulses [done_] (acks it, clearing rdyRx); word
+     2 write starts a transmit ([start], [data] = outbus[7:0]). Word 3 read =
+     [{rdyTx, rdyRx}]; word 3 write sets the 1-bit [bitrate] select (0 = 19200, 1 =
+     115200; reset 0). *)
+  let bitrate = Always.Variable.reg spec ~width:1 in
+  Always.(
+    compile
+      [ bitrate
+        <-- mux2
+              ~:(i.rst_n)
+              gnd
+              (mux2 (core.wr &: ioenb &: (iowadr ==:. 3)) (lsb core.outbus) bitrate.value)
+      ]);
+  let uart_rx =
+    Rs232r.create
+      { Rs232r.I.clock = i.clock
+      ; rst_n = i.rst_n
+      ; rxd = i.rxd
+      ; fsel = bitrate.value
+      ; done_ = core.rd &: ioenb &: (iowadr ==:. 2)
+      }
+  in
+  let uart_tx =
+    Rs232t.create
+      { Rs232t.I.clock = i.clock
+      ; rst_n = i.rst_n
+      ; start = core.wr &: ioenb &: (iowadr ==:. 2)
+      ; fsel = bitrate.value
+      ; data = select core.outbus ~high:7 ~low:0
+      }
+  in
   (* Switches/buttons (word 1 read): [{btn, sw}] zero-extended to 32 bits. RISC5Top reads
      [~nswi] — the OberonStation switches are active-low (board pullups); we take the
      already-logical [sw] (Nexys switches are active-high) and leave that pad inversion to
@@ -193,8 +227,10 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
       iowadr
       ([ cnt1_v (* 0 ms counter *)
        ; switches (* 1  {btn, switches} *)
-       ; zero 32 (* 2 RS-232 data — Step 4 *)
-       ; zero 32 (* 3 RS-232 status — Step 4 *)
+       ; uresize uart_rx.data ~width:32 (* 2 RS-232 data (dataRx) *)
+       ; uresize
+           (uart_tx.rdy @: uart_rx.rdy)
+           ~width:32 (* 3 RS-232 status {rdyTx,rdyRx} *)
        ; spi.data_rx (* 4 SPI data *)
        ; uresize spi.rdy ~width:32 (* 5 SPI status *)
        ; zero 32 (* 6 mouse/kbd stat — Step 5 *)
@@ -216,6 +252,7 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
   ; inbus
   ; mosi = spi.mosi
   ; sclk = spi.sclk
+  ; txd = uart_tx.txd
   ; leds = lreg.value
   ; gpio_out = gpout.value
   ; gpio_oe = gpoc.value
@@ -483,4 +520,48 @@ let%expect_test "soc — video DMA: vidreq steals a core cycle and steers the SR
     pc advanced=194; advanced+stalls=200 (≈ cycles)
     SRAM steered to vidadr<<2 on every steal: true
     |}]
+;;
+
+let%expect_test "soc — UART loopback through MMIO words 2/3" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  (* Set [bitrate]=1 (115200, clk/217) for a short frame, transmit 0x5A from word 2, poll
+     rdyRx (word 3 bit 0) until set, then read the byte back from word 2. The line is
+     looped back ([rxd] := [txd]) test-side, so the received byte equals the transmitted
+     0x5A — end-to-end proof of the TX → line → RX → MMIO path plus the [bitrate] /
+     [doneRx] wiring. *)
+  let prog =
+    [| 0x610000FF (* MOV' R1, #0xFF<<16 R1 = 0xFF0000 *)
+     ; 0x4216FFC8 (* IOR R2, R1, #0xFFC8 R2 = 0xFFFFC8 (word 2, UART data) *)
+     ; 0x4316FFCC (* IOR R3, R1, #0xFFCC R3 = 0xFFFFCC (word 3, UART status/ctrl) *)
+     ; 0x44000001 (* MOV R4, #1 *)
+     ; 0xA4300000 (* ST R4, [R3] bitrate := 1 (115200) *)
+     ; 0x4500005A (* MOV R5, #0x5A *)
+     ; 0xA5200000 (* ST R5, [R2] startTx, dataTx = 0x5A *)
+     ; 0x86300000 (* LD   R6, [R3]          R6 = {rdyTx, rdyRx}        <- poll *)
+     ; 0x47640001 (* AND R7, R6, #1 R7 = rdyRx; Z = (rdyRx==0) *)
+     ; 0xE1FFFFFD (* BEQ -3 while rdyRx==0, back to the LD *)
+     ; 0x80200000 (* LD R0, [R2] R0 = dataRx (pulses doneRx) *)
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  let lo = Bits.of_unsigned_int ~width:1 0
+  and hi = Bits.of_unsigned_int ~width:1 1 in
+  inp.rst_n := lo;
+  inp.rxd := hi (* idle high *);
+  Cyclesim.cycle sim;
+  inp.rst_n := hi;
+  (* ~10 bit-times × 217 cycles + setup/poll; loop the serial line back each cycle *)
+  for _ = 1 to 5000 do
+    inp.rxd := !(outp.txd);
+    Cyclesim.cycle sim
+  done;
+  Stdlib.Printf.printf
+    "R0 (UART data_rx, loopback of 0x5A) = 0x%X\n"
+    (Cyclesim.Memory.to_int regfile ~address:0);
+  [%expect {| R0 (UART data_rx, loopback of 0x5A) = 0x5A |}]
 ;;
