@@ -14,4 +14,5 @@ module Spi = Spi
 module Rs232t = Rs232t
 module Rs232r = Rs232r
 module Ps2 = Ps2
+module Vid = Vid
 module Soc = Soc
