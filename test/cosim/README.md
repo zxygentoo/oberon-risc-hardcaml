@@ -18,12 +18,13 @@ redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifie
 ## Run
 
 ```sh
-dune build @cosim                       # everything (FP units + SPI + UART R/T), uniform with @boot_checkpoint
+dune build @cosim                       # everything (FP units + SPI + UART R/T + PS/2 kbd), uniform with @boot_checkpoint
 bash test/cosim/run.sh                  # everything — the same, run directly
-bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r)
+bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2)
 bash test/cosim/run.sh spi              # just the SPI master
 bash test/cosim/run.sh rs232t           # just the RS232 transmitter
 bash test/cosim/run.sh rs232r           # just the RS232 receiver
+bash test/cosim/run.sh ps2              # just the PS/2 keyboard
 ```
 
 `dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
@@ -45,6 +46,10 @@ and asserts the RTL matches the port in **both result and timing** for every sti
   ack) in both baud rates **+ ~36 fuzz frames**; a fixed-length trace replay asserts,
   **cycle-by-cycle**, `RTL rdy == port's` plus `RTL data == port's` whenever `rdy` is high
   (`0 value-, wave-mismatch`).
+- **PS/2 keyboard** — the testbench plays the keyboard, clocking 11-bit frames on `PS2C`/`PS2D`
+  (+ a `done` pop) **+ ~48 frames**; a fixed-length replay asserts, **cycle-by-cycle**, `RTL rdy
+  == port's` plus `RTL data == port's` when `rdy` (`0 value-, wave-mismatch`). `shift` is
+  `ps2c`-derived (trivially identical); multi-byte FIFO ordering is the co-located test's job.
 
 Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
 only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
@@ -68,8 +73,9 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
 | `dump_rs232t.ml` | the RS232 transmitter dumper (output-only serial handshake): drive `Risc5.Rs232t` over (`fsel`, `data`), dump `"fsel data cycles hextrace"` (one hex digit/cycle = `rdy·txd`) |
 | `dump_rs232r.ml` | the RS232 receiver dumper (input-driven): play the sender — drive a frame on `rxd` (+ a `done_` ack), dump `"fsel data hextrace"` (one hex digit/cycle = `done_·rxd·rdy`); fixed-length replay, so no cycles column |
+| `dump_ps2.ml` | the PS/2 keyboard dumper (input-driven): play the keyboard — clock a frame on `ps2c`/`ps2d` (+ a `done_` pop), dump `"data hextrace"` (one hex digit/cycle = `done_·ps2c·ps2d·rdy`); fixed-length replay |
 | `fp_cosim.h` | shared harness: universal `cosim_open` + `Unit`, the `tick`, and the **full stall-based runner** `run_drain_cosim` (open → run → drain → compare → summary) with its `parse_xy`/`parse_xyuv` stimulus parsers — so each FP `.cpp` is a thin shell. The serial units reuse only `tick`; deduping them (a shared serial runner + a rename to `cosim.h`) is a deferred 6a-end clean-up |
-| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial harnesses (`spi.cpp`, `rs232t.cpp`, `rs232r.cpp`) still carry a full `main` (cycle-by-cycle `rdy` + `sclk/mosi`+`dataRx` / `TxD` / `data`) pending the serial dedup |
+| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial harnesses (`spi.cpp`, `rs232t.cpp`, `rs232r.cpp`, `ps2.cpp`) still carry a full `main` (cycle-by-cycle `rdy` + the unit's other outputs) pending the serial dedup |
 | `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
 | `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
 
