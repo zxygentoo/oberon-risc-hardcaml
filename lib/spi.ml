@@ -55,7 +55,10 @@ let create (i : _ I.t) : _ O.t =
   let tick_v = tick.value in
   let bitcnt_v = bitcnt.value in
   let rdy_v = rdy.value -- "rdy" in
-  let shreg_v = shreg.value -- "shreg" in
+  (* Qualified name: once composed into the SoC the UART (and later PS/2) shift registers
+     are also "shreg", and the boot checkpoint looks this one up by name — so keep it
+     unambiguous. *)
+  let shreg_v = shreg.value -- "spi_shreg" in
   let bit n = select shreg_v ~high:n ~low:n in
   (* combinational: end-of-bit / end-of-word, line drivers, received data *)
   let endtick = mux2 i.fast (tick_v ==:. 2) (tick_v ==:. 63) in

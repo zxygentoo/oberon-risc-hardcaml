@@ -242,7 +242,13 @@ let decode_branch (bctrl, target32, disp, flags4) =
          we write the small disp across all 24 bits (the compiler likewise emits
          sign-extended offsets) *)
       0xC000_0000 lor ctrl lor (disp land 0xFF_FFFF)
-    else 0xC000_0000 lor ctrl lor irc (* register: irc in IR[3:0], IR[5:4]=0 *)
+    else 0xC000_0000 lor ctrl lor (bctrl land 0x000F_0000) lor irc
+    (* register: irc in IR[3:0], IR[5:4]=0. We also scatter random bits into the op field
+       IR[19:16] — unused by a branch, but it must stay inert: a branch ([p=1]) whose op
+       field is 8/9 must NOT recompute/clobber C/OV (the [~p] qualifier). The compiler
+       emits exactly such branches (e.g. [BLR] [0xDA08281C], op field 8); the old
+       constrained disp / zero op-field kept this corner unreachable here, so the
+       flag-leak escaped to boot. *)
   in
   let regs = Array.make 16 0 in
   regs.(irc) <- u32 target32 land 0xF_FFFF;

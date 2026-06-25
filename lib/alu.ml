@@ -13,7 +13,8 @@ open Signal
 
 module I = struct
   type 'a t =
-    { op : 'a [@bits 4]
+    { p : 'a [@bits 1]
+    ; op : 'a [@bits 4]
     ; u : 'a [@bits 1]
     ; q : 'a [@bits 1]
     ; v : 'a [@bits 1]
@@ -90,8 +91,16 @@ let create (i : _ I.t) : _ O.t =
   (* C/OV come from the active arithmetic op; every other op leaves the current C/OV
      unchanged. N/Z are not here — they derive from the final write value (regmux), at the
      core. *)
-  let is_add = i.op ==: of_unsigned_int ~width:4 8 in
-  let is_sub = i.op ==: of_unsigned_int ~width:4 9 in
+  (* ADD/SUB set C/OV; every other instruction holds them. The [~p] qualifier is
+     load-bearing and matches [RISC5.v]'s [ADD = ~p & (op==8)] / [SUB = ~p & (op==9)]: a
+     branch or memory instruction ([p=1]) whose [op] field happens to be 8/9 must NOT
+     touch the flags. Without it, e.g. [BLR] [0xDA08281C] (op-field 8) spuriously
+     recomputes a carry and clobbers C — latent until a *stalled* conditional branch
+     re-evaluates the corrupted flag on its stall cycle (the phase-6b boot trap). The
+     result mux above stays op-only, like [aluRes]: its value for a branch is simply never
+     selected by the core's [regmux]. *)
+  let is_add = ~:(i.p) &: (i.op ==: of_unsigned_int ~width:4 8) in
+  let is_sub = ~:(i.p) &: (i.op ==: of_unsigned_int ~width:4 9) in
   let c = mux2 is_add add_c (mux2 is_sub sub_c i.c_in) in
   let ov = mux2 is_add add_ov (mux2 is_sub sub_ov i.ov_in) in
   { O.res; c; ov }
@@ -109,7 +118,8 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let eval ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov =
+  let eval ~p ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov =
+    inp.p := Bits.of_unsigned_int ~width:1 p;
     inp.op := Bits.of_unsigned_int ~width:4 op;
     inp.u := Bits.of_unsigned_int ~width:1 u;
     inp.q := Bits.of_unsigned_int ~width:1 q;
@@ -127,7 +137,7 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
   in
   let mask = 0xFFFF_FFFF in
   let bit31 x = (x lsr 31) land 1 in
-  let reference ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov =
+  let reference ~p ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov =
     let cin = if u = 1 then c else 0 in
     let res =
       match op with
@@ -148,15 +158,17 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
       | 9 -> (b - c1 - cin) land mask (* SUB *)
       | _ -> 0
     in
-    (* C/OV: ADD carry-out / SUB borrow + signed overflow; other ops pass (c, ov) through. *)
+    (* C/OV: ADD carry-out / SUB borrow + signed overflow — but ONLY for register ADD/SUB
+       ([p=0]). Any other instruction (including a [p=1] branch/memory op whose [op] field
+       is 8/9) passes (c, ov) through, mirroring [RISC5.v]'s [ADD = ~p & (op==8)]. *)
     let cf, vf =
       match op with
-      | 8 ->
+      | 8 when p = 0 ->
         let sa = bit31 res
         and sb = bit31 b
         and sc = bit31 c1 in
         ((b + c1 + cin) lsr 32) land 1, if sb = sc && sa <> sb then 1 else 0
-      | 9 ->
+      | 9 when p = 0 ->
         let sa = bit31 res
         and sb = bit31 b
         and sc = bit31 c1 in
@@ -166,27 +178,34 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
     res, cf, vf
   in
   let ops = [| 0; 4; 5; 6; 7; 8; 9 |] in
+  (* [p] is generated alongside the op fields, not pinned to 0: with [p=1] (a
+     branch/memory instruction) ADD/SUB must NOT touch C/OV even when [op] is 8/9 — the
+     flag-leak bug that escaped this test while it only ever drove register ops. The
+     result mux is op-only (p-independent), so only the C/OV check distinguishes the two
+     values of [p]. *)
   QCheck.Test.check_exn
     (QCheck.Test.make
        ~count:20_000
-       ~name:"aluRes"
+       ~name:"aluRes + C/OV honour ~p"
        QCheck.(
          pair
-           (quad
-              (map (fun k -> ops.(k)) (int_bound 6))
-              (int_bound 1)
-              (int_bound 1)
+           (pair
+              (quad
+                 (map (fun k -> ops.(k)) (int_bound 6))
+                 (int_bound 1)
+                 (int_bound 1)
+                 (int_bound 1))
               (int_bound 1))
            (pair
               (quad (int_bound 0xFFFF) (int_bound mask) (int_bound mask) (int_bound mask))
               (int_bound 0xF)))
-       (fun ((op, u, q, v), ((imm, b, c1, h), f)) ->
+       (fun (((op, u, q, v), p), ((imm, b, c1, h), f)) ->
          let n = (f lsr 3) land 1
          and z = (f lsr 2) land 1
          and c = (f lsr 1) land 1
          and ov = f land 1 in
-         let er, ec, eov = eval ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
-         let rr, rc, rov = reference ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
+         let er, ec, eov = eval ~p ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
+         let rr, rc, rov = reference ~p ~op ~u ~q ~v ~imm ~b ~c1 ~h ~n ~z ~c ~ov in
          Bits.equal er (Bits.of_unsigned_int ~width:32 rr)
          && Bits.equal ec (Bits.of_unsigned_int ~width:1 rc)
          && Bits.equal eov (Bits.of_unsigned_int ~width:1 rov)));
