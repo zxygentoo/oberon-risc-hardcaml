@@ -7,10 +7,10 @@
 // VID is two-clock: clk (25 MHz) is VID's real input, pclk (65 MHz) is forced into VID's internal
 // net by the wrapper. We drive both on a fine base tick at the 13:5 ratio — clk rises at t%13==0,
 // pclk at t%5==0 — matching the dumper's By_input_clocks model (a clock edges when t%period==0).
-// One eval() per tick. Reuses fp_cosim.h's cosim_open (the two-clock tick is local).
+// One eval() per tick. Reuses cosim.h's cosim_open (the two-clock tick is local).
 
 #include "Vvid_cosim.h"
-#include "fp_cosim.h" // cosim_open()
+#include "cosim.h" // cosim_open()
 #include <cstdio>
 
 int main(int argc, char** argv) {

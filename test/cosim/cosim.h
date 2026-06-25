@@ -1,9 +1,9 @@
-// Shared harness for the RTL co-sims. The Verilator top types are unrelated generated
-// classes but duck-typed, so the clock tick and the stall-based run -> drain -> compare
-// protocol are templated here once and the per-unit .cpp just names its unit + stimulus
-// parser. The FP units (run/stall/z) share the full runner below; the serial units (SPI,
-// RS232T) still keep their own main() and reuse only tick() — deduping those is a deferred
-// 6a-end clean-up (a shared serial runner + rename to cosim.h; see test/cosim/README.md).
+// Shared harness for the RTL co-sims. The Verilator top types are unrelated generated classes
+// but duck-typed, so the cross-check protocols are templated here once and each per-unit .cpp is
+// a thin shell (its names + stimulus parser/replay). Two runners: run_drain_cosim for the
+// stall-based FP units (run -> drain on stall -> compare z), and run_serial_cosim for the
+// cycle-by-cycle serial units (SPI/RS232T/RS232R/PS2), plus the shared tick/cosim_open/hexval.
+// The two-clock vid + the bidirectional-inout mouse keep their own main() (different shapes).
 #pragma once
 #include "verilated.h"
 #include <cstdint>
@@ -37,6 +37,42 @@ struct Unit {
   const char* port; // e.g. "Fp_adder"
   const char* rtl; // e.g. "FPAdder.v"
 };
+
+// one hex digit of a dumped per-cycle trace -> its 4-bit value (the serial dumpers pack the
+// inputs driven + the outputs checked into one digit/cycle).
+static int hexval(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return 0;
+}
+
+// the cycle-by-cycle mismatch tallies a serial cross-check accumulates: value (a held data
+// word read back), wave (a per-cycle output bit), cycle (total stall length). Each unit uses
+// the subset its protocol has; the rest stay 0.
+struct Serial_mismatches {
+  long value = 0, wave = 0, cycle = 0;
+};
+
+// run a serial (cycle-by-cycle hex-trace) cross-check end to end: [reset] drives the unit's
+// reset + idle inputs, then [replay] is called per dumped line to replay that stimulus and tally
+// mismatches (returns false at EOF). Owns the loop + the stats/success lines + the exit code (0
+// iff value/wave/cycle are all 0) — so each serial .cpp is just its reset + replay + this call.
+// The fixed-length units (ps2, rs232r) and the drain-until-rdy units (rs232t, spi) differ only
+// in [replay]'s body.
+template <typename Dut, typename Reset, typename Replay>
+static int run_serial_cosim(Unit unit, Dut* dut, FILE* f, Reset reset, Replay replay) {
+  reset(dut);
+  Serial_mismatches m;
+  long n = 0;
+  while (replay(dut, f, &m)) n++;
+  fclose(f);
+  printf("%s co-sim: %ld stimuli, %ld value-mismatch, %ld wave-mismatch, %ld cycle-mismatch\n",
+         unit.tag, n, m.value, m.wave, m.cycle);
+  bool ok = m.value == 0 && m.wave == 0 && m.cycle == 0;
+  if (ok) printf("==> Hardcaml %s is bit-exact AND cycle-exact to %s.\n", unit.port, unit.rtl);
+  return ok ? 0 : 1;
+}
 
 // assert run, drain until stall drops, read z, then release run for one cycle. Returns z;
 // *cycles = the clock cycles with run asserted until stall drops (the stall length),

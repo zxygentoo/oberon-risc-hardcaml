@@ -17,7 +17,7 @@ work_root="${CLAUDE_JOB_DIR:-/tmp}/oberon-cosim"
 
 # The co-sim units, one row each — collapses the old per-unit functions to data:
 #   name           reference .v     top-module     harness .cpp        dumper        [extra .v]
-# Stall-based FP units share dump_fp (selected by name) + fp_cosim.h; the SPI master is a serial
+# Stall-based FP units share dump_fp (selected by name) + cosim.h; the SPI master is a serial
 # handshake unit (not stall-based) with its own dump_spi + spi.cpp — captured as just the dumper
 # column. The optional 6th column is an extra test/cosim/*.v handed to Verilator alongside the
 # reference .v: vid needs vid_cosim.v (stubs the Xilinx DCM/BUFG + forces VID's internal pixel

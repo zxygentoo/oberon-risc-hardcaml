@@ -9,10 +9,10 @@
 // same way the dumper did: wire = ~(this DUT's *_oe | the recorded device pull-low). We read
 // the RTL's *_oe BEFORE the edge (the dumper resolved against the port's pre-cycle oe too), so
 // the two are phase-aligned; a behavioural divergence surfaces as an output mismatch. Reuses
-// fp_cosim.h's tick()/cosim_open().
+// cosim.h's tick()/cosim_open().
 
 #include "Vmouse_cosim.h"
-#include "fp_cosim.h" // tick(), cosim_open()
+#include "cosim.h" // tick(), cosim_open()
 #include <cstdio>
 
 int main(int argc, char** argv) {

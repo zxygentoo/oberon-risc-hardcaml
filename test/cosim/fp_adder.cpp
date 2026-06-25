@@ -2,12 +2,12 @@
 // Verilator on each stimulus dumped by test/cosim/dump_fp, and assert RTL z == port z AND RTL
 // stall-length == port stall-length. Exit 0 iff bit-exact AND cycle-exact to FPAdder.v.
 //   usage:  cosim <port_dump_path>          (lines: "x y u v port_z port_cycles")
-// The whole open -> run -> drain -> compare loop is shared (fp_cosim.h's run_drain_cosim); this
+// The whole open -> run -> drain -> compare loop is shared (cosim.h's run_drain_cosim); this
 // file just names the unit and picks the adder's parser (it carries the u/v modifiers). Driven
 // by test/cosim/run.sh; see test/cosim/README.md.
 
 #include "VFPAdder.h"
-#include "fp_cosim.h"
+#include "cosim.h"
 
 int main(int argc, char** argv) {
   FILE* f = cosim_open(argc, argv);
