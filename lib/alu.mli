@@ -15,7 +15,11 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { op : 'a (** [IR[19:16]] — register-operation selector (4 bits) *)
+    { p : 'a
+    (** [IR[31]] — instruction class. Only register instructions ([p=0]) set C/OV; with
+        [p=1] (branch/memory) ADD/SUB are inert even when [op] is 8/9, matching
+        [RISC5.v]'s [ADD = ~p & (op==8)]. *)
+    ; op : 'a (** [IR[19:16]] — register-operation selector (4 bits) *)
     ; u : 'a (** modifier [IR[29]]: ADD'/SUB' carry-in, MOV variants *)
     ; q : 'a (** [IR[30]]: selects the MOV immediate forms *)
     ; v : 'a (** [IR[28]]: MOV flags-read vs [H] *)

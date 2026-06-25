@@ -135,7 +135,8 @@ let execute ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_
   let rsh = Right_shifter.create { Right_shifter.I.x = b; sc = shamt; md = lsb dec.op } in
   let alu =
     Alu.create
-      { Alu.I.op = dec.op
+      { Alu.I.p = dec.p
+      ; op = dec.op
       ; u = dec.u
       ; q = dec.q
       ; v = dec.v
