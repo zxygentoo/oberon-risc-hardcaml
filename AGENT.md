@@ -421,10 +421,14 @@ move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardca
 (yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
 OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
 **Verilator** out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
-Phase-5 boot speed and **both rejected** (profiled 2026-06-25): `hardcaml_verilator`
-(Verilator-backed `Cyclesim.t`) won't build against the system Verilator 5.048
-(`__Vscope_*`→`__Vscopep_*` rename), and `hardcaml_c` (installed) ran only ~3.5× the interpreter
-while needing minutes to compile its 63 MB / ~1M-line `eval.c` per design change. The boot
+Phase-5 boot speed and **both rejected**: `hardcaml_verilator` (Verilator-backed `Cyclesim.t`)
+runs on the system Verilator 5.048 but only for **I/O-only** sims — the `__Vscope_*`→`__Vscopep_*`
+rename breaks its internal-signal probe (`is_internal_port` / `lookup_*`), which the boot harness
+relies on; re-measured 2026-06-26 it's ~4–10× the interpreter (elaboration ~30 s and immovable —
+parallel compile and `-O1` don't help; `Cache.Hashed` reload ~0.8 s) but reachable only behind a
+`create_debug` rewrite exposing RAM/pc/regs as ports, so still out. `hardcaml_c` (installed,
+profiled 2026-06-25) ran only ~3.5× the interpreter while needing minutes to compile its 63 MB /
+~1M-line `eval.c` per design change. The boot
 checkpoint runs on the **plain Cyclesim interpreter** instead (§6) — fast enough, and it keeps the
 full `lookup_*` introspection the harness needs.
 
