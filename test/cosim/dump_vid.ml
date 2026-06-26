@@ -17,6 +17,7 @@
    Line format (one per base tick): "inv viddata req vidadr hsync vsync rgb". *)
 
 open Hardcaml
+open Cosim_dump
 module Vid = Risc5.Vid
 module Sim = Cyclesim.With_interface (Vid.I) (Vid.O)
 
@@ -31,8 +32,6 @@ let () =
   let sim = Sim.create ~config Vid.create in
   let inp = (Cyclesim.inputs sim : _ Vid.I.t) in
   let outp = (Cyclesim.outputs sim : _ Vid.O.t) in
-  let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v in
-  let rd r = Bits.to_int_trunc !r in
   let ticks = 13440 in
   (* deterministic pseudo-random viddata per tick (a plain LCG); recorded in the dump, so
      the .cpp replays the exact sequence — varying it every tick stresses the vidbuf

@@ -17,10 +17,7 @@
    Usage: dump_fp <fp_adder|fp_multiplier|fp_divider> <path to fp_vectors.txt> (-> stdout) *)
 
 open Hardcaml
-
-(* set an input ref to [v], using the port's own declared width (1 for run, 32 for
-   x/y/...). *)
-let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v
+open Cosim_dump
 
 (* the shared run -> drain -> read -> release protocol. [run]/[stall]/[z] are the unit's
    ports (the same [Bits.t ref] type across all three units), and [sim] is used
@@ -142,14 +139,11 @@ let () =
      an explicit let so the RNG consumption order is independent of argument-evaluation
      order. *)
   let rng = Random.State.make [| 0xF9_AD |] in
-  let rand32 () =
-    (Random.State.int rng 0x10000 lsl 16) lor Random.State.int rng 0x10000
-  in
   for _ = 1 to 20000 do
     let u = if d.has_uv then Random.State.int rng 2 else 0 in
     let v = if d.has_uv then Random.State.int rng 2 else 0 in
-    let x = rand32 () in
-    let y = rand32 () in
+    let x = rand32 rng in
+    let y = rand32 rng in
     emit ~u ~v ~x ~y
   done;
   Printf.eprintf

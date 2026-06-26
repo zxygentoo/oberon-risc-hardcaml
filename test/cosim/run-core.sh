@@ -45,19 +45,33 @@ fi
 # 2. verilate RISC5.v + its submodules + the RAM16X1D stub (Registers.v infers RAM16X1D, which
 #    Verilator does not know — ram16x1d.v supplies its behaviour, like vid_cosim.v's DCM stub).
 echo "[2/3] verilating RISC5.v + submodules ..."
-verilator --cc --exe --build -Wno-fatal --top-module RISC5 \
-  --Mdir "$work/obj_dir" \
-  "$(pwd)/$rtl_dir/RISC5.v" \
-  "$(pwd)/$rtl_dir/Registers.v" \
-  "$(pwd)/$rtl_dir/Multiplier.v" \
-  "$(pwd)/$rtl_dir/Divider.v" \
-  "$(pwd)/$rtl_dir/LeftShifter.v" \
-  "$(pwd)/$rtl_dir/RightShifter.v" \
-  "$(pwd)/$rtl_dir/FPAdder.v" \
-  "$(pwd)/$rtl_dir/FPMultiplier.v" \
-  "$(pwd)/$rtl_dir/FPDivider.v" \
-  "$(pwd)/test/cosim/ram16x1d.v" \
-  "$(pwd)/test/cosim/risc5.cpp" -o cosim 2>&1 | tail -3
+vlog="$work/verilate.log"
+vargs=(
+  --cc --exe --build -Wno-fatal --top-module RISC5 --Mdir "$work/obj_dir"
+  "$(pwd)/$rtl_dir/RISC5.v"
+  "$(pwd)/$rtl_dir/Registers.v"
+  "$(pwd)/$rtl_dir/Multiplier.v"
+  "$(pwd)/$rtl_dir/Divider.v"
+  "$(pwd)/$rtl_dir/LeftShifter.v"
+  "$(pwd)/$rtl_dir/RightShifter.v"
+  "$(pwd)/$rtl_dir/FPAdder.v"
+  "$(pwd)/$rtl_dir/FPMultiplier.v"
+  "$(pwd)/$rtl_dir/FPDivider.v"
+  "$(pwd)/test/cosim/ram16x1d.v"
+  "$(pwd)/test/cosim/risc5.cpp" -o cosim)
+# Self-healing build: on any failure, nuke obj_dir and retry once clean (recovers from a
+# stale/partial obj_dir or an intermittent verilator flake); a second failure is real, so show the
+# full log rather than masking it behind `| tail`.
+if ! verilator "${vargs[@]}" >"$vlog" 2>&1; then
+  echo "    verilate failed — cleaning obj_dir and retrying once ..."
+  rm -rf "$work/obj_dir"
+  if ! verilator "${vargs[@]}" >"$vlog" 2>&1; then
+    echo "ERROR: verilator failed:" >&2
+    cat "$vlog" >&2
+    exit 1
+  fi
+fi
+tail -3 "$vlog"
 
 # 3. replay the captured trace through the RTL and report the first divergence
 echo "[3/3] replaying the boot trace through RISC5.v ..."

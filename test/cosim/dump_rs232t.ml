@@ -13,14 +13,10 @@
    bit1 = rdy, bit0 = txd (the port outputs). *)
 
 open Hardcaml
+open Cosim_dump
 module Rs232t = Risc5.Rs232t
 module Sim = Cyclesim.With_interface (Rs232t.I) (Rs232t.O)
 
-(* set an input ref to [v] at its own declared width *)
-let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v
-
-(* read a 1-bit output as 0/1 *)
-let rd r = Bits.to_int_trunc !r
 let cap = 14000 (* safety: the slow frame is ~13030 cycles (10 bits x clk/1302) *)
 
 let () =
@@ -44,7 +40,7 @@ let () =
     let buf = Buffer.create 256 in
     let push () =
       let nib = (rd outp.rdy lsl 1) lor rd outp.txd in
-      Buffer.add_char buf "0123456789ABCDEF".[nib]
+      Buffer.add_char buf (hex_digit nib)
     in
     set inp.fsel fsel;
     set inp.data data;

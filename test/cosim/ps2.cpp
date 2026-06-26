@@ -46,10 +46,5 @@ static bool replay_ps2(VPS2* dut, FILE* f, Serial_mismatches* m) {
 }
 
 int main(int argc, char** argv) {
-  FILE* f = cosim_open(argc, argv);
-  if (!f) return 2;
-  VPS2* dut = new VPS2;
-  int rc = run_serial_cosim(Unit{ "ps2", "Ps2", "PS2.v" }, dut, f, reset_ps2, replay_ps2);
-  delete dut;
-  return rc;
+  return serial_cosim_main<VPS2>(argc, argv, { "ps2", "Ps2", "PS2.v" }, reset_ps2, replay_ps2);
 }

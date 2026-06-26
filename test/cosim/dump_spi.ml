@@ -21,14 +21,10 @@
    shared RNG — and the per-cycle output bits are the expected values. *)
 
 open Hardcaml
+open Cosim_dump
 module Spi = Risc5.Spi
 module Sim = Cyclesim.With_interface (Spi.I) (Spi.O)
 
-(* set a 1- or 32-bit input ref to [v] at its own declared width *)
-let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v
-
-(* read a 1-bit output as 0/1 *)
-let rd r = Bits.to_int_trunc !r
 let cap = 700 (* safety: the slow byte is 512 cycles; no transfer should approach this *)
 
 let () =
@@ -57,7 +53,7 @@ let () =
       let nib =
         (miso lsl 3) lor (rd outp.rdy lsl 2) lor (rd outp.sclk lsl 1) lor rd outp.mosi
       in
-      Buffer.add_char buf "0123456789ABCDEF".[nib]
+      Buffer.add_char buf (hex_digit nib)
     in
     set inp.fast fast;
     set inp.data_tx data_tx;
@@ -107,14 +103,11 @@ let () =
       emit ~fast:0 ~data_tx:d;
       emit ~fast:1 ~data_tx:d)
     corners;
-  let rand32 () =
-    (Random.State.int rng 0x10000 lsl 16) lor Random.State.int rng 0x10000
-  in
   for _ = 1 to 512 do
-    emit ~fast:1 ~data_tx:(rand32 ())
+    emit ~fast:1 ~data_tx:(rand32 rng)
   done;
   for _ = 1 to 128 do
-    emit ~fast:0 ~data_tx:(rand32 ())
+    emit ~fast:0 ~data_tx:(rand32 rng)
   done;
   Printf.eprintf "dump_spi: %d transfers (corners x2 + 512 fast + 128 slow fuzz)\n" !count
 ;;

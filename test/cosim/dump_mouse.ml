@@ -15,6 +15,7 @@
    Line: "rstn dmc dmd mco mdo out7hex" per cycle. *)
 
 open Hardcaml
+open Cosim_dump
 module Mouse = Risc5.Mouse
 module Sim = Cyclesim.With_interface (Mouse.I) (Mouse.O)
 
@@ -23,7 +24,6 @@ let () =
   let inp = (Cyclesim.inputs sim : _ Mouse.I.t) in
   let outp = (Cyclesim.outputs sim : _ Mouse.O.t) in
   let bit1 b = Bits.of_unsigned_int ~width:1 (if b then 1 else 0) in
-  let rd r = Bits.to_int_trunc !r in
   let dev_msclk_low = ref false
   and dev_msdat_low = ref false in
   let cycles = ref 0 in

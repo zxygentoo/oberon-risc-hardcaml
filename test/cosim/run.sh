@@ -64,9 +64,28 @@ cosim_unit() {
     "_build/default/test/cosim/$dumper.exe" >"$work/port.txt"
   fi
   echo "[2/3] verilating $rtl + harness ..."
-  verilator --cc --exe --build -Wno-fatal --top-module "$top" \
-    --Mdir "$work/obj_dir" \
-    "$(pwd)/$rtl" ${extra:+"$(pwd)/test/cosim/$extra"} "$(pwd)/test/cosim/$cpp" -o cosim 2>&1 | tail -2
+  # Verilator argv, built once (the optional extra .v — e.g. vid_cosim.v — only when set).
+  local vlog="$work/verilate.log"
+  local -a vargs=(
+    --cc --exe --build -Wno-fatal --top-module "$top" --Mdir "$work/obj_dir"
+    "$(pwd)/$rtl")
+  if [ -n "$extra" ]; then vargs+=("$(pwd)/test/cosim/$extra"); fi
+  vargs+=("$(pwd)/test/cosim/$cpp" -o cosim)
+  # Self-healing build: try (incrementally), and on any failure nuke obj_dir and retry once on a
+  # clean tree. That recovers from a stale/partial obj_dir left by a prior interrupted build (which
+  # otherwise poisons every retry) or an intermittent verilator flake. A second failure is real —
+  # show the full log (not `| tail`, which masked the actual error behind verilator's wrapper note)
+  # and stop.
+  if ! verilator "${vargs[@]}" >"$vlog" 2>&1; then
+    echo "    verilate failed — cleaning obj_dir and retrying once ..."
+    rm -rf "$work/obj_dir"
+    if ! verilator "${vargs[@]}" >"$vlog" 2>&1; then
+      echo "ERROR: verilator failed for $name:" >&2
+      cat "$vlog" >&2
+      exit 1
+    fi
+  fi
+  tail -2 "$vlog"
   echo "[3/3] cross-checking RTL vs port ..."
   "$work/obj_dir/cosim" "$work/port.txt"
 }
