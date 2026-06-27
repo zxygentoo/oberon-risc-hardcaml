@@ -31,6 +31,7 @@
   ../cosim/rtl-sources.txt
   registers_spec.v
   core_stubs.v
+  mouse_shim.v
   test_formal.exe)
  (action
   (run bash run.sh)))

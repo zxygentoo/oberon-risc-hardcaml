@@ -61,6 +61,61 @@ let check ~work_dir ~verilog ~renames ~top_module ~ours =
   | _ -> Not_equivalent
 ;;
 
+let check_shim ~work_dir ~verilog ~shims ~gold_shim ~ours_shim ~renames ~ours =
+  ignore
+    (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))
+     : int);
+  let gate = Circuit.name ours in
+  let ours_v = Printf.sprintf "%s/%s.v" work_dir gate in
+  emit_verilog ours ours_v;
+  (* Open-drain shim proof (AGENT.md §6, README Tier 2 — the Mouse). The reference
+     [MouseP] has bidirectional open-drain [inout msclk, msdat]; our gate splits each into
+     a [*_oe] drive + a resolved-value input. Both are wrapped ([shims]) into one explicit
+     interface whose external read is a FREE input and whose observable is the resolved
+     line; we then prove the wrapped pair equivalent. The tristate handling (the inout's
+     whole reason for a shim) is: [tribuf -formal] lowers ALL tristate (incl. the
+     inout-port drivers) to logic, [chformal -remove] drops tribuf's "no two drivers"
+     assertion (illegal for open-drain wire-AND, which has many low drivers), and
+     [setundef -one] ties the both-released float to 1 (the pad pull-up) — together
+     exactly [line = oe ? 0 : ext] on both sides. The shim modules are flattened so the
+     wrapped FFs surface, then renamed to the RTL's (stripping the [g.] instance prefix)
+     so [equiv_make] pairs them. *)
+  let script = Printf.sprintf "%s/mouse_shim.ys" work_dir in
+  Stdio.Out_channel.write_all
+    script
+    ~data:
+      (String.concat
+         ~sep:"\n"
+         ([ "read_verilog " ^ verilog
+          ; "read_verilog " ^ shims
+          ; "read_verilog " ^ ours_v
+          ; "hierarchy -check"
+          ; "proc"
+          ; "flatten " ^ gold_shim
+          ; "flatten " ^ ours_shim
+          ; "tribuf -formal"
+          ; "chformal -remove"
+          ; "setundef -one"
+          ]
+          @ rename_block ~gate:gold_shim ~renames
+          @ rename_block ~gate:ours_shim ~renames
+          @ [ "memory"
+            ; "opt"
+            ; "equiv_make " ^ gold_shim ^ " " ^ ours_shim ^ " equiv"
+            ; "hierarchy -top equiv"
+            ; "opt -full"
+            ; "equiv_simple"
+            ; "equiv_induct"
+            ; "equiv_status -assert"
+            ; ""
+            ]));
+  match
+    Stdlib.Sys.command (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script))
+  with
+  | 0 -> Equivalent
+  | _ -> Not_equivalent
+;;
+
 let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
   ignore
     (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))

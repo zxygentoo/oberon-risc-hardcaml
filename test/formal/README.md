@@ -124,6 +124,10 @@ In `test_formal.ml`:
 - **In-situ core** (whole core, submodules black-boxed): see `core_blackbox.ml` (the gate, via
   `Risc5_core.create_with_units`), `core_stubs.v` (the stubs), and `run_core` /
   `Yosys_equiv.check_core` (the `cutpoint`-based flow). One-off, so it's its own runner, not a list.
+- **Open-drain shim** (a unit whose RTL has bidirectional `inout` pins our port splits into
+  `*_oe`+resolved-input — so far only the Mouse): see `mouse_shim.v` (the two wrappers) and
+  `run_mouse` / `Yosys_equiv.check_shim` (wrap both sides into one explicit interface, lower the
+  tristate with `tribuf -formal`/`chformal -remove`/`setundef -one`, then `equiv_induct`). One-off.
 
 The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
@@ -131,9 +135,10 @@ behavioural `registers_spec.v`; and the **whole core glue** — including the **
 (`aluRes`, which has no standalone `.v`) — against `RISC5.v` with the 8 submodules black-boxed
 and assumed-equivalent on the leaf proofs above. And the **Tier-1 peripherals** (RS232R/T, SPI,
 PS2) are proven ≡ their `.v` by the same sequential recipe — the exhaustive upgrade of their
-Phase-6a cosim. **13 checks**, all proven.
+Phase-6a cosim — plus the **Mouse** (Tier 2) through an open-drain `inout` shim. **14 checks**,
+all proven; every peripheral proof mutation-checked.
 
-## Peripheral modules — Tier 1 done, Tier 2 planned
+## Peripheral modules — Tier 1 + Mouse done, VID planned
 
 The formal layer extended to the faithful-`.v` **peripherals**. These are already Verilator-cosim'd
 against their `.v` (Phase 6a), so formal here is the *exhaustive* upgrade of a check that already
@@ -154,11 +159,17 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
 - [x] `PS2` ≡ `PS2.v` — `q0→Q0`, `q1→Q1`; the 16×8 `fifo` lowers via the `memory` pass and pairs
   by name (128 of the 160 cells), the same mechanism as the register-file proof.
 
-**Tier 2 — planned, one wrinkle each:**
-- [ ] `Mouse` ≡ `MousePM.v` (module `MouseP`): `MousePM.v` has `inout msclk, msdat`; we split each
-  into a `*_oe` drive-low output + the resolved input. Port interfaces differ ⇒ add a small Verilog
-  shim that recombines our `oe`+in into the RTL's open-drain `inout` (wire-AND), then equiv the
-  shimmed gate against `MousePM.v`.
+**Tier 2 — one wrinkle each:**
+- [x] `Mouse` ≡ `MousePM.v` (module `MouseP`) — **done** (`run_mouse` / `Yosys_equiv.check_shim`,
+  `mouse_shim.v`). `MouseP` has open-drain `inout msclk, msdat`; we split each into a `*_oe` drive +
+  the resolved input. Two shims wrap *both* sides into one explicit interface whose external read is
+  a **free** input (essential — without it yosys ties the inout read to 0 and the FSM degenerates to
+  constants, a vacuous proof) and whose observable is the **resolved line** `oe ? 0 : ext`. The
+  tristate is lowered with `tribuf -formal` (converts the inout-port drivers too, which `-logic`
+  won't) + `chformal -remove` (drop tribuf's "no two drivers" assertion — illegal for open-drain
+  wire-AND) + `setundef -one` (the both-released float = the pad pull-up). 160 cells; mutation-checked
+  on state, the `*_oe` drive, *and* the resolved-line read. `count`/`filter` newly named in the lib;
+  the flattened FFs are renamed `g.X→X` to pair with the RTL.
 - [ ] `VID` ≡ `VID60.v`: two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv (more
   setup than single-clock `equiv_induct`). And `vid.ml` documents a *deliberate* CDC departure (the
   RTL's async-set capture flop vs our `pclk`-domain `caught` one-shot — a Cyclesim limitation), so it

@@ -34,6 +34,26 @@ val check
   -> ours:Circuit.t
   -> result
 
+(** [check_shim] is the open-drain variant for the Mouse (AGENT.md §6, README Tier 2). The
+    reference [MouseP] has bidirectional open-drain [inout msclk, msdat]; our gate splits
+    each into a [*_oe] drive output + a resolved-value input. [shims] is a checked-in
+    Verilog file with two wrappers — [gold_shim] (wraps [MouseP] from [verilog]) and
+    [ours_shim] (wraps the emitted [ours]) — that both present one explicit interface: a
+    {e free} external read input and the resolved open-drain line as the observable
+    output. The flow flattens both shims, lowers all tristate to logic ([tribuf -formal] /
+    [chformal -remove] / [setundef -one] — see the impl), renames the wrapped FFs to the
+    RTL's (via [renames], stripping the instance prefix), and proves the two shims
+    equivalent by [equiv_induct]. *)
+val check_shim
+  :  work_dir:string
+  -> verilog:string
+  -> shims:string
+  -> gold_shim:string
+  -> ours_shim:string
+  -> renames:(string * string) list
+  -> ours:Circuit.t
+  -> result
+
 (** [check_core] is the in-situ glue variant for the whole core (AGENT.md §6, README): it
     proves [ours] equivalent to [top_module] of [verilog] with the 8 submodules
     black-boxed. [stubs] is the port-only black-box module file both designs reference;

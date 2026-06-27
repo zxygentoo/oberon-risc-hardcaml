@@ -168,6 +168,26 @@ let ps2 () =
     [ output "rdy" rdy; output "shift" shift; output "data" data ]
 ;;
 
+(* Mouse (Tier 2): MousePM.v's [MouseP] has open-drain [inout msclk, msdat]; our port
+   splits each into a drive-low [*_oe] output + the resolved-value input. A Verilog shim
+   ([mouse_shim.v]) recombines them back into the RTL's inout, and the shimmed gate is
+   proven ≡ MouseP (see [Yosys_equiv.check_shim]). *)
+let mouse () =
+  let open Signal in
+  let i =
+    { Risc5.Mouse.I.clock = input "clk" 1
+    ; rst_n = input "rst" 1
+    ; msclk = input "msclk" 1
+    ; msdat = input "msdat" 1
+    }
+  in
+  let { Risc5.Mouse.O.msclk_oe; msdat_oe; out } = Risc5.Mouse.create i in
+  (* rx/count/filter/tx/x/y/btns/sent/req all match MousePM.v once count/filter are named. *)
+  Circuit.create_exn
+    ~name:"mouse_ours"
+    [ output "msclk_oe" msclk_oe; output "msdat_oe" msdat_oe; output "out" out ]
+;;
+
 (* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
    (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
    defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
@@ -299,6 +319,47 @@ let run_core () =
     true
 ;;
 
+(* The Mouse (Tier 2): its own runner (distinct yosys flow, like run_core), since MouseP's
+   open-drain [inout] needs the two-shim recombination + tristate lowering — see
+   [mouse_shim.v] and [Yosys_equiv.check_shim]. [renames] strips the [g.] instance prefix
+   the flatten adds, pairing the wrapped FFs back to the RTL's names (which our lib
+   already matches: rx/count/filter/tx/x/y/btns/sent/req). *)
+let mouse_renames =
+  [ "g.rx", "rx"
+  ; "g.count", "count"
+  ; "g.filter", "filter"
+  ; "g.tx", "tx"
+  ; "g.x", "x"
+  ; "g.y", "y"
+  ; "g.btns", "btns"
+  ; "g.sent", "sent"
+  ; "g.req", "req"
+  ]
+;;
+
+let run_mouse () =
+  Stdio.printf
+    "=== mouse : ours (shimmed)  vs  MousePM.v   [open-drain inout · yosys equiv_induct] \
+     ===\n\
+     %!";
+  match
+    Yosys_equiv.check_shim
+      ~work_dir
+      ~verilog:(rtl_dir ^ "/MousePM.v")
+      ~shims:(spec_dir ^ "/mouse_shim.v")
+      ~gold_shim:"mouse_gold_shim"
+      ~ours_shim:"mouse_ours_shim"
+      ~renames:mouse_renames
+      ~ours:(mouse ())
+  with
+  | Yosys_equiv.Equivalent ->
+    Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
+    false
+  | Yosys_equiv.Not_equivalent ->
+    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
+    true
+;;
+
 let () =
   let fails =
     List.count combinational ~f:run_combinational
@@ -312,9 +373,10 @@ let () =
              ~dir:spec_dir
              ~kind:"sequential · yosys equiv_induct · behavioural spec")
     + Bool.to_int (run_core ())
+    + Bool.to_int (run_mouse ())
   in
   let total =
-    List.length combinational + List.length sequential + List.length behavioral + 1
+    List.length combinational + List.length sequential + List.length behavioral + 2
   in
   if fails > 0
   then (
