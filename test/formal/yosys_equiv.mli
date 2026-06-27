@@ -54,6 +54,24 @@ val check_shim
   -> ours:Circuit.t
   -> result
 
+(** [check_vid] is the partial multiclock variant for the video controller (AGENT.md §6,
+    README Tier 2). VID is two-clock (pclk raster + clk DMA) and its framebuffer-fetch CDC
+    deliberately departs from [VID60.v] (our toggle pulse-synchroniser vs the RTL's
+    async-set [req1]), so a whole-VID equiv cannot close there. The flow proves AROUND the
+    CDC: it drops [VID60.v]'s DCM/BUFG ([stubs] supplies their port shapes) and exposes
+    [pclk] as a free clock to match ours, cuts [vidbuf] to a shared free input (so the
+    pixel datapath proves bit-exact given the same fetched word), and excludes the [req]
+    handshake output (the departure). What it proves: the raster + pixel datapath ≡
+    [top_module]; the fetch CDC itself is argued separately (the cosim + [vid.ml]'s
+    one-req-per-req0 invariant). *)
+val check_vid
+  :  work_dir:string
+  -> verilog:string
+  -> stubs:string
+  -> top_module:string
+  -> ours:Circuit.t
+  -> result
+
 (** [check_core] is the in-situ glue variant for the whole core (AGENT.md §6, README): it
     proves [ours] equivalent to [top_module] of [verilog] with the 8 submodules
     black-boxed. [stubs] is the port-only black-box module file both designs reference;

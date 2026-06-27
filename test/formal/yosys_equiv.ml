@@ -116,6 +116,65 @@ let check_shim ~work_dir ~verilog ~shims ~gold_shim ~ours_shim ~renames ~ours =
   | _ -> Not_equivalent
 ;;
 
+let check_vid ~work_dir ~verilog ~stubs ~top_module ~ours =
+  ignore
+    (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))
+     : int);
+  let gate = Circuit.name ours in
+  let ours_v = Printf.sprintf "%s/%s.v" work_dir gate in
+  emit_verilog ours ours_v;
+  (* Partial multiclock proof for VID (AGENT.md §6, README Tier 2). VID is two-clock (pclk
+     raster + clk DMA) and its framebuffer-fetch CDC deliberately departs from VID60.v
+     (our toggle pulse-synchroniser vs the RTL async-set [req1]), so a whole-VID equiv
+     cannot close at the CDC. We prove AROUND it:
+     - gold prep: VID60.v generates [pclk] with a Xilinx DCM (a Phase-7 primitive); drop
+       the DCM/BUFG ([stubs] gives their port shapes) and [expose -input pclk] so the gold
+       takes pclk as a free clock like ours. [chparam RGBW=6] matches our pixel width.
+     - cut the CDC: [vidbuf] (the clk-domain word the pixel pipe consumes) is exposed as a
+       shared free input on BOTH sides (same name ⇒ [equiv_make] ties them), so [pixbuf]
+       and [RGB] prove bit-exact GIVEN the same fetched word — without comparing the
+       departed fetch *timing*.
+     - exclude the departure: [equiv_remove -gate] drops the [$equiv] on the [req] output
+       (our synchroniser vs [req2] — different by design). The gold's req1/req2 then feed
+       only the excluded [req], so the async-set [$adff] is never SAT-solved. Proven: the
+       raster (hcnt/vcnt/hs/vs/blank → vidadr/hsync/vsync) and the pixel datapath (pixbuf
+       shift + RGB) ≡ VID60.v. Argued separately (the cosim + [vid.ml]'s one-req-per-req0
+       invariant test): the CDC fetch handshake itself. *)
+  let script = Printf.sprintf "%s/vid.ys" work_dir in
+  Stdio.Out_channel.write_all
+    script
+    ~data:
+      (String.concat
+         ~sep:"\n"
+         [ "read_verilog " ^ stubs
+         ; "read_verilog " ^ verilog
+         ; "read_verilog " ^ ours_v
+         ; "chparam -set RGBW 6 " ^ top_module
+         ; "hierarchy -check"
+         ; "proc"
+         ; "delete " ^ top_module ^ "/c:dcm " ^ top_module ^ "/c:clkbuf"
+         ; "expose -input " ^ top_module ^ "/w:pclk"
+           (* cut the framebuffer word to a shared free input (the CDC boundary) *)
+         ; "expose -input " ^ top_module ^ "/w:vidbuf"
+         ; "expose -input " ^ gate ^ "/w:vidbuf"
+         ; "opt"
+         ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
+         ; "hierarchy -top equiv"
+           (* exclude the deliberate CDC departure: the [req] handshake output *)
+         ; "equiv_remove -gate equiv/w:req %ci t:$equiv %i"
+         ; "opt -full"
+         ; "equiv_simple"
+         ; "equiv_induct"
+         ; "equiv_status -assert"
+         ; ""
+         ]);
+  match
+    Stdlib.Sys.command (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script))
+  with
+  | 0 -> Equivalent
+  | _ -> Not_equivalent
+;;
+
 let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
   ignore
     (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))

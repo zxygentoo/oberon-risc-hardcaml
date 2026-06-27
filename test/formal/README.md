@@ -128,6 +128,11 @@ In `test_formal.ml`:
   `*_oe`+resolved-input — so far only the Mouse): see `mouse_shim.v` (the two wrappers) and
   `run_mouse` / `Yosys_equiv.check_shim` (wrap both sides into one explicit interface, lower the
   tristate with `tribuf -formal`/`chformal -remove`/`setundef -one`, then `equiv_induct`). One-off.
+- **Multiclock + CDC cut** (a two-clock unit with a deliberate CDC departure — so far only VID): see
+  `vid_stubs.v` (DCM/BUFG stubs) and `run_vid` / `Yosys_equiv.check_vid` (drop the DCM + `expose
+  -input pclk`, `expose -input` the CDC boundary signal to a shared free input on both sides, and
+  `equiv_remove` the departed output). A *partial* proof by construction — proves around the CDC.
+  One-off.
 
 The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
@@ -135,10 +140,11 @@ behavioural `registers_spec.v`; and the **whole core glue** — including the **
 (`aluRes`, which has no standalone `.v`) — against `RISC5.v` with the 8 submodules black-boxed
 and assumed-equivalent on the leaf proofs above. And the **Tier-1 peripherals** (RS232R/T, SPI,
 PS2) are proven ≡ their `.v` by the same sequential recipe — the exhaustive upgrade of their
-Phase-6a cosim — plus the **Mouse** (Tier 2) through an open-drain `inout` shim. **14 checks**,
-all proven; every peripheral proof mutation-checked.
+Phase-6a cosim — plus **Tier 2**: the **Mouse** through an open-drain `inout` shim, and **VID**'s
+raster + pixel datapath through a multiclock proof that cuts around its (deliberate) CDC departure.
+**15 checks**, all proven; every peripheral proof mutation-checked.
 
-## Peripheral modules — Tier 1 + Mouse done, VID planned
+## Peripheral modules — Tier 1 + Tier 2 done (VID partial by design)
 
 The formal layer extended to the faithful-`.v` **peripherals**. These are already Verilator-cosim'd
 against their `.v` (Phase 6a), so formal here is the *exhaustive* upgrade of a check that already
@@ -170,8 +176,18 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   wire-AND) + `setundef -one` (the both-released float = the pad pull-up). 160 cells; mutation-checked
   on state, the `*_oe` drive, *and* the resolved-line read. `count`/`filter` newly named in the lib;
   the flattened FFs are renamed `g.X→X` to pair with the RTL.
-- [ ] `VID` ≡ `VID60.v`: two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv (more
-  setup than single-clock `equiv_induct`). And `vid.ml` documents a *deliberate* CDC departure (the
-  RTL's async-set capture flop vs our `pclk`-domain `caught` one-shot — a Cyclesim limitation), so it
-  is **not** bit-exact at the CDC: prove around that boundary (black-box / cut it) or argue it
-  separately — a clean whole-VID equiv will (correctly) fail there.
+- [x] `VID` ≡ `VID60.v` — **done, partial by design** (`run_vid` / `Yosys_equiv.check_vid`,
+  `vid_stubs.v`). Two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv. Gold prep:
+  `VID60.v` makes `pclk` with a Xilinx DCM (a Phase-7 primitive), so we stub + drop the DCM/BUFG and
+  `expose -input pclk` to match our gate; `chparam RGBW=6`. The framebuffer-fetch CDC *deliberately*
+  departs from the RTL (our toggle pulse-synchroniser vs `VID60.v`'s async-set `req1`), so a whole-VID
+  equiv can't close there — we prove **around** it: **cut** `vidbuf` (the fetched word) to a shared
+  free input (so `pixbuf`/`RGB` prove bit-exact *given the same word*) and **exclude** the `req`
+  output via `equiv_remove -gate` (the gold's async-set `$adff` then feeds only the excluded `req`, so
+  it's never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `vidadr/hsync/vsync`) + the
+  pixel datapath ≡ `VID60.v` (79 cells; mutation-checked on raster *and* pixel paths). The fetch CDC
+  itself is argued by the cosim + `vid.ml`'s one-`req`-per-`req0` invariant test.
+
+  *This proof's "correct failure" at the CDC was not academic: the `pclk`-domain `caught` one-shot it
+  flagged turned out to be a real metastability bug on silicon (horizontal flicker on the Nexys 4). The
+  fix — a textbook toggle pulse-synchroniser — is what `vid.ml` now ships, and what this proves around.*

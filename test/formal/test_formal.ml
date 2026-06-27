@@ -188,6 +188,31 @@ let mouse () =
     [ output "msclk_oe" msclk_oe; output "msdat_oe" msdat_oe; output "out" out ]
 ;;
 
+(* VID (Tier 2): two clock domains (pclk raster + clk DMA), and a CDC that deliberately
+   departs from VID60.v (our toggle pulse-synchroniser vs the RTL's async-set [req1]). The
+   gold side needs prep (stub the DCM, [chparam RGBW=6], expose [pclk]); the proof cuts
+   [vidbuf] to a shared free input so the raster + pixel path prove bit-exact given the
+   same word, and excludes [req] (the departure). See [Yosys_equiv.check_vid] / [run_vid]. *)
+let vid () =
+  let open Signal in
+  let i =
+    { Risc5.Vid.I.clk = input "clk" 1
+    ; pclk = input "pclk" 1
+    ; inv = input "inv" 1
+    ; viddata = input "viddata" 32
+    }
+  in
+  let { Risc5.Vid.O.req; vidadr; hsync; vsync; rgb } = Risc5.Vid.create i in
+  Circuit.create_exn
+    ~name:"vid_ours"
+    [ output "req" req
+    ; output "vidadr" vidadr
+    ; output "hsync" hsync
+    ; output "vsync" vsync
+    ; output "RGB" rgb
+    ]
+;;
+
 (* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
    (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
    defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
@@ -360,6 +385,34 @@ let run_mouse () =
     true
 ;;
 
+(* VID (Tier 2): its own runner (distinct yosys flow, like run_core/run_mouse). Two-clock,
+   and the framebuffer-fetch CDC deliberately departs from VID60.v (our toggle
+   pulse-synchroniser vs the RTL async-set [req1]), so this is a PARTIAL proof — the
+   raster
+   + pixel datapath ≡ VID60.v, with the CDC handshake cut/excluded (argued by the cosim +
+     the one-req-per-req0 invariant test in [vid.ml]). See [Yosys_equiv.check_vid]. *)
+let run_vid () =
+  Stdio.printf
+    "=== vid : ours (raster+pixels)  vs  VID60.v   [multiclock · CDC cut · yosys \
+     equiv_induct] ===\n\
+     %!";
+  match
+    Yosys_equiv.check_vid
+      ~work_dir
+      ~verilog:(rtl_dir ^ "/VID60.v")
+      ~stubs:(spec_dir ^ "/vid_stubs.v")
+      ~top_module:"VID"
+      ~ours:(vid ())
+  with
+  | Yosys_equiv.Equivalent ->
+    Stdio.printf
+      "  EQUIVALENT  (raster + pixel datapath proven; CDC fetch handshake excluded)\n%!";
+    false
+  | Yosys_equiv.Not_equivalent ->
+    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
+    true
+;;
+
 let () =
   let fails =
     List.count combinational ~f:run_combinational
@@ -374,9 +427,10 @@ let () =
              ~kind:"sequential · yosys equiv_induct · behavioural spec")
     + Bool.to_int (run_core ())
     + Bool.to_int (run_mouse ())
+    + Bool.to_int (run_vid ())
   in
   let total =
-    List.length combinational + List.length sequential + List.length behavioral + 2
+    List.length combinational + List.length sequential + List.length behavioral + 3
   in
   if fails > 0
   then (
