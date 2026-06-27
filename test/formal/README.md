@@ -121,8 +121,33 @@ In `test_formal.ml`:
   `Risc5_core.create_with_units`), `core_stubs.v` (the stubs), and `run_core` /
   `Yosys_equiv.check_core` (the `cutpoint`-based flow). One-off, so it's its own runner, not a list.
 
-The whole layer is now closed: both shifters (combinational, z3) and all five iterative units
+The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
 behavioural `registers_spec.v`; and the **whole core glue** — including the **in-situ ALU**
 (`aluRes`, which has no standalone `.v`) — against `RISC5.v` with the 8 submodules black-boxed
 and assumed-equivalent on the leaf proofs above.
+
+## Planned — peripheral modules (Tier 1/2)
+
+Next goal: extend the formal layer to the faithful-`.v` **peripherals**. These are already
+Verilator-cosim'd against their `.v` (Phase 6a), so formal here is the *exhaustive* upgrade of a
+check that already passes — added rigor (rare corners, the bright line), not a new capability. The
+SoC top (`RISC5Top`) is **out of scope** — board-specific (our sim `Soc` ≠ `RISC5Top.OStation.v` by
+design: DCM/PROM/IOBUF/memory are Phase 7).
+
+**Tier 1 — clean, same recipe (`Yosys_equiv.check`, a `sequential` row each):** single-clock FSMs
+with a direct standalone `.v`. Work per module = match the register names to the RTL (they carry
+some `--` names already, but for waveforms — verify/rename to the `.v`'s, as the core's `run_core`
+does via `register_renames`).
+- [ ] `RS232R` ≡ `RS232R.v`   [ ] `RS232T` ≡ `RS232T.v`   [ ] `SPI` ≡ `SPI.v`   [ ] `PS2` ≡ `PS2.v`
+
+**Tier 2 — one wrinkle each:**
+- [ ] `Mouse` ≡ `MousePM.v` (module `MouseP`): `MousePM.v` has `inout msclk, msdat`; we split each
+  into a `*_oe` drive-low output + the resolved input. Port interfaces differ ⇒ add a small Verilog
+  shim that recombines our `oe`+in into the RTL's open-drain `inout` (wire-AND), then equiv the
+  shimmed gate against `MousePM.v`.
+- [ ] `VID` ≡ `VID60.v`: two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv (more
+  setup than single-clock `equiv_induct`). And `vid.ml` documents a *deliberate* CDC departure (the
+  RTL's async-set capture flop vs our `pclk`-domain `caught` one-shot — a Cyclesim limitation), so it
+  is **not** bit-exact at the CDC: prove around that boundary (black-box / cut it) or argue it
+  separately — a clean whole-VID equiv will (correctly) fail there.
