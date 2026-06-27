@@ -33,17 +33,21 @@ let () =
   let inp = (Cyclesim.inputs sim : _ Vid.I.t) in
   let outp = (Cyclesim.outputs sim : _ Vid.O.t) in
   let ticks = 13440 in
-  (* deterministic pseudo-random viddata per tick (a plain LCG); recorded in the dump, so
-     the .cpp replays the exact sequence — varying it every tick stresses the vidbuf
-     latch + shift *)
-  let seed = ref 0x1234_5678 in
-  let next_word () =
-    seed := ((!seed * 1103515245) + 12345) land 0xFFFFFFFF;
-    !seed
-  in
+  (* viddata: one deterministic word per 32-px FETCH GROUP, held stable across the group —
+     a faithful memory model (real SRAM returns the fetched word and holds it; it's
+     sampled once, when req fires). One pclk group is 32 pclk = 160 base ticks. Holding it
+     per group (rather than the old per-tick LCG) is what lets the pixel path stay
+     cycle-exact to VID60.v despite the req CDC departure: our toggle synchroniser fires
+     req ~2 clk later than the RTL's async-set req1, so the two sample viddata at
+     different ticks — but within the same group, so a per-group-stable word is identical
+     for both. (Per-tick variation was over-stimulation — viddata changed faster than it's
+     ever sampled — and only matched before because the old req timing happened to align
+     with the RTL's.) *)
+  let group_ticks = 32 * 5 in
+  let word_of_group g = (((g + 1) * 1103515245) + 12345) land 0xFFFFFFFF in
   for t = 0 to ticks - 1 do
     let inv = if t >= 5000 && t < 9000 then 1 else 0 in
-    let vd = next_word () in
+    let vd = word_of_group (t / group_ticks) in
     set inp.inv inv;
     set inp.viddata vd;
     Cyclesim.cycle sim;
