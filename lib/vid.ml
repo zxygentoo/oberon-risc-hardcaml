@@ -59,6 +59,25 @@ end
 (* framebuffer base Org = DFF00H >> 2 (word address); rows 0..255 sit off-screen *)
 let org = 0x37FC0
 
+(* Toggle pulse synchroniser — cross a 1-cycle [pulse] in the [src_spec] clock domain into
+   the [dst_spec] domain as a 1-cycle pulse, metastability-safe. [pulse] TOGGLES a flop in
+   the source domain (so the request becomes a LEVEL change, never a narrow pulse a
+   sampling flop could miss); the level crosses a 3-FF [dst_spec] synchroniser ([sync0]
+   absorbs any metastability, [sync1]/[sync2] are settled); an edge-detect on the two
+   SETTLED flops regenerates exactly one [dst_spec] pulse. Safe by construction provided
+   [pulse] recurs slower than the synchroniser depth (in [vid], every 32 px ≈ 12 [clk] ≫
+   3). The metastability-safe substitute for VID60.v's async-set capture [req1]
+   (unrepresentable in Cyclesim — see [vid.mli]); proven no-loss/no-spurious for all
+   clk/pclk phases in test/formal (the [pulse_sync] @formal check). The [sync0]/[sync1]
+   flops want an ASYNC_REG / CDC constraint in the board [.xdc]. *)
+let pulse_sync ~src_spec ~dst_spec ~pulse =
+  let req_toggle = reg_fb src_spec ~width:1 ~f:(fun t -> t ^: pulse) -- "req_toggle" in
+  let sync0 = reg dst_spec req_toggle -- "sync0" in
+  let sync1 = reg dst_spec sync0 -- "sync1" in
+  let sync2 = reg dst_spec sync1 -- "sync2" in
+  (sync1 ^: sync2) -- "req"
+;;
+
 let create (i : _ I.t) : _ O.t =
   let pspec = Reg_spec.create () ~clock:i.pclk in
   let cspec = Reg_spec.create () ~clock:i.clk in
@@ -78,29 +97,13 @@ let create (i : _ I.t) : _ O.t =
   (* request the next word at the start of each visible 32-px group; transfer it 31 px on *)
   let req0 = (sel_bottom hcnt ~width:5 ==:. 0 &: ~:hblank &: ~:vblank) -- "req0" in
   let xfer = sel_bottom hcnt ~width:5 ==:. 31 in
-  (* ── pclk→clk request synchroniser: a toggle pulse synchroniser (metastability-safe) ──
-     [req0] is a 1-[pclk] (~15 ns) fetch pulse; the DMA consumes it in the [clk] domain.
-     Crossing a bare pulse between the asynchronous [pclk]/[clk] is unsafe — the pulse can
-     be narrower than a [clk] period and violate the sampling flop's setup/hold, and a
-     metastable sample corrupts the [vidbuf] load (horizontal pixel tearing on silicon).
-     The standard fix: TOGGLE a [pclk] flop once per [req0] (so the request becomes
-     a *level* change, never a narrow pulse), cross that level through a [clk]
-     synchroniser ([sync0] absorbs any metastability; [sync1]/[sync2] are settled), and
-     edge-detect it back to exactly one [clk] pulse. Safe by construction; no toggle is
-     missed because [req0] recurs every 32 px (~12 [clk]) ≫ the synchroniser depth.
-
-     (Models VID60.v's async-set capture [req1] — [always @(posedge req0, posedge clk)] —
-     which Cyclesim can't represent. The Phase-6 [caught]+feedback handshake this replaces
-     sampled a [pclk] flop directly in [clk] with NO synchroniser: deterministic in sim,
-     metastable on silicon. The [sync0]/[sync1] flops want an ASYNC_REG / CDC constraint
-     in the board [.xdc]. See [vid.mli].) *)
-  let req_toggle = reg_fb pspec ~width:1 ~f:(fun t -> t ^: req0) -- "req_toggle" in
-  let sync0 = reg cspec req_toggle -- "sync0" in
-  let sync1 = reg cspec sync0 -- "sync1" in
-  let sync2 = reg cspec sync1 -- "sync2" in
-  (* one [clk] pulse per crossed toggle; edge-detect on the two SETTLED flops, never on
-     the metastability-prone [sync0] *)
-  let req = (sync1 ^: sync2) -- "req" in
+  (* pclk→clk request synchroniser ([pulse_sync] above): cross the 1-pclk [req0] fetch
+     pulse into the clk DMA domain as a 1-clk [req]. The metastability-safe substitute for
+     VID60.v's async-set [req1] (a literal pclk-flop-sampled-in-clk crossing, as the
+     Phase-6 [caught]+feedback handshake did, is deterministic in sim but metastable on
+     silicon — horizontal pixel tearing). Proven no-loss/no-spurious for all phases in
+     test/formal. *)
+  let req = pulse_sync ~src_spec:pspec ~dst_spec:cspec ~pulse:req0 in
   let vidbuf = reg ~enable:req cspec i.viddata -- "vidbuf" in
   (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
   let pixbuf =

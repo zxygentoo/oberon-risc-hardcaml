@@ -175,6 +175,58 @@ let check_vid ~work_dir ~verilog ~stubs ~top_module ~ours =
   | _ -> Not_equivalent
 ;;
 
+let check_property ~work_dir ~monitor ~top_module ~depth ~ours =
+  ignore
+    (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))
+     : int);
+  let gate = Circuit.name ours in
+  let ours_v = Printf.sprintf "%s/%s.v" work_dir gate in
+  emit_verilog ours ours_v;
+  (* Unbounded temporal-property proof by k-INDUCTION (yosys-smtbmc -i, the engine
+     SymbiYosys wraps) over z3 — for properties that aren't a cycle-equivalence (so far
+     the VID fetch CDC invariant). The [monitor] Verilog wraps the emitted gate ([ours])
+     with assumptions + assertions; [clk2fflogic] models the design's clocks as a
+     global-clock formal problem; write_smt2 emits the SMT problem;
+     [yosys-smtbmc -i -t depth] proves it by temporal induction. When induction closes it
+     proves the property for ALL reachable states (unbounded, unlike a plain BMC trace) —
+     [depth] is the induction length k, which must be large enough that the k-step history
+     forces a reachable-consistent state (for the VID synchroniser the threshold is ~38, k
+     spanning a fetch cycle). [Equivalent] = "induction successful — property proven for
+     all states". *)
+  let smt2 = Printf.sprintf "%s/%s.smt2" work_dir top_module in
+  let script = Printf.sprintf "%s/%s_prop.ys" work_dir top_module in
+  Stdio.Out_channel.write_all
+    script
+    ~data:
+      (String.concat
+         ~sep:"\n"
+         [ "read_verilog " ^ ours_v
+         ; "read_verilog -formal " ^ monitor
+         ; "prep -top " ^ top_module
+           (* the emitted gate's FFs have no reset (the design free-runs); pin their
+              formal init to 0 = the power-on state, else the solver starts them arbitrary
+              and reports a spurious step-0 counterexample *)
+         ; "setundef -init -zero"
+         ; "clk2fflogic"
+         ; "write_smt2 -wires " ^ smt2
+         ; ""
+         ]);
+  match
+    Stdlib.Sys.command (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script))
+  with
+  | 0 ->
+    (match
+       Stdlib.Sys.command
+         (Printf.sprintf
+            "yosys-smtbmc -i -s z3 -t %d %s >/dev/null 2>&1"
+            depth
+            (Stdlib.Filename.quote smt2))
+     with
+     | 0 -> Equivalent
+     | _ -> Not_equivalent)
+  | _ -> Not_equivalent
+;;
+
 let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
   ignore
     (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))

@@ -213,6 +213,24 @@ let vid () =
     ]
 ;;
 
+(* The VID fetch-CDC invariant (the part check_vid cuts): the toggle pulse synchroniser
+   [Vid.pulse_sync], isolated with [req0] as an input, so the property harness
+   ([vid_invariant.v]) can drive it and assert one-req-per-req0. Proven by BMC, not equiv
+   (it's a protocol property, not a cycle-equivalence). *)
+let pulse_sync () =
+  let open Signal in
+  let clk = input "clk" 1 in
+  let pclk = input "pclk" 1 in
+  let req0 = input "req0" 1 in
+  let req =
+    Risc5.Vid.pulse_sync
+      ~src_spec:(Reg_spec.create () ~clock:pclk)
+      ~dst_spec:(Reg_spec.create () ~clock:clk)
+      ~pulse:req0
+  in
+  Circuit.create_exn ~name:"pulse_sync_ours" [ output "req" req ]
+;;
+
 (* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
    (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
    defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
@@ -413,6 +431,37 @@ let run_vid () =
     true
 ;;
 
+(* The VID fetch-CDC invariant — the property check_vid cuts. Proves [Vid.pulse_sync] is
+   no-loss + no-spurious (one req per req0) for ALL clk/pclk phase interleavings and ALL
+   reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) — unbounded, the part the
+   single-phase Cyclesim test can't reach. [k] is the induction length: threshold ~38 (k
+   must span a fetch cycle so the k-step history forces a reachable state); 48 leaves
+   margin. *)
+let vid_invariant_k = 48
+
+let run_vid_invariant () =
+  Stdio.printf
+    "=== vid_invariant : pulse_sync no-loss/no-spurious   [all-phase CDC · yosys-smtbmc \
+     k-induction k=%d] ===\n\
+     %!"
+    vid_invariant_k;
+  match
+    Yosys_equiv.check_property
+      ~work_dir
+      ~monitor:(spec_dir ^ "/vid_invariant.v")
+      ~top_module:"vid_invariant"
+      ~depth:vid_invariant_k
+      ~ours:(pulse_sync ())
+  with
+  | Yosys_equiv.Equivalent ->
+    Stdio.printf
+      "  PROVEN  (one req per req0 — no loss, no spurious — all phases, all states)\n%!";
+    false
+  | Yosys_equiv.Not_equivalent ->
+    Stdio.printf "  NOT PROVEN  (induction counterexample)\n%!";
+    true
+;;
+
 let () =
   let fails =
     List.count combinational ~f:run_combinational
@@ -428,9 +477,10 @@ let () =
     + Bool.to_int (run_core ())
     + Bool.to_int (run_mouse ())
     + Bool.to_int (run_vid ())
+    + Bool.to_int (run_vid_invariant ())
   in
   let total =
-    List.length combinational + List.length sequential + List.length behavioral + 3
+    List.length combinational + List.length sequential + List.length behavioral + 4
   in
   if fails > 0
   then (

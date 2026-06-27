@@ -33,6 +33,18 @@ module O : sig
   [@@deriving hardcaml]
 end
 
+(** [pulse_sync ~src_spec ~dst_spec ~pulse] crosses a 1-cycle [pulse] in the [src_spec]
+    clock domain into the [dst_spec] domain as a 1-cycle pulse, metastability-safe: a
+    toggle flop in the source domain turns the pulse into a level, a 3-FF [dst_spec]
+    synchroniser settles it, and an edge-detect regenerates one [dst_spec] pulse. The CDC
+    primitive [vid] uses for the framebuffer fetch (the substitute for [VID60.v]'s
+    async-set [req1]); proven no-loss/no-spurious for all clk/pclk phases in test/formal. *)
+val pulse_sync
+  :  src_spec:Signal.Reg_spec.t
+  -> dst_spec:Signal.Reg_spec.t
+  -> pulse:Signal.t
+  -> Signal.t
+
 (** [create i] builds the controller, cycle-faithful to [VID60.v] on the raster/pixel
     datapath. The one departure is the framebuffer-fetch CDC: the RTL's async-set capture
     flop [req1] (RTL [always @(posedge req0, posedge clk)]) is unrepresentable in

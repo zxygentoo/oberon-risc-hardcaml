@@ -72,6 +72,24 @@ val check_vid
   -> ours:Circuit.t
   -> result
 
+(** [check_property] proves a temporal {e property} (not a cycle-equivalence)
+    {b unboundedly} by k-induction with [yosys-smtbmc -i] over z3 — the engine SymbiYosys
+    wraps. Used for the VID fetch-CDC invariant, which is no equivalence (our synchroniser
+    deliberately departs from [VID60.v]'s async-set). [monitor] is a checked-in Verilog
+    wrapper that instantiates the emitted [ours] and adds the assumptions + assertions;
+    [top_module] is the wrapper's name; [depth] is the induction length k. [clk2fflogic]
+    models the multiclock design for the solver; k-induction, when it closes, proves the
+    property for {b all reachable states} over all clk/pclk interleavings — k must be
+    large enough that the k-step history forces a reachable-consistent state (≈38 for the
+    VID synchroniser). Returns [Equivalent] iff induction succeeds. *)
+val check_property
+  :  work_dir:string
+  -> monitor:string
+  -> top_module:string
+  -> depth:int
+  -> ours:Circuit.t
+  -> result
+
 (** [check_core] is the in-situ glue variant for the whole core (AGENT.md §6, README): it
     proves [ours] equivalent to [top_module] of [verilog] with the 8 submodules
     black-boxed. [stubs] is the port-only black-box module file both designs reference;

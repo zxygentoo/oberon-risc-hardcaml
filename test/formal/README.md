@@ -133,6 +133,12 @@ In `test_formal.ml`:
   -input pclk`, `expose -input` the CDC boundary signal to a shared free input on both sides, and
   `equiv_remove` the departed output). A *partial* proof by construction — proves around the CDC.
   One-off.
+- **Temporal property** (a claim that's *not* a cycle-equivalence — so far the VID fetch invariant):
+  see `vid_invariant.v` (a monitor wrapping the emitted gate with assumptions + assertions) and
+  `run_vid_invariant` / `Yosys_equiv.check_property` (emit → `clk2fflogic` → `write_smt2` →
+  `yosys-smtbmc -i -s z3 -t <k>`, k-induction — the engine SymbiYosys wraps, no `sby` needed). An
+  unbounded proof over all clock interleavings; use when there's a property to prove but no
+  equivalence.
 
 The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
@@ -141,8 +147,10 @@ behavioural `registers_spec.v`; and the **whole core glue** — including the **
 and assumed-equivalent on the leaf proofs above. And the **Tier-1 peripherals** (RS232R/T, SPI,
 PS2) are proven ≡ their `.v` by the same sequential recipe — the exhaustive upgrade of their
 Phase-6a cosim — plus **Tier 2**: the **Mouse** through an open-drain `inout` shim, and **VID**'s
-raster + pixel datapath through a multiclock proof that cuts around its (deliberate) CDC departure.
-**15 checks**, all proven; every peripheral proof mutation-checked.
+raster + pixel datapath through a multiclock proof that cuts around its (deliberate) CDC departure,
+with that departure's **fetch invariant** (one `req` per `req0`, no loss, no spurious — all clk/pclk
+phases, all states) closed separately by `yosys-smtbmc` k-induction. **16 checks**, all proven;
+every one mutation-checked.
 
 ## Peripheral modules — Tier 1 + Tier 2 done (VID partial by design)
 
@@ -186,7 +194,17 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   output via `equiv_remove -gate` (the gold's async-set `$adff` then feeds only the excluded `req`, so
   it's never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `vidadr/hsync/vsync`) + the
   pixel datapath ≡ `VID60.v` (79 cells; mutation-checked on raster *and* pixel paths). The fetch CDC
-  itself is argued by the cosim + `vid.ml`'s one-`req`-per-`req0` invariant test.
+  itself — the cut part — is closed by a **separate property proof** (`vid_invariant`, below).
+- [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` /
+  `Yosys_equiv.check_bmc`, `vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
+  synchroniser vs the async-set `req1`), so equiv can't touch it — but the *protocol* is provable:
+  **one `req` per `req0`, no loss, no duplication**. `vid.ml`'s `pulse_sync` is extracted as a
+  reusable primitive; the harness isolates it (`req0` an input), wraps it with a `req0` generator +
+  a clock-fairness assumption + a balance monitor, and discharges no-loss + no-spurious by
+  `yosys-smtbmc -i`/z3 **k-induction** (k=48) over **all fair clk/pclk phase interleavings** — the
+  CDC-robustness the single-phase Cyclesim test can't reach. **Unbounded** (all reachable states): no
+  hand-crafted inductive invariant was needed — k just has to span a fetch cycle (threshold ≈ 38) so
+  the k-step history forces a reachable-consistent state. Mutation-checked (drop the toggle → caught).
 
   *This proof's "correct failure" at the CDC was not academic: the `pclk`-domain `caught` one-shot it
   flagged turned out to be a real metastability bug on silicon (horizontal flicker on the Nexys 4). The
