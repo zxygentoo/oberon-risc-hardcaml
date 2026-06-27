@@ -227,9 +227,9 @@ granularity, against the spec directly — the §2 fidelity authority (layer 3, 
 layer 6). They answer orthogonal questions — *is the result correct?* vs *did we copy the
 spec?* — and cross-check: **every §8 divergence is the emulator differing from `RISC5.v`, and
 the co-sim is what proves our port sides with the RTL.** (There is no Verilog→Hardcaml *source*
-translator; `hardcaml_of_verilog` would import the `.v` as an in-process circuit but is
-unbuildable on the preview — §9 — so the co-sim runs the `.v` out-of-process and compares
-dumps, fine for a periodic fidelity check.)
+translator; `hardcaml_of_verilog` imports the `.v` as an in-process circuit — installable on the
+preview via a forked `jsonaf` pin (§9) — but this periodic fidelity check still runs the `.v`
+out-of-process under Verilator and compares dumps, which needs no yosys.)
 
 1. **Unit specs** — exhaustive or `qcheck` for combinational blocks (shifters, ALU).
 2. **FP vectors** — replay `fp_vectors.txt` through the FP units over the *compiler-reachable*
@@ -417,10 +417,22 @@ then depend on it directly and delete the wrapper. FP vectors
 version). We track Jane Street's OxCaml *preview channel* on purpose: **`docs.hardcaml.org`
 documents exactly this version** (built from the `with-extensions` branch); vanilla opam tops
 out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~preview.130.91+190`
-move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardcaml_of_verilog`
-(yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
-OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
-**Verilator** out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
+move forward under us). `hardcaml_verify` (Phase-8 formal) is installed. `hardcaml_of_verilog`
+(yosys → in-process import) needs a one-line workaround on the preview: its `jsonaf` dep's tarball
+(`v0.18~preview.130.91+190`) annotates the Faraday serializers `@@ portable`, which is unsatisfiable
+(no portable `faraday` exists), so it won't build. A fork drops those 4 annotations (it's parse-only,
+never serializes); install via the pin:
+
+```
+opam pin add jsonaf.v0.18~preview.130.91+190 \
+  'git+https://github.com/zxygentoo/jsonaf.git#528a015' --yes
+opam install hardcaml_of_verilog hardcaml_verify --yes
+```
+
+plus **`yosys`** on `PATH` at runtime (`Hardcaml.Tools_config.yosys`). (Already fixed upstream in
+`130.100+614`; the pin is only needed while we track `130.91+190` — bump the version/commit when the
+preview rolls forward and the upstream fix lands.) RTL fidelity otherwise uses raw **Verilator**
+out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
 Phase-5 boot speed and **both rejected**: `hardcaml_verilator` (Verilator-backed `Cyclesim.t`)
 runs on the system Verilator 5.048 but only for **I/O-only** sims — the `__Vscope_*`→`__Vscopep_*`
 rename breaks its internal-signal probe (`is_internal_port` / `lookup_*`), which the boot harness
