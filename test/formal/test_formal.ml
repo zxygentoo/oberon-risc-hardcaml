@@ -91,6 +91,31 @@ let fp_divider () =
   Circuit.create_exn ~name:"fp_divider_ours" [ output "stall" stall; output "z" z ]
 ;;
 
+(* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
+   (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
+   defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
+   behavioural CONTRACT it implements (registers_spec.v: 16x32, 3 async reads, 1 sync
+   write). Both sides are a single array, so the [memory] pass lowers them to FFs that
+   pair by name and equiv_induct closes. AGENT.md §2/§3: the register file is the
+   canonical "structure is not the spec" case. ── *)
+
+let registers () =
+  let open Signal in
+  let i =
+    { Risc5.Registers.I.clock = input "clk" 1
+    ; wr = input "wr" 1
+    ; rno0 = input "rno0" 4
+    ; rno1 = input "rno1" 4
+    ; rno2 = input "rno2" 4
+    ; din = input "din" 32
+    }
+  in
+  let { Risc5.Registers.O.dout0; dout1; dout2 } = Risc5.Registers.create i in
+  Circuit.create_exn
+    ~name:"registers_ours"
+    [ output "dout0" dout0; output "dout1" dout1; output "dout2" dout2 ]
+;;
+
 (* ── Runner ── *)
 
 let work_dir =
@@ -100,7 +125,8 @@ let work_dir =
   ^ "/oberon-formal"
 ;;
 
-let rtl_dir = "_po/verilog/src"
+let rtl_dir = "_po/verilog/src" (* Wirth's originals, fetched on demand *)
+let spec_dir = "test/formal" (* our checked-in behavioural specs, e.g. registers_spec.v *)
 
 let run_combinational (name, ours, v, top_module) =
   Stdio.printf "=== %s : ours  vs  %s   [combinational · Sec/z3] ===\n%!" name v;
@@ -115,10 +141,10 @@ let run_combinational (name, ours, v, top_module) =
     true
 ;;
 
-let run_sequential (name, ours, v, top_module) =
-  Stdio.printf "=== %s : ours  vs  %s   [sequential · yosys equiv_induct] ===\n%!" name v;
+let run_sequential ~dir ~kind (name, ours, v, top_module) =
+  Stdio.printf "=== %s : ours  vs  %s   [%s] ===\n%!" name v kind;
   match
-    Yosys_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
+    Yosys_equiv.check ~work_dir ~verilog:(dir ^ "/" ^ v) ~top_module ~ours:(ours ())
   with
   | Yosys_equiv.Equivalent ->
     Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
@@ -143,12 +169,28 @@ let sequential : (string * (unit -> Circuit.t) * string * string) list =
   ]
 ;;
 
+(* Proven against our behavioural spec in [spec_dir], not a Wirth original (see
+   [registers]). *)
+let behavioral : (string * (unit -> Circuit.t) * string * string) list =
+  [ "registers", registers, "registers_spec.v", "Registers_spec" ]
+;;
+
 let () =
   let fails =
     List.count combinational ~f:run_combinational
-    + List.count sequential ~f:run_sequential
+    + List.count
+        sequential
+        ~f:(run_sequential ~dir:rtl_dir ~kind:"sequential · yosys equiv_induct")
+    + List.count
+        behavioral
+        ~f:
+          (run_sequential
+             ~dir:spec_dir
+             ~kind:"sequential · yosys equiv_induct · behavioural spec")
   in
-  let total = List.length combinational + List.length sequential in
+  let total =
+    List.length combinational + List.length sequential + List.length behavioral
+  in
   if fails > 0
   then (
     Stdio.printf "\n%d of %d formal check(s) FAILED\n" fails total;

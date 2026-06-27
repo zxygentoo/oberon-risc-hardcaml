@@ -40,6 +40,27 @@ Requirement: the *port and register* names must match the reference's, so `equiv
 the state. Hence the sequential units name their registers after the RTL (e.g. the Multiplier's
 `S`/`P`), and the driver builds the circuit with ports named to match the `.v`.
 
+### Behavioural spec — the register file (`registers_spec.v`)
+
+```
+ours: Risc5.Registers (one 16x32 array) ─emit→ gate.v ─┐
+                                                       ├─ memory → equiv_make → equiv_induct ✓
+registers_spec.v (behavioural: 16x32, 3R/1W) ──────────┘
+```
+
+The one unit proven **not** against its Wirth original. `Registers.v` builds the triple-port
+file from 64 *duplicated, bit-sliced* `RAM16X1D` distributed-RAM primitives — a synthesis idiom
+for getting a 3rd async read port out of 2-read-port LUT RAM. Its bit-sliced + duplicated state
+(1024 bits) is structurally incongruent with our single 16×32 array (512 bits): `equiv_make` has
+no flip-flops to pair, and a memory miter isn't inductive on outputs alone (an unread location
+can differ in an unreachable state — empirically only a *shallow bounded* check is tractable
+there). This is the canonical §2/§3 "structure is not the spec" case, so we prove our `Registers`
+against the behavioural **contract** instead (`registers_spec.v`: 16×32, three async reads, one
+sync write). Both sides are a single array, so the shared sequential script's `memory` pass lowers
+them to flip-flops that pair by name and `equiv_induct` closes (unbounded). That Wirth's
+`RAM16X1D` duplication implements the same contract is *his* synthesis concern (Vivado's
+distributed-RAM inference), not ours.
+
 ## Running
 
 Opt-in (like the cosim) — needs **yosys** on `PATH` (both modes) and **z3** (combinational
@@ -62,8 +83,12 @@ In `test_formal.ml`:
 - **Sequential**: name the unit's registers after the RTL in `lib/`, then add a row to
   `sequential` — a thunk building the circuit with `Circuit.create_exn` and ports named to match
   the `.v` (and a module name *distinct* from the reference, since yosys reads both).
+- **Behavioural spec** (a unit whose RTL is a synthesis idiom, not behaviour — so far only the
+  register file): add a checked-in `*_spec.v` here, a thunk, and a row to `behavioral` (reference
+  dir is `spec_dir = test/formal`, not the fetched `_po/`). Same `equiv_induct` path.
 
-Every datapath unit with a standalone `.v` is now proven — both shifters (combinational, z3) and
-all five sequential units (MUL/DIV + the three FP units), each naming its registers to match the
-reference `.v`. The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred to the in-situ
-core proof, alongside the full `RISC5.v` core.
+Every datapath unit is now proven: both shifters (combinational, z3) and all five iterative units
+(MUL/DIV + the three FP units) against their standalone `.v`, plus the register file against its
+behavioural `registers_spec.v`. The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred
+to the in-situ core proof, alongside the full `RISC5.v` core — which can now black-box the register
+file on this proven behavioural contract.

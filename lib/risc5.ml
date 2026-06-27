@@ -7,6 +7,7 @@
 
 module Left_shifter = Left_shifter
 module Right_shifter = Right_shifter
+module Registers = Registers
 module Multiplier = Multiplier
 module Divider = Divider
 module Fp_adder = Fp_adder

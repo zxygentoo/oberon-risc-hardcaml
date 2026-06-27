@@ -29,6 +29,10 @@ let check ~work_dir ~verilog ~top_module ~ours =
          [ "read_verilog " ^ verilog
          ; "read_verilog " ^ ours_v
          ; "proc"
+           (* lower any [$mem] to flip-flops so [equiv_make] can pair the memory state by
+              name (needed for the register-file behavioural proof; a no-op for the
+              memory-less iterative units). *)
+         ; "memory"
          ; "opt"
          ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
          ; "hierarchy -top equiv"

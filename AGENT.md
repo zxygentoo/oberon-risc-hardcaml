@@ -202,7 +202,7 @@ Vivado-specific layer.
 | **6a** ✅ | **Remaining peripherals**, each a faithful port: UART (`RS232R`/`RS232T`), PS/2 keyboard (`PS2`), PS/2 mouse (`MousePM`), video controller (`VID`, framebuffer DMA) | per-module **co-located `ppx_expect`/`qcheck` + Verilator RTL co-sim** vs the `.v` (`test/cosim/`) — the proven Phase 1–5 stack. (`hardcaml_step_testbench` + `event_driven_sim` were revisited at the mouse and **rejected**: its device model is a single sequential task, so the coroutine gave no benefit while running ~5× slower.) Closed with the **cosim-harness dedup** — a shared `run_serial_cosim` across SPI/RS232x/PS2 (+ the rename to `cosim.h`). VID is two-clock (`By_input_clocks`, the DCM→pclk a Phase-7 input); the mouse splits its open-drain `inout` into `*_oe` outputs + resolved inputs |
 | **6b** ✅ | **SoC top** — the full `RISC5Top` MMIO map (UART 2/3, mouse + kbd 6/7, GPIO 8/9, LEDs + switches 1) + the **video DMA / `stallX`** path; framebuffer out | **visual golden** — boot past the handoff to the idle Oberon desktop and assert the framebuffer is byte-identical to the oracle (hash `0xb9bdbf56ba51298d`, 18607 px; `dune build @visual_golden`). It surfaced a real **core** bug the single-instruction fuzzer structurally missed: ADD/SUB set the flags from `op` alone, lacking `RISC5.v`'s `~p`, so a *stalled* conditional branch whose op-field is 8/9 clobbered C → a spurious trap ~17.3 M cycles in. Caught + root-caused by a new **boot-stream RTL co-sim** (capture the core's per-cycle I/O over the boot, replay through `RISC5.v` under Verilator, find the first divergence — `dune build @core_cosim`, the core's first *cycle-level* RTL check before Phase 8). Fixed (one `~p`) + guarded in the fast suite (the ALU qcheck now drives `p`; the lockstep branch-gen now reaches op-field 8/9). The boot-handoff checkpoint extension over the new region stays a later option |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
-| **8** *(stretch)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v` — every standalone-`.v` datapath unit. The ALU (inline, no standalone `.v`) + full core go in-situ when `RISC5.v` is imported | z3 `Unsat` / yosys all-`$equiv`-proven |
+| **8** *(stretch)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v`, plus the **register file** proven ≡ a behavioural spec (`registers_spec.v` — `Registers.v`'s duplicated bit-sliced `RAM16X1D` is a synthesis idiom with incongruent state, so we prove the 16×32/3R/1W *contract*; §2/§3). Every datapath unit proven. The ALU (inline, no standalone `.v`) + full core go in-situ when `RISC5.v` is imported (which can black-box the regfile on this contract) | z3 `Unsat` / yosys all-`$equiv`-proven |
 | **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
@@ -267,10 +267,19 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
    *emit* our Verilog (`Rtl`) and prove equivalence inside yosys (`equiv_make` pairs flip-flops by
    name → `equiv_induct`, *unbounded* temporal induction — all states, not a bounded trace); needs
    only yosys, but the *register* names must match the RTL too (the Multiplier names its `S`/`P`).
-   Multiplier, Divider and all three FP units proven ≡ their `.v` — every standalone-`.v` unit. The ALU has **no** standalone
+   Multiplier, Divider and all three FP units proven ≡ their `.v`. The **register file** is the one
+   unit proven against a *behavioural spec* (`test/formal/registers_spec.v`: 16×32, 3 async reads, 1
+   sync write) instead of Wirth's `Registers.v` — whose 64 duplicated, bit-sliced `RAM16X1D`
+   primitives are a synthesis idiom whose state (1024 bits, vs our array's 512) is structurally
+   incongruent: nothing for `equiv_make` to pair, and a memory miter isn't inductive on outputs alone
+   (only a shallow *bounded* check is tractable). Both sides are one array, so the sequential script's
+   `memory` pass lowers them to flip-flops that pair by name and `equiv_induct` closes; that `RAM16X1D`
+   meets the same contract is Vivado's distributed-RAM inference, not ours (§2/§3 — the regfile is the
+   canonical "structure is not the spec"). Every datapath unit now proven. The ALU has **no** standalone
    `.v` (`aluRes` inline in `RISC5.v`; our `Alu` is a refactored grouping — folds `C0`→`c1`, zeroes
    the other units' op slots — not an RTL slice), so it's deferred to the in-situ proof when the whole
-   `RISC5.v` is imported (with the core).
+   `RISC5.v` is imported (with the core) — which can now black-box the register file on this proven
+   behavioural contract.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit

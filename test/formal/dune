@@ -25,6 +25,11 @@
 
 (rule
  (alias formal)
- (deps run.sh ../cosim/fetch-rtl.sh ../cosim/rtl-sources.txt test_formal.exe)
+ (deps
+  run.sh
+  ../cosim/fetch-rtl.sh
+  ../cosim/rtl-sources.txt
+  registers_spec.v
+  test_formal.exe)
  (action
   (run bash run.sh)))
