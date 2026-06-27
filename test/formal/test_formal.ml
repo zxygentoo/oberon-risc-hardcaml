@@ -9,10 +9,17 @@ let left_shifter () =
   C.create_exn ~name:"LeftShifter" Risc5.Left_shifter.create
 ;;
 
+let right_shifter () =
+  let module C = Circuit.With_interface (Risc5.Right_shifter.I) (Risc5.Right_shifter.O) in
+  C.create_exn ~name:"RightShifter" Risc5.Right_shifter.create
+;;
+
 (* Each case: a label, a thunk building our circuit, the reference [.v] basename, and the
-   Verilog top module name. Adding a combinational unit (RightShifter, ALU) is a new row. *)
+   Verilog top module name. Adding a combinational unit is a new row. *)
 let cases : (string * (unit -> Circuit.t) * string * string) list =
-  [ "left_shifter", left_shifter, "LeftShifter.v", "LeftShifter" ]
+  [ "left_shifter", left_shifter, "LeftShifter.v", "LeftShifter"
+  ; "right_shifter", right_shifter, "RightShifter.v", "RightShifter"
+  ]
 ;;
 
 let () =
