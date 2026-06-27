@@ -175,6 +175,35 @@ let behavioral : (string * (unit -> Circuit.t) * string * string) list =
   [ "registers", registers, "registers_spec.v", "Registers_spec" ]
 ;;
 
+(* The in-situ core-glue proof (its own runner — one entry, distinct yosys flow). Proves
+   our whole core's glue (decode, the inline ALU, control, flags, the 13 state registers)
+   ≡ RISC5.v with the 8 submodules black-boxed and assumed-equivalent (each proven above /
+   separately). See [Core_blackbox] (the gate) and [Yosys_equiv.check_core] (the flow:
+   equiv_make merges the units, cutpoint -blackbox cuts their outputs, equiv_induct closes
+   the glue). *)
+let run_core () =
+  Stdio.printf
+    "=== core : ours glue  vs  RISC5.v   [in-situ · 8 units black-boxed · yosys \
+     equiv_induct] ===\n\
+     %!";
+  match
+    Yosys_equiv.check_core
+      ~work_dir
+      ~verilog:(rtl_dir ^ "/RISC5.v")
+      ~stubs:(spec_dir ^ "/core_stubs.v")
+      ~renames:Core_blackbox.register_renames
+      ~top_module:"RISC5"
+      ~ours:(Core_blackbox.circuit ())
+  with
+  | Yosys_equiv.Equivalent ->
+    Stdio.printf
+      "  EQUIVALENT  (glue proven — all $equiv closed; units assumed-equiv)\n%!";
+    false
+  | Yosys_equiv.Not_equivalent ->
+    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
+    true
+;;
+
 let () =
   let fails =
     List.count combinational ~f:run_combinational
@@ -187,9 +216,10 @@ let () =
           (run_sequential
              ~dir:spec_dir
              ~kind:"sequential · yosys equiv_induct · behavioural spec")
+    + Bool.to_int (run_core ())
   in
   let total =
-    List.length combinational + List.length sequential + List.length behavioral
+    List.length combinational + List.length sequential + List.length behavioral + 1
   in
   if fails > 0
   then (

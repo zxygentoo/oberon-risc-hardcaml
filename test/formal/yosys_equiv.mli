@@ -30,3 +30,19 @@ val check
   -> top_module:string
   -> ours:Circuit.t
   -> result
+
+(** [check_core] is the in-situ glue variant for the whole core (AGENT.md §6, README): it
+    proves [ours] equivalent to [top_module] of [verilog] with the 8 submodules
+    black-boxed. [stubs] is the port-only black-box module file both designs reference;
+    [renames] maps our register names to the reference's (applied to [ours] so
+    [equiv_make] pairs the flip-flops). The flow merges the matched black-box cells
+    (checking their inputs) then [cutpoint -blackbox] turns their outputs into shared free
+    signals — assume-guarantee, sound because each submodule is proven separately. *)
+val check_core
+  :  work_dir:string
+  -> verilog:string
+  -> stubs:string
+  -> renames:(string * string) list
+  -> top_module:string
+  -> ours:Circuit.t
+  -> result

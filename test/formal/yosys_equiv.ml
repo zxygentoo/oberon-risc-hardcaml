@@ -48,3 +48,56 @@ let check ~work_dir ~verilog ~top_module ~ours =
   | 0 -> Equivalent
   | _ -> Not_equivalent
 ;;
+
+let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
+  ignore
+    (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))
+     : int);
+  let gate = Circuit.name ours in
+  let ours_v = Printf.sprintf "%s/%s.v" work_dir gate in
+  emit_verilog ours ours_v;
+  (* In-situ glue proof (AGENT.md §6, README): the whole core minus its 8 submodules,
+     which are black boxes on both sides ([stubs]). equiv_make pairs the top flip-flops
+     (after we rename ours to RISC5.v's names) and MERGES the matched black-box cells —
+     checking their inputs via the [$equiv] on the named nets. [cutpoint -blackbox] then
+     replaces the merged units with shared free signals (the assume side: each unit is
+     proven separately), leaving a pure glue netlist that equiv_simple + equiv_induct
+     discharge. *)
+  let rename_block =
+    if List.is_empty renames
+    then []
+    else
+      (("cd " ^ gate)
+       :: List.map renames ~f:(fun (old, new_) -> Printf.sprintf "rename %s %s" old new_)
+      )
+      @ [ "cd .." ]
+  in
+  let script = Printf.sprintf "%s/%s_core.ys" work_dir top_module in
+  Stdio.Out_channel.write_all
+    script
+    ~data:
+      (String.concat
+         ~sep:"\n"
+         ([ "read_verilog " ^ stubs
+          ; "read_verilog " ^ verilog
+          ; "read_verilog " ^ ours_v
+          ; "hierarchy -check"
+          ; "proc"
+          ]
+          @ rename_block
+          @ [ "opt"
+            ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
+            ; "hierarchy -top equiv"
+            ; "cutpoint -blackbox"
+            ; "opt -full"
+            ; "equiv_simple"
+            ; "equiv_induct"
+            ; "equiv_status -assert"
+            ; ""
+            ]));
+  match
+    Stdlib.Sys.command (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script))
+  with
+  | 0 -> Equivalent
+  | _ -> Not_equivalent
+;;

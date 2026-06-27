@@ -61,6 +61,36 @@ them to flip-flops that pair by name and `equiv_induct` closes (unbounded). That
 `RAM16X1D` duplication implements the same contract is *his* synthesis concern (Vivado's
 distributed-RAM inference), not ours.
 
+### In-situ core glue — `core_blackbox.ml` + `Yosys_equiv.check_core` (assume-guarantee)
+
+```
+RISC5.v (gold) ──────┐  8 units = black boxes on both sides (core_stubs.v)
+                     ├─ equiv_make (merge units, check inputs) → cutpoint -blackbox
+Risc5_core (gate) ───┘     → equiv_simple + equiv_induct → all $equiv proven
+  via create_with_units (Core_blackbox.units = Instantiation stubs)
+```
+
+The whole core proven against `RISC5.v` — **except** its 8 submodules, which are black-boxed
+and *assumed* equivalent (sound: each is proven separately above — 7 vs their `.v`, the
+register file vs its contract). What's left, and what this proves, is the **glue**: decode,
+the **inline ALU (`aluRes` — no standalone `.v`, finally proven in-situ)**, the control unit
+(`pcmux`/`cond`), the flag logic, and the 13 state registers (`PC`/`IR`/flags/`H`/`stallL1`/
+interrupt state).
+
+The seam is `Risc5_core.create_with_units`: `Core_blackbox` passes `Instantiation` stubs whose
+module / instance / port / **output-wire** names match `RISC5.v` (so `equiv_make` pairs them).
+The flow (`check_core`): rename our registers to the RTL's → `equiv_make` (pairs the top
+flip-flops and *merges* the matched black-box cells, checking their **inputs** via the `$equiv`
+on the named nets) → **`cutpoint -blackbox`** (replaces the merged units with shared free
+signals — the *assume* side) → `equiv_simple` + `equiv_induct` on the resulting pure-glue
+netlist. This is the standard assume-guarantee decomposition; it's sound here because no
+combinational path crosses a submodule boundary (every unit sits behind a clocked or
+non-looping interface), so the core genuinely decomposes into glue + proven leaves.
+
+*Teeth (verified):* mutating one bit of the reset vector in the gate leaves exactly 2 `$equiv`
+unproven — `PC[0]` and `adr[2]` (= `PC<<2`) — so the proof catches glue bugs and localizes
+them; it is not vacuous.
+
 ## Running
 
 Opt-in (like the cosim) — needs **yosys** on `PATH` (both modes) and **z3** (combinational
@@ -87,8 +117,12 @@ In `test_formal.ml`:
   register file): add a checked-in `*_spec.v` here, a thunk, and a row to `behavioral` (reference
   dir is `spec_dir = test/formal`, not the fetched `_po/`). Same `equiv_induct` path.
 
-Every datapath unit is now proven: both shifters (combinational, z3) and all five iterative units
-(MUL/DIV + the three FP units) against their standalone `.v`, plus the register file against its
-behavioural `registers_spec.v`. The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred
-to the in-situ core proof, alongside the full `RISC5.v` core — which can now black-box the register
-file on this proven behavioural contract.
+- **In-situ core** (whole core, submodules black-boxed): see `core_blackbox.ml` (the gate, via
+  `Risc5_core.create_with_units`), `core_stubs.v` (the stubs), and `run_core` /
+  `Yosys_equiv.check_core` (the `cutpoint`-based flow). One-off, so it's its own runner, not a list.
+
+The whole layer is now closed: both shifters (combinational, z3) and all five iterative units
+(MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
+behavioural `registers_spec.v`; and the **whole core glue** — including the **in-situ ALU**
+(`aluRes`, which has no standalone `.v`) — against `RISC5.v` with the 8 submodules black-boxed
+and assumed-equivalent on the leaf proofs above.

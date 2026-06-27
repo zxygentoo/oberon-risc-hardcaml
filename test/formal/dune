@@ -9,7 +9,7 @@
 
 (executable
  (name test_formal)
- (modules test_formal formal_equiv yosys_equiv)
+ (modules test_formal formal_equiv yosys_equiv core_blackbox)
  (libraries
   risc5
   hardcaml
@@ -30,6 +30,7 @@
   ../cosim/fetch-rtl.sh
   ../cosim/rtl-sources.txt
   registers_spec.v
+  core_stubs.v
   test_formal.exe)
  (action
   (run bash run.sh)))
