@@ -51,5 +51,33 @@ module O : sig
 end
 
 (** [create] builds the CPU core: the state registers updated in one synchronous block,
-    and the combinational decode / datapath / control logic that feeds them. *)
+    and the combinational decode / datapath / control logic that feeds them. The real
+    synthesizable core, with the submodules ([Units.default]) inlined. *)
 val create : Signal.t I.t -> Signal.t O.t
+
+(** The eight submodule constructors the core wires up — the modules [RISC5.v]
+    instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven
+    as part of the glue). Made injectable so the Phase-8 in-situ core proof (test/formal)
+    can swap the real units for black-box stubs and prove the glue — decode, the inline
+    ALU, control, flags, the 13 state registers — with the units assumed-equivalent (each
+    proven separately, §6). *)
+module Units : sig
+  type t =
+    { left_shifter : Signal.t Left_shifter.I.t -> Signal.t Left_shifter.O.t
+    ; right_shifter : Signal.t Right_shifter.I.t -> Signal.t Right_shifter.O.t
+    ; multiplier : Signal.t Multiplier.I.t -> Signal.t Multiplier.O.t
+    ; divider : Signal.t Divider.I.t -> Signal.t Divider.O.t
+    ; fp_adder : Signal.t Fp_adder.I.t -> Signal.t Fp_adder.O.t
+    ; fp_multiplier : Signal.t Fp_multiplier.I.t -> Signal.t Fp_multiplier.O.t
+    ; fp_divider : Signal.t Fp_divider.I.t -> Signal.t Fp_divider.O.t
+    ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
+    }
+
+  (** the real synthesizable units (each module's own [create]) — what [create] uses. *)
+  val default : t
+end
+
+(** [create_with_units ~units] is [create] parameterized over the submodules — for the
+    formal black-box assembly, which passes [Instantiation] stubs. The synthesizable core
+    is [create i = create_with_units ~units:Units.default i]. *)
+val create_with_units : units:Units.t -> Signal.t I.t -> Signal.t O.t

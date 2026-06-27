@@ -111,6 +111,39 @@ let decode ir : decoded =
   }
 ;;
 
+(* The eight submodule constructors, made injectable so the Phase-8 in-situ core proof
+   (test/formal) can swap the real units for black-box Instantiation stubs and prove
+   the *glue* (decode, the inline ALU, control, flags, the 13 state registers) with the
+   units assumed-equivalent — sound because each is proven separately (§6). These are
+   exactly the modules RISC5.v instantiates (the ALU's [aluRes] is inline there, so it
+   stays inline here too — and gets proven as part of the glue). [create] uses
+   [Units.default] (the real units, inlined as before), so sim / lockstep / boot are
+   byte-for-byte unchanged. *)
+module Units = struct
+  type t =
+    { left_shifter : Signal.t Left_shifter.I.t -> Signal.t Left_shifter.O.t
+    ; right_shifter : Signal.t Right_shifter.I.t -> Signal.t Right_shifter.O.t
+    ; multiplier : Signal.t Multiplier.I.t -> Signal.t Multiplier.O.t
+    ; divider : Signal.t Divider.I.t -> Signal.t Divider.O.t
+    ; fp_adder : Signal.t Fp_adder.I.t -> Signal.t Fp_adder.O.t
+    ; fp_multiplier : Signal.t Fp_multiplier.I.t -> Signal.t Fp_multiplier.O.t
+    ; fp_divider : Signal.t Fp_divider.I.t -> Signal.t Fp_divider.O.t
+    ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
+    }
+
+  let default =
+    { left_shifter = Left_shifter.create
+    ; right_shifter = Right_shifter.create
+    ; multiplier = Multiplier.create
+    ; divider = Divider.create
+    ; fp_adder = Fp_adder.create
+    ; fp_multiplier = Fp_multiplier.create
+    ; fp_divider = Fp_divider.create
+    ; registers = Registers.create
+    }
+  ;;
+end
+
 (* [execute]'s results (unique field names — Hardcaml interfaces collide on
    [res]/[stall]/…, and warning 42 is an error here): the selected datapath result, the
    ALU's add/sub carry/overflow (for C/OV), the MUL high word and DIV remainder (for H),
@@ -130,9 +163,11 @@ type execute_out =
    (operand 2 is C0), and FSB reuses the adder with operand 2's sign bit flipped. Each
    iterative unit asserts stall until its counter ends. The current flags N/Z/C/OV feed
    the ALU (the add/sub carry-in and the MOV' flags read). *)
-let execute ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_out =
-  let lsh = Left_shifter.create { Left_shifter.I.x = b; sc = shamt } in
-  let rsh = Right_shifter.create { Right_shifter.I.x = b; sc = shamt; md = lsb dec.op } in
+let execute ~(units : Units.t) ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov
+  : execute_out
+  =
+  let lsh = units.left_shifter { Left_shifter.I.x = b; sc = shamt } in
+  let rsh = units.right_shifter { Right_shifter.I.x = b; sc = shamt; md = lsb dec.op } in
   let alu =
     Alu.create
       { Alu.I.p = dec.p
@@ -151,13 +186,13 @@ let execute ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_
       }
   in
   let mul =
-    Multiplier.create { Multiplier.I.clock; run = dec.mul; u = ~:(dec.u); x = b; y = c1 }
+    units.multiplier { Multiplier.I.clock; run = dec.mul; u = ~:(dec.u); x = b; y = c1 }
   in
   let div =
-    Divider.create { Divider.I.clock; run = dec.div; u = ~:(dec.u); x = b; y = c1 }
+    units.divider { Divider.I.clock; run = dec.div; u = ~:(dec.u); x = b; y = c1 }
   in
   let fpa =
-    Fp_adder.create
+    units.fp_adder
       { Fp_adder.I.clock
       ; run = dec.fad |: dec.fsb
       ; u = dec.u
@@ -166,10 +201,8 @@ let execute ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov : execute_
       ; y = (dec.fsb ^: msb c0) @: select c0 ~high:30 ~low:0
       }
   in
-  let fpm =
-    Fp_multiplier.create { Fp_multiplier.I.clock; run = dec.fml; x = b; y = c0 }
-  in
-  let fpd = Fp_divider.create { Fp_divider.I.clock; run = dec.fdv; x = b; y = c0 } in
+  let fpm = units.fp_multiplier { Fp_multiplier.I.clock; run = dec.fml; x = b; y = c0 } in
+  let fpd = units.fp_divider { Fp_divider.I.clock; run = dec.fdv; x = b; y = c0 } in
   let res =
     mux
       dec.op
@@ -255,7 +288,7 @@ let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
   }
 ;;
 
-let create (i : _ I.t) : _ O.t =
+let create_with_units ~(units : Units.t) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* ── State registers ── the loop's carried state: PC, IR, the stallL1 flop, the
      condition flags N/Z/C/OV, the aux register H (MUL high word / DIV remainder), and the
@@ -280,13 +313,13 @@ let create (i : _ I.t) : _ O.t =
   let spc = Always.Variable.reg spec ~width:26 in
   let pc_v = pc.value -- "pc" in
   let ir_v = ir.value -- "ir" in
-  let stall_l1_v = stall_l1.value in
+  let stall_l1_v = stall_l1.value -- "stall_l1" in
   let n_v = n.value -- "n" in
   let z_v = z.value -- "z" in
   let c_v = c.value -- "c" in
   let ov_v = ov.value -- "ov" in
   let h_v = h.value -- "h" in
-  let irq1_v = irq1.value in
+  let irq1_v = irq1.value -- "irq1" in
   let int_enb_v = int_enb.value -- "int_enb" in
   let int_pnd_v = int_pnd.value -- "int_pnd" in
   let int_md_v = int_md.value -- "int_md" in
@@ -303,7 +336,7 @@ let create (i : _ I.t) : _ O.t =
   let regmux_w = wire 32 in
   let regwr_w = wire 1 in
   let regs =
-    Registers.create
+    units.registers
       { Registers.I.clock = i.clock
       ; wr = regwr_w
       ; rno0 = ira0
@@ -320,7 +353,19 @@ let create (i : _ I.t) : _ O.t =
   (* ── Execute ── run B/C1/C0 through the shifters, ALU and the five iterative units;
      [op] picks the result. See [execute] above. *)
   let exe =
-    execute ~clock:i.clock ~dec ~b ~c1 ~c0 ~shamt ~h:h_v ~n:n_v ~z:z_v ~c:c_v ~ov:ov_v
+    execute
+      ~units
+      ~clock:i.clock
+      ~dec
+      ~b
+      ~c1
+      ~c0
+      ~shamt
+      ~h:h_v
+      ~n:n_v
+      ~z:z_v
+      ~c:c_v
+      ~ov:ov_v
   in
   (* ── Memory access ── data address, byte-lane load select, byte store replicate, and
      the rd/wr/ben strobes. See [memory] above. *)
@@ -422,6 +467,9 @@ let create (i : _ I.t) : _ O.t =
   let adr = mux2 mem.stall_l0 mem.data_adr (pcmux @: zero 2) in
   { O.adr; rd = mem.read; wr = mem.write; ben = mem.byte_en; outbus = mem.store_data }
 ;;
+
+(* The synthesizable core: the real units, inlined exactly as before. *)
+let create i = create_with_units ~units:Units.default i
 
 (* ── Tests (co-located; AGENT.md §6) ── behaviour waveforms; the architectural lockstep
    against the oracle lives in test/. First the fetch/stall spine: reset loads StartAdr,
