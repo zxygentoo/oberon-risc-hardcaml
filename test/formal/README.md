@@ -64,4 +64,5 @@ In `test_formal.ml`:
   the `.v` (and a module name *distinct* from the reference, since yosys reads both).
 
 The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred to the in-situ core proof;
-DIV/FP follow the Multiplier's sequential pattern.
+the FP units follow the Multiplier's sequential pattern (the Divider already does — it names its
+`S`/`RQ` to match `Divider.v`).

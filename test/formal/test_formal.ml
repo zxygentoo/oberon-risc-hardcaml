@@ -34,6 +34,22 @@ let multiplier () =
   Circuit.create_exn ~name:"multiplier_ours" [ output "stall" stall; output "z" z ]
 ;;
 
+let divider () =
+  let open Signal in
+  let i =
+    { Risc5.Divider.I.clock = input "clk" 1
+    ; run = input "run" 1
+    ; u = input "u" 1
+    ; x = input "x" 32
+    ; y = input "y" 32
+    }
+  in
+  let { Risc5.Divider.O.stall; quot; rem } = Risc5.Divider.create i in
+  Circuit.create_exn
+    ~name:"divider_ours"
+    [ output "stall" stall; output "quot" quot; output "rem" rem ]
+;;
+
 (* ── Runner ── *)
 
 let work_dir =
@@ -78,7 +94,9 @@ let combinational : (string * (unit -> Circuit.t) * string * string) list =
 ;;
 
 let sequential : (string * (unit -> Circuit.t) * string * string) list =
-  [ "multiplier", multiplier, "Multiplier.v", "Multiplier" ]
+  [ "multiplier", multiplier, "Multiplier.v", "Multiplier"
+  ; "divider", divider, "Divider.v", "Divider"
+  ]
 ;;
 
 let () =
