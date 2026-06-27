@@ -63,6 +63,7 @@ In `test_formal.ml`:
   `sequential` — a thunk building the circuit with `Circuit.create_exn` and ports named to match
   the `.v` (and a module name *distinct* from the reference, since yosys reads both).
 
-The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred to the in-situ core proof;
-the remaining FP units (`FPMultiplier`/`FPDivider`) follow the Multiplier's sequential pattern, as
-the Divider and FPAdder already do — each names its registers to match the reference `.v`.
+Every datapath unit with a standalone `.v` is now proven — both shifters (combinational, z3) and
+all five sequential units (MUL/DIV + the three FP units), each naming its registers to match the
+reference `.v`. The ALU has no standalone `.v` (inline in `RISC5.v`) and is deferred to the in-situ
+core proof, alongside the full `RISC5.v` core.
