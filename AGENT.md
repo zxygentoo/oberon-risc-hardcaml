@@ -202,7 +202,7 @@ Vivado-specific layer.
 | **6a** ✅ | **Remaining peripherals**, each a faithful port: UART (`RS232R`/`RS232T`), PS/2 keyboard (`PS2`), PS/2 mouse (`MousePM`), video controller (`VID`, framebuffer DMA) | per-module **co-located `ppx_expect`/`qcheck` + Verilator RTL co-sim** vs the `.v` (`test/cosim/`) — the proven Phase 1–5 stack. (`hardcaml_step_testbench` + `event_driven_sim` were revisited at the mouse and **rejected**: its device model is a single sequential task, so the coroutine gave no benefit while running ~5× slower.) Closed with the **cosim-harness dedup** — a shared `run_serial_cosim` across SPI/RS232x/PS2 (+ the rename to `cosim.h`). VID is two-clock (`By_input_clocks`, the DCM→pclk a Phase-7 input); the mouse splits its open-drain `inout` into `*_oe` outputs + resolved inputs |
 | **6b** ✅ | **SoC top** — the full `RISC5Top` MMIO map (UART 2/3, mouse + kbd 6/7, GPIO 8/9, LEDs + switches 1) + the **video DMA / `stallX`** path; framebuffer out | **visual golden** — boot past the handoff to the idle Oberon desktop and assert the framebuffer is byte-identical to the oracle (hash `0xb9bdbf56ba51298d`, 18607 px; `dune build @visual_golden`). It surfaced a real **core** bug the single-instruction fuzzer structurally missed: ADD/SUB set the flags from `op` alone, lacking `RISC5.v`'s `~p`, so a *stalled* conditional branch whose op-field is 8/9 clobbered C → a spurious trap ~17.3 M cycles in. Caught + root-caused by a new **boot-stream RTL co-sim** (capture the core's per-cycle I/O over the boot, replay through `RISC5.v` under Verilator, find the first divergence — `dune build @core_cosim`, the core's first *cycle-level* RTL check before Phase 8). Fixed (one `~p`) + guarded in the fast suite (the ALU qcheck now drives `p`; the lockstep branch-gen now reaches op-field 8/9). The boot-handoff checkpoint extension over the new region stays a later option |
 | **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
-| **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
+| **8** *(stretch)* | `hardcaml_of_verilog` import (yosys) + `hardcaml_verify` SAT equivalence — `test/formal` / `@formal`. **Combinational LEC working** (`left_shifter` ≡ `LeftShifter.v` proven; other shifters + ALU next); sequential `RISC5.v` core deferred | z3 `Unsat` ⇒ equivalent |
 | **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
@@ -258,8 +258,13 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
    multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). **Opt-in** — the ~22 s boot is too slow for the default
    `dune runtest` (like the RTL co-sim), so run it with `dune build @boot_checkpoint`. The full
    boot past the handoff + framebuffer is the Phase-6 visual golden.
-6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
-   `hardcaml_verify` (installed); the exhaustive form of layer 3.
+6. **Formal** — *prove* (not sample) our port equivalent to the reference `.v`: `hardcaml_of_verilog`
+   imports the `.v` to a `Hardcaml.Circuit.t` (via yosys) and `hardcaml_verify`'s `Sec` SAT-checks it
+   against ours (via z3) — the exhaustive form of layer 3. Lives in `test/formal` (`@formal`, opt-in
+   like the co-sim — needs yosys + z3). `Sec` is **combinational** ("stateful logic must match between
+   the two circuits"), so it's a *complete* proof for the datapath blocks (`left_shifter` ≡
+   `LeftShifter.v` proven; the other shifters + ALU logic/adder next) and a deferred problem for the
+   stateful units (MUL/DIV/FP, the core — they need register-mapping / k-induction).
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
@@ -392,7 +397,8 @@ oberon-risc-hardcaml/
                             real modules — shifters, ALU, CPU core… — from Phase 1)
   test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
                             `test_boot_checkpoint` = Phase-5 boot checkpoint
-                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
+                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
+                            formal/ = logic-equivalence proofs (`@formal`, Phase 8)
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
@@ -429,9 +435,15 @@ opam pin add jsonaf.v0.18~preview.130.91+190 \
 opam install hardcaml_of_verilog hardcaml_verify --yes
 ```
 
-plus **`yosys`** on `PATH` at runtime (`Hardcaml.Tools_config.yosys`). (Already fixed upstream in
-`130.100+614`; the pin is only needed while we track `130.91+190` — bump the version/commit when the
-preview rolls forward and the upstream fix lands.) RTL fidelity otherwise uses raw **Verilator**
+plus **`yosys`** (the Verilog import) and **`z3`** (`hardcaml_verify`'s SAT backend) on `PATH` at
+runtime — the **`test/formal`** logic-equivalence harness (`@formal`, §6) drives both. (jsonaf is
+already fixed upstream in `130.100+614`; the pin is only needed while we track `130.91+190` — bump
+the version/commit when the preview rolls forward and the upstream fix lands.) One yosys-version
+shim: yosys 0.65 emits cell parameters as binary strings, which the importer's techlib rejects, so
+`test/formal` drives yosys itself with `write_json -compat-int` (the library's built-in `Synthesize`
+script omits the flag, with no public knob to add it) and feeds the JSON back into its public
+`Yosys_netlist.of_string → Netlist → Verilog_circuit` path — no fork of `hardcaml_of_verilog`, and
+the patched `jsonaf` still does the parse. RTL fidelity otherwise uses raw **Verilator**
 out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
 Phase-5 boot speed and **both rejected**: `hardcaml_verilator` (Verilator-backed `Cyclesim.t`)
 runs on the system Verilator 5.048 but only for **I/O-only** sims — the `__Vscope_*`→`__Vscopep_*`
@@ -482,10 +494,11 @@ full `lookup_*` introspection the harness needs.
   `hardcaml_waveterm`. (The standalone Phase-0 `test_scaffold` smoke that originally certified this
   was retired once those real tests subsumed it.)
 - **Running tests.** `dune runtest` = the fast always-on suite (FP replays/fuzz, single-instruction
-  CPU lockstep, the lib's co-located inline tests) — a few seconds. Two heavyweight checks are
+  CPU lockstep, the lib's co-located inline tests) — a few seconds. Three heavyweight checks are
   **opt-in** (built by `@check` so they can't rot, but kept out of `dune runtest`): `dune build
-  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s), and
-  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator). `dune build @check` is the
+  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s),
+  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator), and `dune build @formal` runs the
+  Phase-8 logic-equivalence proofs (needs yosys + z3). `dune build @check` is the
   type-check/pre-commit gate.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** — the ox
   `ocamlformat` reports a git-hash version, so a normal pin (e.g. the emulator's `0.29.0`)

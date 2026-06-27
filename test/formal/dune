@@ -1,0 +1,23 @@
+; Formal logic-equivalence (AGENT.md §6, the "Formal" layer): prove our combinational
+; Hardcaml units compute the identical function as their reference Verilog, via
+; hardcaml_of_verilog (yosys import) + hardcaml_verify (Sec — a SAT equivalence check, z3).
+; The exhaustive counterpart to test/cosim (which samples the same comparison via Verilator).
+;
+; OPT-IN — needs yosys + z3 on PATH (like cosim needs verilator), so the proof runs via
+; run.sh, kept out of @runtest. The exe builds under @check so it can't rot; run the proof
+; with `dune build @formal` or `bash test/formal/run.sh`.
+
+(executable
+ (name test_formal)
+ (modules test_formal formal_equiv)
+ (libraries risc5 hardcaml hardcaml_verify hardcaml_of_verilog base stdio))
+
+; Uniform front door, mirroring @cosim / @boot_checkpoint: `dune build @formal` proves every
+; unit. The exe is a declared dep so dune pre-builds it — run.sh then skips its own `dune
+; build`, so the action never nests a dune invocation. Re-run with `dune build @formal --force`.
+
+(rule
+ (alias formal)
+ (deps run.sh ../cosim/fetch-rtl.sh ../cosim/rtl-sources.txt test_formal.exe)
+ (action
+  (run bash run.sh)))
