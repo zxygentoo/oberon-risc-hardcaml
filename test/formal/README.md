@@ -110,9 +110,13 @@ In `test_formal.ml`:
 - **Combinational** (standalone `.v`, no state): add a row to `combinational` — a thunk building
   the circuit via `Circuit.With_interface (Unit.I) (Unit.O)` (ports match the `.v`), plus the
   reference `.v` + top-module name.
-- **Sequential**: name the unit's registers after the RTL in `lib/`, then add a row to
-  `sequential` — a thunk building the circuit with `Circuit.create_exn` and ports named to match
-  the `.v` (and a module name *distinct* from the reference, since yosys reads both).
+- **Sequential**: ensure every register is *named* in `lib/` (so `equiv_make` can pair it — an
+  unnamed reg gets a generated name nothing can pair against), then add a row to `sequential` — a
+  thunk building the circuit with `Circuit.create_exn`, ports named to match the `.v` (module name
+  *distinct* from the reference, since yosys reads both), and a `renames` list mapping any lib reg
+  names that differ from the RTL's to the `.v`'s (applied in yosys, like the core's
+  `register_renames`; `[]` when they already match). Keep the lib's waveform/SoC-namespaced names
+  and rename here — e.g. `q0→Q0`, `spi_shreg→shreg`.
 - **Behavioural spec** (a unit whose RTL is a synthesis idiom, not behaviour — so far only the
   register file): add a checked-in `*_spec.v` here, a thunk, and a row to `behavioral` (reference
   dir is `spec_dir = test/formal`, not the fetched `_po/`). Same `equiv_induct` path.
@@ -125,23 +129,32 @@ The datapath + core layer is closed: both shifters (combinational, z3) and all f
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
 behavioural `registers_spec.v`; and the **whole core glue** — including the **in-situ ALU**
 (`aluRes`, which has no standalone `.v`) — against `RISC5.v` with the 8 submodules black-boxed
-and assumed-equivalent on the leaf proofs above.
+and assumed-equivalent on the leaf proofs above. And the **Tier-1 peripherals** (RS232R/T, SPI,
+PS2) are proven ≡ their `.v` by the same sequential recipe — the exhaustive upgrade of their
+Phase-6a cosim. **13 checks**, all proven.
 
-## Planned — peripheral modules (Tier 1/2)
+## Peripheral modules — Tier 1 done, Tier 2 planned
 
-Next goal: extend the formal layer to the faithful-`.v` **peripherals**. These are already
-Verilator-cosim'd against their `.v` (Phase 6a), so formal here is the *exhaustive* upgrade of a
-check that already passes — added rigor (rare corners, the bright line), not a new capability. The
-SoC top (`RISC5Top`) is **out of scope** — board-specific (our sim `Soc` ≠ `RISC5Top.OStation.v` by
-design: DCM/PROM/IOBUF/memory are Phase 7).
+The formal layer extended to the faithful-`.v` **peripherals**. These are already Verilator-cosim'd
+against their `.v` (Phase 6a), so formal here is the *exhaustive* upgrade of a check that already
+passes — added rigor (rare corners, the bright line), not a new capability. The SoC top
+(`RISC5Top`) is **out of scope** — board-specific (our sim `Soc` ≠ `RISC5Top.OStation.v` by design:
+DCM/PROM/IOBUF/memory are Phase 7).
 
-**Tier 1 — clean, same recipe (`Yosys_equiv.check`, a `sequential` row each):** single-clock FSMs
-with a direct standalone `.v`. Work per module = match the register names to the RTL (they carry
-some `--` names already, but for waveforms — verify/rename to the `.v`'s, as the core's `run_core`
-does via `register_renames`).
-- [ ] `RS232R` ≡ `RS232R.v`   [ ] `RS232T` ≡ `RS232T.v`   [ ] `SPI` ≡ `SPI.v`   [ ] `PS2` ≡ `PS2.v`
+**Tier 1 — done (`Yosys_equiv.check`, a `sequential` row each).** Single-clock FSMs with a direct
+standalone `.v`, closed by the standard `equiv_induct` recipe; each row carries the `renames` that
+pair our lib reg names to the RTL's (the lib keeps its waveform/SoC-namespaced names). Each proof
+mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells unproven):
+- [x] `RS232T` ≡ `RS232T.v` — names already match (`run`/`tick`/`bitcnt`/`shreg`), no renames.
+- [x] `RS232R` ≡ `RS232R.v` — `q0→Q0`, `q1→Q1` (the synchronizer FFs); `stat`/`bitcnt` newly named
+  in the lib. 30 cells.
+- [x] `SPI` ≡ `SPI.v` — `spi_shreg→shreg`. `rdy` is an `output reg`, so it pairs via the output
+  *port* even though Hardcaml emits the FF as `rdy_0` (the two-object reg/port split vs the RTL's
+  single `output reg`). 78 cells.
+- [x] `PS2` ≡ `PS2.v` — `q0→Q0`, `q1→Q1`; the 16×8 `fifo` lowers via the `memory` pass and pairs
+  by name (128 of the 160 cells), the same mechanism as the register-file proof.
 
-**Tier 2 — one wrinkle each:**
+**Tier 2 — planned, one wrinkle each:**
 - [ ] `Mouse` ≡ `MousePM.v` (module `MouseP`): `MousePM.v` has `inout msclk, msdat`; we split each
   into a `*_oe` drive-low output + the resolved input. Port interfaces differ ⇒ add a small Verilog
   shim that recombines our `oe`+in into the RTL's open-drain `inout` (wire-AND), then equiv the

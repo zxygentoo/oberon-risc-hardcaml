@@ -10,7 +10,20 @@ let emit_verilog circuit file =
   Stdio.Out_channel.write_all file ~data:(Rope.to_string rope)
 ;;
 
-let check ~work_dir ~verilog ~top_module ~ours =
+(* yosys [rename]s applied to our [gate] module so its register/net names match the
+   reference's, letting [equiv_make] pair the state. Empty ⇒ no block emitted (the names
+   already match, e.g. the iterative units and RS232T). Run before [equiv_make] (and
+   before [memory], so a renamed [$mem] lowers to FFs that pair by name). *)
+let rename_block ~gate ~renames =
+  if List.is_empty renames
+  then []
+  else
+    (("cd " ^ gate)
+     :: List.map renames ~f:(fun (old, new_) -> Printf.sprintf "rename %s %s" old new_))
+    @ [ "cd .." ]
+;;
+
+let check ~work_dir ~verilog ~renames ~top_module ~ours =
   ignore
     (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir))
      : int);
@@ -26,22 +39,21 @@ let check ~work_dir ~verilog ~top_module ~ours =
     ~data:
       (String.concat
          ~sep:"\n"
-         [ "read_verilog " ^ verilog
-         ; "read_verilog " ^ ours_v
-         ; "proc"
-           (* lower any [$mem] to flip-flops so [equiv_make] can pair the memory state by
-              name (needed for the register-file behavioural proof; a no-op for the
-              memory-less iterative units). *)
-         ; "memory"
-         ; "opt"
-         ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
-         ; "hierarchy -top equiv"
-         ; "opt -full"
-         ; "equiv_simple"
-         ; "equiv_induct"
-         ; "equiv_status -assert"
-         ; ""
-         ]);
+         ([ "read_verilog " ^ verilog; "read_verilog " ^ ours_v; "proc" ]
+          @ rename_block ~gate ~renames
+          @ [ (* lower any [$mem] to flip-flops so [equiv_make] can pair the memory state
+                 by name (needed for the register-file behavioural proof and PS2's fifo; a
+                 no-op for the memory-less iterative units). *)
+              "memory"
+            ; "opt"
+            ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
+            ; "hierarchy -top equiv"
+            ; "opt -full"
+            ; "equiv_simple"
+            ; "equiv_induct"
+            ; "equiv_status -assert"
+            ; ""
+            ]));
   match
     Stdlib.Sys.command (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script))
   with
@@ -63,15 +75,6 @@ let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
      replaces the merged units with shared free signals (the assume side: each unit is
      proven separately), leaving a pure glue netlist that equiv_simple + equiv_induct
      discharge. *)
-  let rename_block =
-    if List.is_empty renames
-    then []
-    else
-      (("cd " ^ gate)
-       :: List.map renames ~f:(fun (old, new_) -> Printf.sprintf "rename %s %s" old new_)
-      )
-      @ [ "cd .." ]
-  in
   let script = Printf.sprintf "%s/%s_core.ys" work_dir top_module in
   Stdio.Out_channel.write_all
     script
@@ -84,7 +87,7 @@ let check_core ~work_dir ~verilog ~stubs ~renames ~top_module ~ours =
           ; "hierarchy -check"
           ; "proc"
           ]
-          @ rename_block
+          @ rename_block ~gate ~renames
           @ [ "opt"
             ; "equiv_make " ^ top_module ^ " " ^ gate ^ " equiv"
             ; "hierarchy -top equiv"

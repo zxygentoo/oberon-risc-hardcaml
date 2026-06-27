@@ -91,6 +91,83 @@ let fp_divider () =
   Circuit.create_exn ~name:"fp_divider_ours" [ output "stall" stall; output "z" z ]
 ;;
 
+(* ── Tier-1 peripherals: the clean, single-clock peripheral FSMs with a direct standalone
+   .v (RS232R/T, SPI, PS2). Same sequential recipe as the iterative units — emit our
+   Verilog, equiv_make pairs flip-flops by name, equiv_induct closes. Already Verilator-
+   cosim'd (Phase 6a); this is the exhaustive upgrade (AGENT.md §6, README "Planned").
+
+   Ports are named to match the .v; [rst_n] maps to the RTL's active-low [rst] port (same
+   wire — ours does [~:rst_n], the RTL does [~rst]). Our lib registers keep their
+   waveform/SoC-namespaced names; where they differ from the RTL we rename them to the
+   .v's in the yosys script (the [renames] column), exactly as the core proof does. ── *)
+
+let rs232t () =
+  let open Signal in
+  let i =
+    { Risc5.Rs232t.I.clock = input "clk" 1
+    ; rst_n = input "rst" 1
+    ; start = input "start" 1
+    ; fsel = input "fsel" 1
+    ; data = input "data" 8
+    }
+  in
+  let { Risc5.Rs232t.O.rdy; txd } = Risc5.Rs232t.create i in
+  (* run/tick/bitcnt/shreg already match RS232T.v — no renames needed. *)
+  Circuit.create_exn ~name:"rs232t_ours" [ output "rdy" rdy; output "TxD" txd ]
+;;
+
+let rs232r () =
+  let open Signal in
+  let i =
+    { Risc5.Rs232r.I.clock = input "clk" 1
+    ; rst_n = input "rst" 1
+    ; rxd = input "RxD" 1
+    ; fsel = input "fsel" 1
+    ; done_ = input "done" 1
+    }
+  in
+  let { Risc5.Rs232r.O.rdy; data } = Risc5.Rs232r.create i in
+  (* run/stat/tick/bitcnt/shreg match RS232R.v; only the synchronizer FFs differ in case. *)
+  Circuit.create_exn ~name:"rs232r_ours" [ output "rdy" rdy; output "data" data ]
+;;
+
+let spi () =
+  let open Signal in
+  let i =
+    { Risc5.Spi.I.clock = input "clk" 1
+    ; rst_n = input "rst" 1
+    ; start = input "start" 1
+    ; fast = input "fast" 1
+    ; data_tx = input "dataTx" 32
+    ; miso = input "MISO" 1
+    }
+  in
+  let { Risc5.Spi.O.data_rx; rdy; mosi; sclk } = Risc5.Spi.create i in
+  (* tick/bitcnt/rdy match SPI.v; our shift register is SoC-namespaced [spi_shreg]. *)
+  Circuit.create_exn
+    ~name:"spi_ours"
+    [ output "dataRx" data_rx; output "rdy" rdy; output "MOSI" mosi; output "SCLK" sclk ]
+;;
+
+let ps2 () =
+  let open Signal in
+  let i =
+    { Risc5.Ps2.I.clock = input "clk" 1
+    ; rst_n = input "rst" 1
+    ; done_ = input "done" 1
+    ; ps2c = input "PS2C" 1
+    ; ps2d = input "PS2D" 1
+    }
+  in
+  let { Risc5.Ps2.O.rdy; shift; data } = Risc5.Ps2.create i in
+  (* shreg/inptr/outptr and the [fifo] memory match PS2.v; only the synchronizer FFs
+     differ in case. The [memory] pass lowers both fifos (single 16x8 arrays) to FFs that
+     pair by name — the same mechanism as the register-file proof. *)
+  Circuit.create_exn
+    ~name:"ps2_ours"
+    [ output "rdy" rdy; output "shift" shift; output "data" data ]
+;;
+
 (* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
    (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
    defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
@@ -141,10 +218,15 @@ let run_combinational (name, ours, v, top_module) =
     true
 ;;
 
-let run_sequential ~dir ~kind (name, ours, v, top_module) =
+let run_sequential ~dir ~kind (name, ours, v, top_module, renames) =
   Stdio.printf "=== %s : ours  vs  %s   [%s] ===\n%!" name v kind;
   match
-    Yosys_equiv.check ~work_dir ~verilog:(dir ^ "/" ^ v) ~top_module ~ours:(ours ())
+    Yosys_equiv.check
+      ~work_dir
+      ~verilog:(dir ^ "/" ^ v)
+      ~renames
+      ~top_module
+      ~ours:(ours ())
   with
   | Yosys_equiv.Equivalent ->
     Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
@@ -160,19 +242,32 @@ let combinational : (string * (unit -> Circuit.t) * string * string) list =
   ]
 ;;
 
-let sequential : (string * (unit -> Circuit.t) * string * string) list =
-  [ "multiplier", multiplier, "Multiplier.v", "Multiplier"
-  ; "divider", divider, "Divider.v", "Divider"
-  ; "fp_adder", fp_adder, "FPAdder.v", "FPAdder"
-  ; "fp_multiplier", fp_multiplier, "FPMultiplier.v", "FPMultiplier"
-  ; "fp_divider", fp_divider, "FPDivider.v", "FPDivider"
+(* Rows: (name, circuit thunk, reference .v, top module, register renames). [renames] is
+   [[]] when our register names already match the RTL (the iterative units name S/P/…
+   after it; RS232T's run/tick/bitcnt/shreg line up). The peripherals that keep
+   waveform/SoC- namespaced lib names rename to the .v's here (e.g. [q0→Q0],
+   [spi_shreg→shreg]). *)
+let sequential
+  : (string * (unit -> Circuit.t) * string * string * (string * string) list) list
+  =
+  [ "multiplier", multiplier, "Multiplier.v", "Multiplier", []
+  ; "divider", divider, "Divider.v", "Divider", []
+  ; "fp_adder", fp_adder, "FPAdder.v", "FPAdder", []
+  ; "fp_multiplier", fp_multiplier, "FPMultiplier.v", "FPMultiplier", []
+  ; "fp_divider", fp_divider, "FPDivider.v", "FPDivider", []
+  ; "rs232t", rs232t, "RS232T.v", "RS232T", []
+  ; "rs232r", rs232r, "RS232R.v", "RS232R", [ "q0", "Q0"; "q1", "Q1" ]
+  ; "spi", spi, "SPI.v", "SPI", [ "spi_shreg", "shreg" ]
+  ; "ps2", ps2, "PS2.v", "PS2", [ "q0", "Q0"; "q1", "Q1" ]
   ]
 ;;
 
 (* Proven against our behavioural spec in [spec_dir], not a Wirth original (see
    [registers]). *)
-let behavioral : (string * (unit -> Circuit.t) * string * string) list =
-  [ "registers", registers, "registers_spec.v", "Registers_spec" ]
+let behavioral
+  : (string * (unit -> Circuit.t) * string * string * (string * string) list) list
+  =
+  [ "registers", registers, "registers_spec.v", "Registers_spec", [] ]
 ;;
 
 (* The in-situ core-glue proof (its own runner — one entry, distinct yosys flow). Proves

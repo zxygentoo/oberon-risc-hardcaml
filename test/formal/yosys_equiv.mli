@@ -20,13 +20,16 @@ type result =
   | Equivalent (** every [$equiv] point proven by induction *)
   | Not_equivalent (** some point left unproven (a real or inductive counterexample) *)
 
-(** [check ~work_dir ~verilog ~top_module ~ours] proves [ours] sequentially equivalent to
-    module [top_module] of file [verilog]. [ours] must be named distinctly from
-    [top_module] (yosys reads both into one design), with its ports and registers named to
-    match. *)
+(** [check ~work_dir ~verilog ~renames ~top_module ~ours] proves [ours] sequentially
+    equivalent to module [top_module] of file [verilog]. [ours] must be named distinctly
+    from [top_module] (yosys reads both into one design), with its ports named to match.
+    [renames] maps our register/net names to the reference's (applied to [ours] in yosys
+    so [equiv_make] can pair the state); pass [[]] when the names already match (the
+    iterative units, RS232T). *)
 val check
   :  work_dir:string
   -> verilog:string
+  -> renames:(string * string) list
   -> top_module:string
   -> ours:Circuit.t
   -> result
