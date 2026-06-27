@@ -9,8 +9,15 @@
 
 (executable
  (name test_formal)
- (modules test_formal formal_equiv)
- (libraries risc5 hardcaml hardcaml_verify hardcaml_of_verilog base stdio))
+ (modules test_formal formal_equiv yosys_equiv)
+ (libraries
+  risc5
+  hardcaml
+  hardcaml_verify
+  hardcaml_of_verilog
+  jane_rope
+  base
+  stdio))
 
 ; Uniform front door, mirroring @cosim / @boot_checkpoint: `dune build @formal` proves every
 ; unit. The exe is a declared dep so dune pre-builds it — run.sh then skips its own `dune

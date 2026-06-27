@@ -1,9 +1,9 @@
 open! Base
 open Hardcaml
 
-(* Build one of our Hardcaml units as a [Circuit.t] whose ports are named per its I/O
-   interface — so the port names line up with the reference Verilog's, which is how [Sec]
-   pairs the two sides. *)
+(* ── Combinational units: our circuit's ports match the reference .v; proven by importing
+   the .v and SAT-checking against ours with hardcaml_verify's Sec + z3 (Formal_equiv). ── *)
+
 let left_shifter () =
   let module C = Circuit.With_interface (Risc5.Left_shifter.I) (Risc5.Left_shifter.O) in
   C.create_exn ~name:"LeftShifter" Risc5.Left_shifter.create
@@ -14,38 +14,82 @@ let right_shifter () =
   C.create_exn ~name:"RightShifter" Risc5.Right_shifter.create
 ;;
 
-(* Each case: a label, a thunk building our circuit, the reference [.v] basename, and the
-   Verilog top module name. Adding a combinational unit is a new row. *)
-let cases : (string * (unit -> Circuit.t) * string * string) list =
+(* ── Sequential units: built with ports named to match the .v (clk/run/u/x/y → stall/z)
+   and registers named to match (S/P, in the lib) so yosys equiv_make can pair the
+   flip-flops; proven by emitting our Verilog and running yosys equiv_induct
+   (Yosys_equiv). The circuit is named distinctly from the reference module so yosys can
+   read both. ── *)
+
+let multiplier () =
+  let open Signal in
+  let i =
+    { Risc5.Multiplier.I.clock = input "clk" 1
+    ; run = input "run" 1
+    ; u = input "u" 1
+    ; x = input "x" 32
+    ; y = input "y" 32
+    }
+  in
+  let { Risc5.Multiplier.O.stall; z } = Risc5.Multiplier.create i in
+  Circuit.create_exn ~name:"multiplier_ours" [ output "stall" stall; output "z" z ]
+;;
+
+(* ── Runner ── *)
+
+let work_dir =
+  (match Stdlib.Sys.getenv_opt "CLAUDE_JOB_DIR" with
+   | Some d -> d
+   | None -> "/tmp")
+  ^ "/oberon-formal"
+;;
+
+let rtl_dir = "_po/verilog/src"
+
+let run_combinational (name, ours, v, top_module) =
+  Stdio.printf "=== %s : ours  vs  %s   [combinational · Sec/z3] ===\n%!" name v;
+  match
+    Formal_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
+  with
+  | Formal_equiv.Equivalent ->
+    Stdio.printf "  EQUIVALENT  (no input makes the outputs differ)\n%!";
+    false
+  | Formal_equiv.Counterexample ->
+    Stdio.printf "  NOT EQUIVALENT  (counterexample found)\n%!";
+    true
+;;
+
+let run_sequential (name, ours, v, top_module) =
+  Stdio.printf "=== %s : ours  vs  %s   [sequential · yosys equiv_induct] ===\n%!" name v;
+  match
+    Yosys_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
+  with
+  | Yosys_equiv.Equivalent ->
+    Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
+    false
+  | Yosys_equiv.Not_equivalent ->
+    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
+    true
+;;
+
+let combinational : (string * (unit -> Circuit.t) * string * string) list =
   [ "left_shifter", left_shifter, "LeftShifter.v", "LeftShifter"
   ; "right_shifter", right_shifter, "RightShifter.v", "RightShifter"
   ]
 ;;
 
+let sequential : (string * (unit -> Circuit.t) * string * string) list =
+  [ "multiplier", multiplier, "Multiplier.v", "Multiplier" ]
+;;
+
 let () =
-  let work_dir =
-    (match Stdlib.Sys.getenv_opt "CLAUDE_JOB_DIR" with
-     | Some d -> d
-     | None -> "/tmp")
-    ^ "/oberon-formal"
+  let fails =
+    List.count combinational ~f:run_combinational
+    + List.count sequential ~f:run_sequential
   in
-  let rtl_dir = "_po/verilog/src" in
-  let failures =
-    List.count cases ~f:(fun (name, ours, v, top_module) ->
-      let verilog = rtl_dir ^ "/" ^ v in
-      Stdio.printf "=== %s : ours  vs  %s ===\n%!" name v;
-      match Formal_equiv.check ~work_dir ~verilog ~top_module ~ours:(ours ()) with
-      | Equivalent ->
-        Stdio.printf
-          "  EQUIVALENT  (proven by z3 — no input makes the outputs differ)\n%!";
-        false
-      | Counterexample ->
-        Stdio.printf "  NOT EQUIVALENT  (counterexample found)\n%!";
-        true)
-  in
-  if failures > 0
+  let total = List.length combinational + List.length sequential in
+  if fails > 0
   then (
-    Stdio.printf "\n%d formal check(s) FAILED\n" failures;
+    Stdio.printf "\n%d of %d formal check(s) FAILED\n" fails total;
     Stdlib.exit 1)
-  else Stdio.printf "\nall %d formal check(s) passed\n" (List.length cases)
+  else Stdio.printf "\nall %d formal check(s) passed\n" total
 ;;
