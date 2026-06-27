@@ -50,6 +50,21 @@ let divider () =
     [ output "stall" stall; output "quot" quot; output "rem" rem ]
 ;;
 
+let fp_adder () =
+  let open Signal in
+  let i =
+    { Risc5.Fp_adder.I.clock = input "clk" 1
+    ; run = input "run" 1
+    ; u = input "u" 1
+    ; v = input "v" 1
+    ; x = input "x" 32
+    ; y = input "y" 32
+    }
+  in
+  let { Risc5.Fp_adder.O.stall; z } = Risc5.Fp_adder.create i in
+  Circuit.create_exn ~name:"fp_adder_ours" [ output "stall" stall; output "z" z ]
+;;
+
 (* ── Runner ── *)
 
 let work_dir =
@@ -96,6 +111,7 @@ let combinational : (string * (unit -> Circuit.t) * string * string) list =
 let sequential : (string * (unit -> Circuit.t) * string * string) list =
   [ "multiplier", multiplier, "Multiplier.v", "Multiplier"
   ; "divider", divider, "Divider.v", "Divider"
+  ; "fp_adder", fp_adder, "FPAdder.v", "FPAdder"
   ]
 ;;
 
