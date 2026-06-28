@@ -1,5 +1,5 @@
 (* RTL-fidelity dumper for the SPI master. Unlike the FP units — a stall-based run ->
-   drain -> z protocol, shared in dump_fp — the SPI is a serial peripheral with a
+   drain -> z protocol, shared in fp_dump — the SPI is a serial peripheral with a
    start/rdy handshake and a per-cycle MISO input, so it gets its own dumper (reusing only
    cosim.h's tick on the C side).
 
@@ -109,5 +109,5 @@ let () =
   for _ = 1 to 128 do
     emit ~fast:0 ~data_tx:(rand32 rng)
   done;
-  Printf.eprintf "dump_spi: %d transfers (corners x2 + 512 fast + 128 slow fuzz)\n" !count
+  Printf.eprintf "spi_dump: %d transfers (corners x2 + 512 fast + 128 slow fuzz)\n" !count
 ;;

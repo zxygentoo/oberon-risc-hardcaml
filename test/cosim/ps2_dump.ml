@@ -1,4 +1,4 @@
-(* RTL-fidelity dumper for the PS/2 keyboard receiver. Input-driven like dump_rs232r: the
+(* RTL-fidelity dumper for the PS/2 keyboard receiver. Input-driven like rs232r_dump: the
    dumper plays the keyboard, clocking an 11-bit frame on (ps2c, ps2d) plus a [done_] pop,
    and records per cycle the inputs it drove and the [rdy] it observed. The Verilator
    harness (test/cosim/ps2.cpp) does a fixed-length replay of the identical (ps2c, ps2d,
@@ -102,5 +102,5 @@ let () =
   for _ = 1 to 40 do
     emit ~data:(Random.State.int rng 256)
   done;
-  Printf.eprintf "dump_ps2: %d frames (8 corners + 40 fuzz)\n" !count
+  Printf.eprintf "ps2_dump: %d frames (8 corners + 40 fuzz)\n" !count
 ;;

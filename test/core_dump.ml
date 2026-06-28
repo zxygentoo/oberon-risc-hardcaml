@@ -1,7 +1,7 @@
 (* Boot-stream RTL co-sim — capture half (AGENT.md §6 layer 3, for the CPU core).
 
    Boot the SoC from the real disk and record the CPU core's per-cycle I/O to a trace,
-   which [test/cosim/risc5.cpp] replays through the reference [RISC5.v] under Verilator to
+   which [test/cosim/core.cpp] replays through the reference [RISC5.v] under Verilator to
    assert the core is cycle-exact to the spec across a real workload — the core's only
    cycle-level RTL check before the Phase-8 equivalence proof (the unit co-sims cover the
    peripherals and FP units; this covers the whole core over a boot).
@@ -22,7 +22,7 @@
    - bytes 9-12 / 13-16: adr / outbus (u32) — core OUTPUTS, the expected values
 
    Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Sd_bridge} SD
-   card), trimmed to the capture. Opt-in (run via [test/cosim/run-core.sh]); needs the
+   card), trimmed to the capture. Opt-in (run via the cosim runner, cosim_run); needs the
    disk image. Env: [DISK_IMG] (default the vendored .dsk), [CORE_TRACE] (output path),
    [CAP] (hard cycle cap, default 25_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
    print a windowed pc/ir/flags/regs dump and [NOTRACE] skips writing the (large) trace
@@ -41,7 +41,7 @@ let () =
       else (
         let parent = Filename.dirname dir in
         if String.equal parent dir
-        then failwith "dump_core_trace: no dune-project found above cwd"
+        then failwith "core_dump: no dune-project found above cwd"
         else up parent)
     in
     up (Sys.getcwd ())
@@ -67,8 +67,8 @@ let () =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
     | None ->
-      (* Self-contained in-repo default (git-ignored test/_work), matching run-core.sh;
-         the normal entry points pass an explicit CORE_TRACE into test/_work anyway. *)
+      (* Self-contained in-repo default (git-ignored test/_work), matching cosim_run; the
+         normal entry points pass an explicit CORE_TRACE into test/_work anyway. *)
       let dir = "test/_work/cosim/core" in
       ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
@@ -90,7 +90,7 @@ let () =
   and outp = Cyclesim.outputs sim in
   let some n = function
     | Some x -> x
-    | None -> failwith ("dump_core_trace lookup: " ^ n)
+    | None -> failwith ("core_dump lookup: " ^ n)
   in
   let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
   let node n = some n (Cyclesim.lookup_node_or_reg_by_name sim n) in
@@ -150,7 +150,7 @@ let () =
   and pc_same = ref 0
   and stop = ref false in
   Printf.printf
-    "dump_core_trace: booting %s\n  trace -> %s\n%!"
+    "core_dump: booting %s\n  trace -> %s\n%!"
     (Filename.basename disk_image)
     trace_path;
   (* drive [rst_n]: 0 for the first edge (reset → StartAdr), 1 thereafter. The recorded

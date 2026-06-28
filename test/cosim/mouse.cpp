@@ -1,4 +1,4 @@
-// RTL-fidelity co-sim for Mouse: replay the per-cycle trace dumped by test/cosim/dump_mouse
+// RTL-fidelity co-sim for Mouse: replay the per-cycle trace dumped by test/cosim/mouse_dump
 // through the reference test/_po/verilog/src/MousePM.v (wrapped by mouse_cosim.v) under Verilator,
 // and assert — every cycle — that the RTL's (msclk_oe, msdat_oe, out) == the Hardcaml port's.
 // Exit 0 iff the port is bit- and cycle-exact to MousePM.v over the whole stimulus.

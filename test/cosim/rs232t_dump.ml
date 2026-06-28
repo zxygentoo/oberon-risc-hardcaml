@@ -1,4 +1,4 @@
-(* RTL-fidelity dumper for the RS232 transmitter. Like dump_spi (a serial peripheral with
+(* RTL-fidelity dumper for the RS232 transmitter. Like spi_dump (a serial peripheral with
    a start/rdy handshake, not stall-based) but OUTPUT-ONLY: RS232T has no per-cycle input
    to record (no MISO), so the per-cycle trace carries just the two outputs to check.
 
@@ -82,5 +82,5 @@ let () =
   for _ = 1 to 8 do
     emit ~fsel:0 ~data:(Random.State.int rng 256)
   done;
-  Printf.eprintf "dump_rs232t: %d frames (corners x2 + 64 fast + 8 slow fuzz)\n" !count
+  Printf.eprintf "rs232t_dump: %d frames (corners x2 + 64 fast + 8 slow fuzz)\n" !count
 ;;

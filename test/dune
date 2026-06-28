@@ -60,34 +60,13 @@
  (action
   (run ./test_visual_golden.exe)))
 
-; Boot-stream RTL co-sim — capture half (AGENT.md §6 layer 3, extended to the CPU core).
-; Captures the core's per-cycle I/O over the real boot, which test/cosim/risc5.cpp replays
-; through RISC5.v under Verilator to assert cycle-exact fidelity (the core's only cycle-level
-; check before the Phase-8 proof). Built by @check so it can't rot; run on demand via
-; test/cosim/run-core.sh (it boots the real disk).
+; Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3) — capture half: records the core's
+; per-cycle I/O over the real boot, which test/cosim/core.cpp replays through RISC5.v under
+; Verilator to assert cycle-exact fidelity. Built by @check so it can't rot; run via the unified
+; cosim runner — `dune build @cosim` (all units incl. core), or
+; `dune exec test/cosim/cosim_run.exe -- core` (just the core).
 
 (executable
- (name dump_core_trace)
- (modules dump_core_trace)
+ (name core_dump)
+ (modules core_dump)
  (libraries risc5 oracle hardcaml unix sd_bridge))
-
-; Boot-stream RTL co-sim — run it (capture the boot trace, then replay through RISC5.v under
-; Verilator). OPT-IN (needs verilator + the disk image), like @cosim / @boot_checkpoint:
-;   dune build @core_cosim
-; Pre-builds the capture exe as a dep so run-core.sh skips its own `dune build` (no nested
-; dune in the action). dune caches the result; re-run with `dune build @core_cosim --force`
-; or `bash test/cosim/run-core.sh`.
-
-(rule
- (alias core_cosim)
- (deps
-  dump_core_trace.exe
-  cosim/run-core.sh
-  fetch-rtl.sh
-  rtl-sources.txt
-  cosim/cosim.h
-  cosim/risc5.cpp
-  cosim/ram16x1d.v
-  ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
- (action
-  (run bash cosim/run-core.sh)))

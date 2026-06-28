@@ -1,4 +1,4 @@
-(* RTL-fidelity dumper for the RS232 receiver. Like dump_spi/dump_rs232t it records a
+(* RTL-fidelity dumper for the RS232 receiver. Like spi_dump/rs232t_dump it records a
    per-cycle hex trace, but the receiver is INPUT-driven: the dumper plays the sender,
    driving a UART frame on [rxd] (start, 8 data LSbit-first, stop) at the baud timing plus
    a [done_] ack, and records per cycle the inputs it drove and the [rdy] it observed. The
@@ -93,5 +93,5 @@ let () =
   for _ = 1 to 4 do
     emit ~fsel:0 ~data:(Random.State.int rng 256)
   done;
-  Printf.eprintf "dump_rs232r: %d frames (corners x2 + 32 fast + 4 slow fuzz)\n" !count
+  Printf.eprintf "rs232r_dump: %d frames (corners x2 + 32 fast + 4 slow fuzz)\n" !count
 ;;

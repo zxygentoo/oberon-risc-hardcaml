@@ -119,5 +119,5 @@ let () =
   (* X/Y sign bits set (-ve moves) *)
   send_report ~status:0xC0 ~mx:0x11 ~my:0x22;
   (* X/Y overflow bits set *)
-  Printf.eprintf "dump_mouse: %d cycles (init + 4 reports)\n" !cycles
+  Printf.eprintf "mouse_dump: %d cycles (init + 4 reports)\n" !cycles
 ;;

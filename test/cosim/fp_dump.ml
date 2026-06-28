@@ -14,7 +14,7 @@
    for FLT/FLOOR, mul/div don't) and the frozen-vector line tag (A / M / D). A per-unit
    [driver] captures exactly those two differences; everything else below is shared.
 
-   Usage: dump_fp <fp_adder|fp_multiplier|fp_divider> <path to fp_vectors.txt> (-> stdout) *)
+   Usage: fp_dump <fp_adder|fp_multiplier|fp_divider> <path to fp_vectors.txt> (-> stdout) *)
 
 open Hardcaml
 open Cosim_dump
@@ -103,7 +103,7 @@ let () =
     | "fp_adder" -> adder_driver ()
     | "fp_multiplier" -> mul_driver ()
     | "fp_divider" -> div_driver ()
-    | other -> failwith (Printf.sprintf "dump_fp: unknown unit %S" other)
+    | other -> failwith (Printf.sprintf "fp_dump: unknown unit %S" other)
   in
   let n = ref 0 in
   let emit ~u ~v ~x ~y =
@@ -147,7 +147,7 @@ let () =
     emit ~u ~v ~x ~y
   done;
   Printf.eprintf
-    "dump_fp(%s): %d stimuli (fp_vectors %s-lines + 20000 fuzz)\n"
+    "fp_dump(%s): %d stimuli (fp_vectors %s-lines + 20000 fuzz)\n"
     unit_name
     !n
     d.tag

@@ -88,7 +88,7 @@ static int serial_cosim_main(int argc, char** argv, Unit unit, Reset reset, Repl
 
 // assert run, drain until stall drops, read z, then release run for one cycle. Returns z;
 // *cycles = the clock cycles with run asserted until stall drops (the stall length),
-// counted identically to dump_fp's port-side drive so the two are directly comparable. The
+// counted identically to fp_dump's port-side drive so the two are directly comparable. The
 // caller sets the unit's data inputs (x/y and any u/v) before calling.
 template <typename Dut> static uint32_t drain(Dut* dut, int* cycles) {
   dut->run = 1;
