@@ -8,7 +8,13 @@
    is *structure*, not spec (AGENT.md §2/§3): we express the behaviour — three
    asynchronous reads, one synchronous write — with [multiport_memory] and let synthesis
    infer the distributed RAM (it may re-derive Wirth's very duplication). Async read /
-   sync write is the timing the core and the oracle depend on (§8). *)
+   sync write is the timing the core and the oracle depend on (§8).
+
+   It is also why the Phase-8 formal proof (test/formal) checks this module against a
+   behavioural spec ([registers_spec.v]: 16×32, 3R/1W) rather than [Registers.v]: Wirth's
+   duplicated, bit-sliced [RAM16X1D] state is structurally incongruent with this single
+   array (no flip-flop pairing; a memory miter isn't output-inductive), so the equivalence
+   proven is to the *contract*, not the synthesis idiom. *)
 
 open! Base
 open Hardcaml

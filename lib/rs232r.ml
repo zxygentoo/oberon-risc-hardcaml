@@ -59,9 +59,9 @@ let create (i : _ I.t) : _ O.t =
   let q0_v = q0.value -- "q0" in
   let q1_v = q1.value -- "q1" in
   let run_v = run.value -- "run" in
-  let stat_v = stat.value in
+  let stat_v = stat.value -- "stat" in
   let tick_v = tick.value -- "tick" in
-  let bitcnt_v = bitcnt.value in
+  let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
   (* baud divider thresholds; [midtick] (window centre) = limit/2 = {1'b0, limit[11:1]} *)
   let limit =

@@ -56,11 +56,19 @@ and asserts the RTL matches the port in **both result and timing** for every sti
 - **Video controller** — two-clock (`clk` 25 MHz, `pclk` 65 MHz, the 13:5 ratio). A wrapper
   (`vid_cosim.v`) stubs the Xilinx `DCM`/`BUFG` and `force`s `VID`'s internal `pclk` from the
   harness; the harness drives both clocks at the same cadence as the Hardcaml dumper's
-  `By_input_clocks`. Replays **~2 scanlines** with per-tick varying `viddata` + an `inv` toggle and
-  asserts, **every base tick**, `RTL (req, vidadr, hsync, vsync, RGB) == port's` (`0 mismatch`):
-  visible pixels, the 32-word/line DMA, `vidadr`, `hblank` + the `hsync` pulse, the `hcnt` wrap +
-  `vcnt` advance. `vblank`/`vsync` (`vcnt>=768`) need a whole frame to reach (the Phase-6 visual
-  golden) and are the same comparator-free / SR-latch idiom as their `h` counterparts.
+  `By_input_clocks`. Replays **~2 scanlines** with one stable `viddata` word per 32-px fetch group
+  (a faithful memory model — real SRAM holds the fetched word; sampled once per fetch) + an `inv`
+  toggle, and asserts, **every base tick**, `RTL (vidadr, hsync, vsync, RGB) == port's`
+  (`0 mismatch`): visible pixels, the 32-word/line DMA, `vidadr`, `hblank` + the `hsync` pulse, the
+  `hcnt` wrap + `vcnt` advance. **`req` is excluded from the cycle-exact compare** — it's the one
+  deliberate CDC departure (our toggle pulse-synchroniser fires the fetch request ~2 clk later than
+  `VID60.v`'s async-set `req1`, a metastability-safe substitute), so instead the cosim checks its
+  *protocol*: both sides emit the same number of `req` pulses (±1 for the in-flight fetch at the run
+  boundary). The exact-timing equivalence is impossible by design; `req`'s correctness is proven by
+  `test/formal`'s `vid_invariant` (one req per req0, no loss, all phases) and the per-group-stable
+  word is what keeps the *pixel* path cycle-exact despite the `req` sampling shift. `vblank`/`vsync`
+  (`vcnt>=768`) need a whole frame to reach (the Phase-6 visual golden) and are the same
+  comparator-free / SR-latch idiom as their `h` counterparts.
 - **PS/2 mouse** — bidirectional open-drain `msclk`/`msdat` (RTL `inout`, `line = drive ? 0 : z`).
   A wrapper (`mouse_cosim.v`) splits each line like the Hardcaml port: `force`s the harness-driven
   resolved value into the DUT and XMR-exports the DUT's pull-low (`req`, `~tx[0]`) as `*_oe`. The
@@ -92,7 +100,7 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_rs232t.ml` | the RS232 transmitter dumper (output-only serial handshake): drive `Risc5.Rs232t` over (`fsel`, `data`), dump `"fsel data cycles hextrace"` (one hex digit/cycle = `rdy·txd`) |
 | `dump_rs232r.ml` | the RS232 receiver dumper (input-driven): play the sender — drive a frame on `rxd` (+ a `done_` ack), dump `"fsel data hextrace"` (one hex digit/cycle = `done_·rxd·rdy`); fixed-length replay, so no cycles column |
 | `dump_ps2.ml` | the PS/2 keyboard dumper (input-driven): play the keyboard — clock a frame on `ps2c`/`ps2d` (+ a `done_` pop), dump `"data hextrace"` (one hex digit/cycle = `done_·ps2c·ps2d·rdy`); fixed-length replay |
-| `dump_vid.ml` + `vid_cosim.v` | the video dumper (two-clock, autonomous): run `Risc5.Vid` under `By_input_clocks` (13:5) over ~2 scanlines, dump `"inv viddata req vidadr hsync vsync rgb"` per base tick. `vid.cpp` replays the inputs through `vid_cosim.v` — the real `VID60.v` with `DCM`/`BUFG` stubbed and `pclk` `force`d from the harness — and compares every output each tick. The optional 6th `units_table` column hands `vid_cosim.v` to Verilator |
+| `dump_vid.ml` + `vid_cosim.v` | the video dumper (two-clock, autonomous): run `Risc5.Vid` under `By_input_clocks` (13:5) over ~2 scanlines, dump `"inv viddata req vidadr hsync vsync rgb"` per base tick. `vid.cpp` replays the inputs through `vid_cosim.v` — the real `VID60.v` with `DCM`/`BUFG` stubbed and `pclk` `force`d from the harness — and compares `vidadr/hsync/vsync/RGB` each tick (`req` is the deliberate CDC departure: protocol-checked by pulse count, not cycle-compared — see the Video bullet). The optional 6th `units_table` column hands `vid_cosim.v` to Verilator |
 | `dump_mouse.ml` + `mouse_cosim.v` | the mouse dumper (bidirectional, single-clock): play a PS/2 mouse against `Risc5.Mouse` through the init handshake + 4 reports, dump `"rstn dmc dmd mco mdo out"` per cycle (the device's open-drain pull-lows + the port outputs). `mouse.cpp` replays through `mouse_cosim.v` — the real `MousePM.v` with the `inout` lines split via `force` + XMR — resolving the open-drain against the RTL's own oe, and compares every cycle |
 | `cosim.h` | shared harness: universal `cosim_open` + `Unit` + `tick` + `hexval`, and two cross-check runners — `run_drain_cosim` for the stall-based FP units (open → run → drain on `stall` → compare `z`, with `parse_xy`/`parse_xyuv`), and `run_serial_cosim` for the cycle-by-cycle serial units (reset → per-line `replay` → value/wave/cycle tally → summary). Each FP/serial `.cpp` is a thin shell |
 | `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial units (`spi`, `rs232t`, `rs232r`, `ps2`) are a `reset` + a `replay` + `run_serial_cosim`. `vid` (two-clock) and `mouse` (bidirectional `inout`, split via `force`+XMR) keep their own `main` — different shapes |

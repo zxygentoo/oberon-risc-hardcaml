@@ -19,11 +19,14 @@
    pulses to track the pixel-pipeline latency ([xfer] lands at [hcnt[4:0] = 31]).
 
    CDC — the one structural departure from the RTL (see [vid.mli]). [req0] is a 1-[pclk]
-   pulse at the start of each 32-px group. The RTL captures it in a clk-domain async-set
-   flop; Cyclesim samples async reset only at the clock edge, so we instead capture the
-   pulse in the FASTER [pclk] domain ([caught]) and consume it with a clk one-shot
-   [req = (caught | req0) & ~req]. The [| req0] term also covers a pulse still high at a
-   clk edge. Output-equivalent to the async-set flop; the co-sim is the proof. *)
+   pulse at the start of each 32-px group; the DMA consumes it in the [clk] domain. The
+   RTL catches it with a clk-domain async-set flop ([req1],
+   [always @(posedge req0, posedge clk)]), which Cyclesim can't represent. We use the
+   standard metastability-safe crossing instead — a TOGGLE pulse synchroniser
+   ([req_toggle] in [pclk] → a [sync0]/[sync1]/[sync2] [clk] synchroniser → edge-detect
+   [req]); see the body. Same one-req-per-[req0] behaviour, and — unlike the earlier
+   [caught]+feedback handshake, which sampled a [pclk] flop in [clk] with no synchroniser
+   — safe across the real asynchronous pclk/clk on silicon. *)
 
 open! Base
 open Hardcaml
@@ -56,6 +59,25 @@ end
 (* framebuffer base Org = DFF00H >> 2 (word address); rows 0..255 sit off-screen *)
 let org = 0x37FC0
 
+(* Toggle pulse synchroniser — cross a 1-cycle [pulse] in the [src_spec] clock domain into
+   the [dst_spec] domain as a 1-cycle pulse, metastability-safe. [pulse] TOGGLES a flop in
+   the source domain (so the request becomes a LEVEL change, never a narrow pulse a
+   sampling flop could miss); the level crosses a 3-FF [dst_spec] synchroniser ([sync0]
+   absorbs any metastability, [sync1]/[sync2] are settled); an edge-detect on the two
+   SETTLED flops regenerates exactly one [dst_spec] pulse. Safe by construction provided
+   [pulse] recurs slower than the synchroniser depth (in [vid], every 32 px ≈ 12 [clk] ≫
+   3). The metastability-safe substitute for VID60.v's async-set capture [req1]
+   (unrepresentable in Cyclesim — see [vid.mli]); proven no-loss/no-spurious for all
+   clk/pclk phases in test/formal (the [pulse_sync] @formal check). The [sync0]/[sync1]
+   flops want an ASYNC_REG / CDC constraint in the board [.xdc]. *)
+let pulse_sync ~src_spec ~dst_spec ~pulse =
+  let req_toggle = reg_fb src_spec ~width:1 ~f:(fun t -> t ^: pulse) -- "req_toggle" in
+  let sync0 = reg dst_spec req_toggle -- "sync0" in
+  let sync1 = reg dst_spec sync0 -- "sync1" in
+  let sync2 = reg dst_spec sync1 -- "sync2" in
+  (sync1 ^: sync2) -- "req"
+;;
+
 let create (i : _ I.t) : _ O.t =
   let pspec = Reg_spec.create () ~clock:i.pclk in
   let cspec = Reg_spec.create () ~clock:i.clk in
@@ -75,29 +97,30 @@ let create (i : _ I.t) : _ O.t =
   (* request the next word at the start of each visible 32-px group; transfer it 31 px on *)
   let req0 = (sel_bottom hcnt ~width:5 ==:. 0 &: ~:hblank &: ~:vblank) -- "req0" in
   let xfer = sel_bottom hcnt ~width:5 ==:. 31 in
-  (* ── clk domain: framebuffer DMA handshake (see header) ────────────────────── *)
-  let req_w = wire 1 in
-  let caught =
-    reg_fb pspec ~width:1 ~f:(fun s -> mux2 req0 vdd (mux2 req_w gnd s)) -- "caught"
-  in
-  let pending = caught |: req0 in
-  (* one-shot: a single [clk] cycle when a request is [pending] and we are not already in
-     it *)
-  let req = reg_fb cspec ~width:1 ~f:(fun q -> pending &: ~:q) in
-  assign req_w req;
+  (* pclk→clk request synchroniser ([pulse_sync] above): cross the 1-pclk [req0] fetch
+     pulse into the clk DMA domain as a 1-clk [req]. The metastability-safe substitute for
+     VID60.v's async-set [req1] (a literal pclk-flop-sampled-in-clk crossing, as the
+     Phase-6 [caught]+feedback handshake did, is deterministic in sim but metastable on
+     silicon — horizontal pixel tearing). Proven no-loss/no-spurious for all phases in
+     test/formal. *)
+  let req = pulse_sync ~src_spec:pspec ~dst_spec:cspec ~pulse:req0 in
   let vidbuf = reg ~enable:req cspec i.viddata -- "vidbuf" in
   (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
   let pixbuf =
     reg_fb pspec ~width:32 ~f:(fun p ->
       mux2 xfer vidbuf (concat_msb [ gnd; select p ~high:31 ~low:1 ]))
+    -- "pixbuf"
   in
   let hs =
     reg_fb pspec ~width:1 ~f:(fun hs -> hcnt ==:. 1063 |: (hs &: (hcnt <>:. 1207)))
+    -- "hs"
   in
   let vs =
-    reg_fb pspec ~width:1 ~f:(fun vs -> vcnt ==:. 771 |: (vs &: (vcnt <>:. 777)))
+    reg_fb pspec ~width:1 ~f:(fun vs -> vcnt ==:. 771 |: (vs &: (vcnt <>:. 777))) -- "vs"
   in
-  let blank = reg_fb pspec ~width:1 ~f:(fun b -> mux2 xfer (vblank |: hblank) b) in
+  let blank =
+    reg_fb pspec ~width:1 ~f:(fun b -> mux2 xfer (vblank |: hblank) b) -- "blank"
+  in
   (* ── outputs ───────────────────────────────────────────────────────────────── *)
   let vidadr =
     of_unsigned_int ~width:18 org
@@ -167,62 +190,79 @@ let%expect_test "vid — smoke: counters run, req fires, pixels shift out" =
   [%expect {| hcnt=120 vcnt=0  req pulses=4  rgb saw 0=true saw 1=true |}]
 ;;
 
-let%expect_test "vid — CDC: req0 (pclk pulse) captured into a one-cycle clk req" =
+let%expect_test "vid — CDC: req0 pulse crosses pclk→clk via the toggle synchroniser" =
   let sim = make () in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   inp.inv := bits1 false;
   inp.viddata := word 0xDEADBEEF;
-  (* The startup request: [hcnt = 0] at power-on, so [req0] fires at once. Watch [caught]
-     (pclk) latch the pulse and hold it, the clk one-shot [req] fire for one clk cycle,
-     then [vidbuf] grab [viddata] at the following clk edge. NB [req0] is combinational
-     ([hcnt[4:0] = 0]); the trace samples it one base-tick behind [hcnt]'s registered
-     update (a Cyclesim trace-phase artifact, not hardware), so it reads high one tick
-     past [hcnt] leaving 0. *)
-  Stdlib.Printf.printf "tick | hcnt req0 caught req | vidbuf\n";
-  for t = 0 to 28 do
+  (* At power-on [hcnt = 0], so [req0] fires at once. Watch [req_toggle] flip in the
+     [pclk] domain, the level cross the [sync0]→[sync1] clk synchroniser, the edge-detect
+     [req = sync1 ^ sync2] fire for one clk cycle, then [vidbuf] grab [viddata]. NB [req0]
+     is combinational ([hcnt[4:0] = 0]); the trace samples it one base-tick behind
+     [hcnt]'s registered update (a Cyclesim trace-phase artifact, not hardware). *)
+  Stdlib.Printf.printf "tick | hcnt req0 toggle sync0 sync1 req | vidbuf\n";
+  for t = 0 to 44 do
     Cyclesim.cycle sim;
     Stdlib.Printf.printf
-      "%4d |  %2d    %d     %d     %d | %08X\n"
+      "%4d |  %2d    %d     %d      %d     %d    %d | %08X\n"
       t
       (peek sim "hcnt")
       (peek sim "req0")
-      (peek sim "caught")
+      (peek sim "req_toggle")
+      (peek sim "sync0")
+      (peek sim "sync1")
       (Bits.to_int_trunc !(outp.req))
       (peek sim "vidbuf")
   done;
   [%expect
     {|
-    tick | hcnt req0 caught req | vidbuf
-       0 |   0    1     0     0 | 00000000
-       1 |   0    1     0     0 | 00000000
-       2 |   0    1     0     0 | 00000000
-       3 |   0    1     0     0 | 00000000
-       4 |   1    1     1     0 | 00000000
-       5 |   1    0     1     0 | 00000000
-       6 |   1    0     1     0 | 00000000
-       7 |   1    0     1     0 | 00000000
-       8 |   1    0     1     0 | 00000000
-       9 |   2    0     1     0 | 00000000
-      10 |   2    0     1     0 | 00000000
-      11 |   2    0     1     0 | 00000000
-      12 |   2    0     1     1 | 00000000
-      13 |   2    0     1     1 | 00000000
-      14 |   3    0     0     1 | 00000000
-      15 |   3    0     0     1 | 00000000
-      16 |   3    0     0     1 | 00000000
-      17 |   3    0     0     1 | 00000000
-      18 |   3    0     0     1 | 00000000
-      19 |   4    0     0     1 | 00000000
-      20 |   4    0     0     1 | 00000000
-      21 |   4    0     0     1 | 00000000
-      22 |   4    0     0     1 | 00000000
-      23 |   4    0     0     1 | 00000000
-      24 |   5    0     0     1 | 00000000
-      25 |   5    0     0     0 | DEADBEEF
-      26 |   5    0     0     0 | DEADBEEF
-      27 |   5    0     0     0 | DEADBEEF
-      28 |   5    0     0     0 | DEADBEEF
+    tick | hcnt req0 toggle sync0 sync1 req | vidbuf
+       0 |   0    1     0      0     0    0 | 00000000
+       1 |   0    1     0      0     0    0 | 00000000
+       2 |   0    1     0      0     0    0 | 00000000
+       3 |   0    1     0      0     0    0 | 00000000
+       4 |   1    1     1      0     0    0 | 00000000
+       5 |   1    0     1      0     0    0 | 00000000
+       6 |   1    0     1      0     0    0 | 00000000
+       7 |   1    0     1      0     0    0 | 00000000
+       8 |   1    0     1      0     0    0 | 00000000
+       9 |   2    0     1      0     0    0 | 00000000
+      10 |   2    0     1      0     0    0 | 00000000
+      11 |   2    0     1      0     0    0 | 00000000
+      12 |   2    0     1      1     0    0 | 00000000
+      13 |   2    0     1      1     0    0 | 00000000
+      14 |   3    0     1      1     0    0 | 00000000
+      15 |   3    0     1      1     0    0 | 00000000
+      16 |   3    0     1      1     0    0 | 00000000
+      17 |   3    0     1      1     0    0 | 00000000
+      18 |   3    0     1      1     0    0 | 00000000
+      19 |   4    0     1      1     0    0 | 00000000
+      20 |   4    0     1      1     0    0 | 00000000
+      21 |   4    0     1      1     0    0 | 00000000
+      22 |   4    0     1      1     0    0 | 00000000
+      23 |   4    0     1      1     0    0 | 00000000
+      24 |   5    0     1      1     0    0 | 00000000
+      25 |   5    0     1      1     1    1 | 00000000
+      26 |   5    0     1      1     1    1 | 00000000
+      27 |   5    0     1      1     1    1 | 00000000
+      28 |   5    0     1      1     1    1 | 00000000
+      29 |   6    0     1      1     1    1 | 00000000
+      30 |   6    0     1      1     1    1 | 00000000
+      31 |   6    0     1      1     1    1 | 00000000
+      32 |   6    0     1      1     1    1 | 00000000
+      33 |   6    0     1      1     1    1 | 00000000
+      34 |   7    0     1      1     1    1 | 00000000
+      35 |   7    0     1      1     1    1 | 00000000
+      36 |   7    0     1      1     1    1 | 00000000
+      37 |   7    0     1      1     1    1 | 00000000
+      38 |   7    0     1      1     1    0 | DEADBEEF
+      39 |   8    0     1      1     1    0 | DEADBEEF
+      40 |   8    0     1      1     1    0 | DEADBEEF
+      41 |   8    0     1      1     1    0 | DEADBEEF
+      42 |   8    0     1      1     1    0 | DEADBEEF
+      43 |   8    0     1      1     1    0 | DEADBEEF
+      44 |   9    0     1      1     1    0 | DEADBEEF
     |}]
 ;;
 

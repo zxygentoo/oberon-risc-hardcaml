@@ -55,7 +55,11 @@ end
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 5-bit state counter; [run] is both enable and synchronous clear (no reset). *)
-  let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) in
+  (* Registers named to match the RTL ([S]/[R]/[Q]) so the Phase-8 formal harness can pair
+     the flip-flops with FPDivider.v's (yosys [equiv_make] matches FFs by name —
+     test/formal). [R]/[Q] are named on the [reg] output (below), not the forward-declared
+     wire, so the *flip-flop* carries the name. *)
+  let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) -- "S" in
   (* a 24-bit mantissa (restored hidden bit + frac) in a 25-bit field, top bit 0 (room for
      the trial-subtraction borrow) *)
   let mant25 v = gnd @: vdd @: select v ~high:22 ~low:0 in
@@ -71,9 +75,9 @@ let create (i : _ I.t) : _ O.t =
   (* on borrow the divisor didn't fit: restore the old remainder, quotient bit 0 *)
   let r1 = mux2 (msb d) r0 d in
   let q0 = mux2 (s ==:. 0) (zero 26) q in
-  assign r (reg spec (select r1 ~high:23 ~low:0));
+  assign r (reg spec (select r1 ~high:23 ~low:0) -- "R");
   (* shift the quotient bit [~d[24]] in from the LSB *)
-  assign q (reg spec (select q0 ~high:24 ~low:0 @: ~:(msb d)));
+  assign q (reg spec (select q0 ~high:24 ~low:0 @: ~:(msb d)) -- "Q");
   (* ---- combinational FP wrapper off the held inputs + Q ---- *)
   let sign = msb i.x ^: msb i.y in
   let xe = select i.x ~high:30 ~low:23 in

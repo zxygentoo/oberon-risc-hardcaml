@@ -52,8 +52,8 @@ let create (i : _ I.t) : _ O.t =
   let bitcnt = Always.Variable.reg spec ~width:5 in
   let rdy = Always.Variable.reg spec ~width:1 in
   let shreg = Always.Variable.reg spec ~width:32 in
-  let tick_v = tick.value in
-  let bitcnt_v = bitcnt.value in
+  let tick_v = tick.value -- "tick" in
+  let bitcnt_v = bitcnt.value -- "bitcnt" in
   let rdy_v = rdy.value -- "rdy" in
   (* Qualified name: once composed into the SoC the UART (and later PS/2) shift registers
      are also "shreg", and the boot checkpoint looks this one up by name — so keep it

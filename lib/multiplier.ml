@@ -40,7 +40,10 @@ end
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 6-bit state counter; [run] is both enable and synchronous clear (no reset). *)
-  let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) in
+  (* Registers named to match the RTL ([S]/[P]) so the Phase-8 formal harness can pair the
+     flip-flops with Multiplier.v's (yosys [equiv_make] matches FFs by name —
+     test/formal). *)
+  let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) -- "S" in
   (* P : 64-bit dual-role register. [s] is in scope, so P's feedback can test S==0/S==32. *)
   let p =
     reg_fb spec ~width:64 ~f:(fun p ->
@@ -53,6 +56,7 @@ let create (i : _ I.t) : _ O.t =
       let w1 = mux2 (s ==:. 32 &: i.u) (hi -: pp) (hi +: pp) in
       (* S=0 loads x into the low half; otherwise accumulate-then-shift-right-by-one *)
       mux2 (s ==:. 0) (zero 32 @: i.x) (w1 @: select p ~high:31 ~low:1))
+    -- "P"
   in
   { O.stall = i.run &: ~:(s ==:. 33); z = p }
 ;;

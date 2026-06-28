@@ -6,6 +6,10 @@
     the register file, the CPU core, the SoC). *)
 
 module Left_shifter = Left_shifter
+module Right_shifter = Right_shifter
+module Registers = Registers
+module Multiplier = Multiplier
+module Divider = Divider
 module Fp_adder = Fp_adder
 module Fp_multiplier = Fp_multiplier
 module Fp_divider = Fp_divider

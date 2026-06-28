@@ -201,8 +201,8 @@ Vivado-specific layer.
 | **5** ✅ | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter, opt-in via `dune build @boot_checkpoint` (§6) |
 | **6a** ✅ | **Remaining peripherals**, each a faithful port: UART (`RS232R`/`RS232T`), PS/2 keyboard (`PS2`), PS/2 mouse (`MousePM`), video controller (`VID`, framebuffer DMA) | per-module **co-located `ppx_expect`/`qcheck` + Verilator RTL co-sim** vs the `.v` (`test/cosim/`) — the proven Phase 1–5 stack. (`hardcaml_step_testbench` + `event_driven_sim` were revisited at the mouse and **rejected**: its device model is a single sequential task, so the coroutine gave no benefit while running ~5× slower.) Closed with the **cosim-harness dedup** — a shared `run_serial_cosim` across SPI/RS232x/PS2 (+ the rename to `cosim.h`). VID is two-clock (`By_input_clocks`, the DCM→pclk a Phase-7 input); the mouse splits its open-drain `inout` into `*_oe` outputs + resolved inputs |
 | **6b** ✅ | **SoC top** — the full `RISC5Top` MMIO map (UART 2/3, mouse + kbd 6/7, GPIO 8/9, LEDs + switches 1) + the **video DMA / `stallX`** path; framebuffer out | **visual golden** — boot past the handoff to the idle Oberon desktop and assert the framebuffer is byte-identical to the oracle (hash `0xb9bdbf56ba51298d`, 18607 px; `dune build @visual_golden`). It surfaced a real **core** bug the single-instruction fuzzer structurally missed: ADD/SUB set the flags from `op` alone, lacking `RISC5.v`'s `~p`, so a *stalled* conditional branch whose op-field is 8/9 clobbered C → a spurious trap ~17.3 M cycles in. Caught + root-caused by a new **boot-stream RTL co-sim** (capture the core's per-cycle I/O over the boot, replay through `RISC5.v` under Verilator, find the first divergence — `dune build @core_cosim`, the core's first *cycle-level* RTL check before Phase 8). Fixed (one `~p`) + guarded in the fast suite (the ALU qcheck now drives `p`; the lockstep branch-gen now reaches op-field 8/9). The boot-handoff checkpoint extension over the new region stays a later option |
-| **7** | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream** | on-hardware boot |
-| **8** *(stretch)* | `hardcaml_of_verilog` import of `RISC5.v` + `hardcaml_verify` bounded equivalence | formal proof |
+| **7** 🚧 | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream**. *In progress (board bring-up):* the Phase-6 design ports **nearly unchanged** onto a **Nexys 4** and **boots Project Oberon to the idle desktop from an SD image** on real silicon. One bug surfaced — **horizontal video flicker** — whose cause the **Phase-8 formal layer had already pinpointed**: VID's framebuffer-fetch **CDC**, the one spot not cycle-equivalent to `VID60.v`. The Phase-6 `caught`/`req` handshake sampled a `pclk` flop directly in `clk` with no synchroniser (+ a clk→pclk feedback) — deterministic in sim, metastable/timing-marginal on silicon. **Fixed** with a metastability-safe **toggle pulse-synchroniser** (`lib/vid.ml` `pulse_sync` — proven no-loss/no-spurious for all phases in Phase 8; the cosim + visual-golden confirm it's output-identical). *Pending:* the `.xdc` CDC constraints (`ASYNC_REG` / `set_max_delay -datapath_only` on the synchroniser) + on-hardware re-test to confirm the flicker is gone. | on-hardware boot |
+| **8** *(stretch)* ✅ *(in-scope)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v`, plus the **register file** proven ≡ a behavioural spec (`registers_spec.v` — `Registers.v`'s duplicated bit-sliced `RAM16X1D` is a synthesis idiom with incongruent state, so we prove the 16×32/3R/1W *contract*; §2/§3). Every datapath unit proven. And the **whole core glue** — incl. the **in-situ ALU** (`aluRes`, no standalone `.v`) — proven ≡ `RISC5.v` with the 8 submodules black-boxed (assume-guarantee: `equiv_make` merges + checks the unit inputs, `cutpoint -blackbox` assumes their outputs, sound on the leaf proofs; teeth-checked by mutation). The datapath + core layer is closed, and the **Tier-1 peripherals are now proven too** — the same yosys `equiv_induct` path extended to the faithful-`.v` peripherals (the exhaustive upgrade of their Phase-6a cosim): **Tier 1** RS232R/T, SPI, PS2 ✓ (clean single-clock FSMs as `sequential` rows; each lib register *named*, then paired to the RTL by a per-row `renames` list — e.g. `q0→Q0`, `spi_shreg→shreg`; SPI's `rdy` `output reg` pairs via the output port; PS2's 16×8 `fifo` pairs through the `memory` pass like the register file), **plus the Mouse** (Tier 2) ✓ — its open-drain `inout msclk/msdat` (we split into `*_oe`+resolved-input) handled by two shims wrapping *both* sides into one explicit interface with a **free** external read (else yosys ties the inout read to 0 and the FSM degenerates — a vacuous proof) and the resolved line `oe ? 0 : ext` as the observable; the tristate lowered by `tribuf -formal`/`chformal -remove`/`setundef -one` (the pad pull-up). **And VID** (Tier 2) ✓ — a *partial* multiclock proof: drop `VID60.v`'s DCM (Phase-7 primitive) + `expose -input pclk`, **cut** `vidbuf` to a shared free input so the raster + pixel datapath prove ≡ `VID60.v` *given the fetched word*, and **`equiv_remove`** the `req` handshake — the framebuffer-fetch CDC deliberately departs (our toggle pulse-synchroniser vs the RTL async-set `req1`). That departure's **fetch invariant** is then closed by a *property* proof (`vid_invariant`): the extracted `pulse_sync` primitive is proven **one-`req`-per-`req0`, no loss, no spurious — for all clk/pclk phases and all reachable states** via `yosys-smtbmc -i`/z3 **k-induction** (the engine SymbiYosys wraps; no `sby` needed — and no hand-crafted inductive invariant: k≈48 spanning a fetch cycle suffices) — the CDC-robustness the single-phase Cyclesim test can't reach. **16 checks** total, each mutation-checked. *(That VID-CDC departure was no longer just a sim artifact: its `caught` one-shot turned out to be a real metastability bug on the Nexys 4 — horizontal flicker — so `vid.ml` now ships the synchroniser the proof is built around; the formal layer flagged the exact fragile spot.)* **Out of scope:** the SoC top (`RISC5Top`) — board-specific, our sim `Soc` ≠ `RISC5Top.OStation.v` by design (DCM/PROM/IOBUF/memory are Phase 7); revisit only if a board SoC lands. See test/formal/README | z3 `Unsat` / yosys all-`$equiv`-proven |
 | **9** *(stretch)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
@@ -227,9 +227,9 @@ granularity, against the spec directly — the §2 fidelity authority (layer 3, 
 layer 6). They answer orthogonal questions — *is the result correct?* vs *did we copy the
 spec?* — and cross-check: **every §8 divergence is the emulator differing from `RISC5.v`, and
 the co-sim is what proves our port sides with the RTL.** (There is no Verilog→Hardcaml *source*
-translator; `hardcaml_of_verilog` would import the `.v` as an in-process circuit but is
-unbuildable on the preview — §9 — so the co-sim runs the `.v` out-of-process and compares
-dumps, fine for a periodic fidelity check.)
+translator; `hardcaml_of_verilog` imports the `.v` as an in-process circuit — installable on the
+preview via a forked `jsonaf` pin (§9) — but this periodic fidelity check still runs the `.v`
+out-of-process under Verilator and compares dumps, which needs no yosys.)
 
 1. **Unit specs** — exhaustive or `qcheck` for combinational blocks (shifters, ALU).
 2. **FP vectors** — replay `fp_vectors.txt` through the FP units over the *compiler-reachable*
@@ -258,8 +258,44 @@ dumps, fine for a periodic fidelity check.)
    multi-min `eval.c` compiles, `hardcaml_verilator` won't build vs Verilator 5.048 — §9). **Opt-in** — the ~22 s boot is too slow for the default
    `dune runtest` (like the RTL co-sim), so run it with `dune build @boot_checkpoint`. The full
    boot past the handoff + framebuffer is the Phase-6 visual golden.
-6. *(stretch)* **Formal** — bounded equivalence between our port and the imported `RISC5.v` via
-   `hardcaml_verify` (installed); the exhaustive form of layer 3.
+6. **Formal** — *prove* (not sample) our port equivalent to the reference `.v`; the exhaustive form
+   of layer 3, in `test/formal` (`@formal`, opt-in like the co-sim). Two modes, because combinational
+   and sequential equivalence want different tools. **Combinational**: `hardcaml_of_verilog` imports
+   the `.v` to a `Hardcaml.Circuit.t` (yosys) and `hardcaml_verify`'s `Sec` SAT-checks it against ours
+   (z3) — needs only matching *port* names; both shifters proven ≡ `LeftShifter.v` / `RightShifter.v`.
+   **Sequential**: `Sec` pairs registers by name and the import mangles/regroups them, so instead we
+   *emit* our Verilog (`Rtl`) and prove equivalence inside yosys (`equiv_make` pairs flip-flops by
+   name → `equiv_induct`, *unbounded* temporal induction — all states, not a bounded trace); needs
+   only yosys, but the *register* names must match the RTL too (the Multiplier names its `S`/`P`).
+   Multiplier, Divider and all three FP units proven ≡ their `.v`. The **register file** is the one
+   unit proven against a *behavioural spec* (`test/formal/registers_spec.v`: 16×32, 3 async reads, 1
+   sync write) instead of Wirth's `Registers.v` — whose 64 duplicated, bit-sliced `RAM16X1D`
+   primitives are a synthesis idiom whose state (1024 bits, vs our array's 512) is structurally
+   incongruent: nothing for `equiv_make` to pair, and a memory miter isn't inductive on outputs alone
+   (only a shallow *bounded* check is tractable). Both sides are one array, so the sequential script's
+   `memory` pass lowers them to flip-flops that pair by name and `equiv_induct` closes; that `RAM16X1D`
+   meets the same contract is Vivado's distributed-RAM inference, not ours (§2/§3 — the regfile is the
+   canonical "structure is not the spec"). Every datapath unit now proven. The ALU has **no** standalone
+   `.v` (`aluRes` inline in `RISC5.v`; our `Alu` is a refactored grouping — folds `C0`→`c1`, zeroes
+   the other units' op slots — not an RTL slice), so it is proven **in situ**: the whole core glue
+   (decode, the inline ALU, control, flags, the 13 state registers) is checked ≡ `RISC5.v` with the 8
+   submodules black-boxed and *assumed*-equivalent on the leaf proofs above. `Risc5_core.create_with_units`
+   is the seam — `Core_blackbox` feeds it `Instantiation` stubs (names matched to the RTL), and
+   `Yosys_equiv.check_core` runs the assume-guarantee flow: `equiv_make` merges the matched unit cells
+   (checking their *inputs* via the `$equiv` on the named nets), `cutpoint -blackbox` cuts the merged
+   units' *outputs* to shared free signals, and `equiv_simple`/`equiv_induct` close the glue. Sound
+   because no combinational path crosses a submodule boundary (so the core decomposes into glue +
+   proven leaves); teeth-checked — mutating a glue constant leaves exactly the affected `$equiv`
+   unproven.
+
+   **Peripherals (Tier 1/2).** The same path extends to the faithful-`.v` peripherals: RS232R/T,
+   SPI, PS2 ≡ their `.v` (sequential `equiv_induct`, lib registers renamed to the RTL's); the
+   **Mouse** ≡ `MousePM.v` through an open-drain `inout`→split-port shim (`tribuf -formal` + a
+   free external-read wrapper); and **VID** ≡ `VID60.v` on its raster + pixel datapath (multiclock
+   `equiv_induct`, `vidbuf` cut around the *deliberate* fetch-CDC departure), with that CDC's
+   protocol — one `req` per `req0`, no loss, no spurious, all clk/pclk phases — proven **unbounded**
+   by `yosys-smtbmc -i` k-induction (`vid_invariant`; the BMC/induction engine SymbiYosys wraps, no
+   `sby` needed). 16 `@formal` checks, every one mutation-checked; full detail in `test/formal/README`.
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
@@ -392,7 +428,8 @@ oberon-risc-hardcaml/
                             real modules — shifters, ALU, CPU core… — from Phase 1)
   test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
                             `test_boot_checkpoint` = Phase-5 boot checkpoint
-                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim
+                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
+                            formal/ = logic-equivalence proofs (`@formal`, Phase 8)
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
@@ -417,10 +454,28 @@ then depend on it directly and delete the wrapper. FP vectors
 version). We track Jane Street's OxCaml *preview channel* on purpose: **`docs.hardcaml.org`
 documents exactly this version** (built from the `with-extensions` branch); vanilla opam tops
 out at v0.17.1. Trade-off: bleeding-edge and rolling (versions like `v0.18~preview.130.91+190`
-move forward under us). `hardcaml_verify` is installed (Phase-8 formal). `hardcaml_of_verilog`
-(yosys → in-process circuit import) is **blocked** on the preview — its `jsonaf` dep fails an
-OxCaml portability-mode check and no portable `faraday` exists — so RTL fidelity uses raw
-**Verilator** out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
+move forward under us). `hardcaml_verify` (Phase-8 formal) is installed. `hardcaml_of_verilog`
+(yosys → in-process import) needs a one-line workaround on the preview: its `jsonaf` dep's tarball
+(`v0.18~preview.130.91+190`) annotates the Faraday serializers `@@ portable`, which is unsatisfiable
+(no portable `faraday` exists), so it won't build. A fork drops those 4 annotations (it's parse-only,
+never serializes); install via the pin:
+
+```
+opam pin add jsonaf.v0.18~preview.130.91+190 \
+  'git+https://github.com/zxygentoo/jsonaf.git#528a015' --yes
+opam install hardcaml_of_verilog hardcaml_verify --yes
+```
+
+plus **`yosys`** (the Verilog import) and **`z3`** (`hardcaml_verify`'s SAT backend) on `PATH` at
+runtime — the **`test/formal`** logic-equivalence harness (`@formal`, §6) drives both. (jsonaf is
+already fixed upstream in `130.100+614`; the pin is only needed while we track `130.91+190` — bump
+the version/commit when the preview rolls forward and the upstream fix lands.) One yosys-version
+shim: yosys 0.65 emits cell parameters as binary strings, which the importer's techlib rejects, so
+`test/formal` drives yosys itself with `write_json -compat-int` (the library's built-in `Synthesize`
+script omits the flag, with no public knob to add it) and feeds the JSON back into its public
+`Yosys_netlist.of_string → Netlist → Verilog_circuit` path — no fork of `hardcaml_of_verilog`, and
+the patched `jsonaf` still does the parse. RTL fidelity otherwise uses raw **Verilator**
+out-of-process (`test/cosim/`, §6). Two compiled-sim backends were evaluated for
 Phase-5 boot speed and **both rejected**: `hardcaml_verilator` (Verilator-backed `Cyclesim.t`)
 runs on the system Verilator 5.048 but only for **I/O-only** sims — the `__Vscope_*`→`__Vscopep_*`
 rename breaks its internal-signal probe (`is_internal_port` / `lookup_*`), which the boot harness
@@ -470,10 +525,11 @@ full `lookup_*` introspection the harness needs.
   `hardcaml_waveterm`. (The standalone Phase-0 `test_scaffold` smoke that originally certified this
   was retired once those real tests subsumed it.)
 - **Running tests.** `dune runtest` = the fast always-on suite (FP replays/fuzz, single-instruction
-  CPU lockstep, the lib's co-located inline tests) — a few seconds. Two heavyweight checks are
+  CPU lockstep, the lib's co-located inline tests) — a few seconds. Three heavyweight checks are
   **opt-in** (built by `@check` so they can't rot, but kept out of `dune runtest`): `dune build
-  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s), and
-  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator). `dune build @check` is the
+  @boot_checkpoint` runs the Phase-5 boot-handoff checkpoint (boots the real `.dsk`, ~22 s),
+  `bash test/cosim/run.sh` runs the RTL co-sim (needs Verilator), and `dune build @formal` runs the
+  Phase-8 logic-equivalence proofs (needs yosys + z3). `dune build @check` is the
   type-check/pre-commit gate.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** — the ox
   `ocamlformat` reports a git-hash version, so a normal pin (e.g. the emulator's `0.29.0`)

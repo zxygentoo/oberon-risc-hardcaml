@@ -41,7 +41,10 @@ end
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 6-bit counter; run is enable + synchronous clear (no reset) — twin of Multiplier. *)
-  let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) in
+  (* Registers named to match the RTL ([S]/[RQ]) so the Phase-8 formal harness can pair
+     the flip-flops with Divider.v's (yosys [equiv_make] matches FFs by name —
+     test/formal), exactly as the Multiplier names its [S]/[P]. *)
+  let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) -- "S" in
   (* a negative signed dividend — divide [|x|], then sign-correct the outputs below *)
   let sign = msb i.x &: i.u in
   let x0 = mux2 sign (negate i.x) i.x in
@@ -57,6 +60,7 @@ let create (i : _ I.t) : _ O.t =
         (* keep the difference (bit 1) or restore the old remainder (bit 0); the borrow
            [~w1[31]] is the new quotient bit, shifted into the LSB *)
         (mux2 (msb w1) w0 w1 @: select rq ~high:30 ~low:0 @: ~:(msb w1)))
+    -- "RQ"
   in
   let q = select rq ~high:31 ~low:0 in
   let r = select rq ~high:63 ~low:32 in

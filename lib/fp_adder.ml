@@ -108,7 +108,12 @@ let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* Sequential skeleton (final): 2-bit State, run-gated with no reset, stall = run &
      ~(S==3). *)
-  let state = reg_fb spec ~width:2 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 2)) in
+  (* The five pipeline registers are named to match the RTL ([State]/[x3]/[y3]/[Sum]/[t3])
+     so the Phase-8 formal harness can pair the flip-flops with FPAdder.v's (yosys
+     [equiv_make] matches FFs by name — test/formal), as MUL/DIV name their [S]/[P]/[RQ]. *)
+  let state =
+    reg_fb spec ~width:2 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 2)) -- "State"
+  in
   let stall = i.run &: ~:(state ==:. 3) in
   (* ---- unpack (combinational off the held inputs) ---- *)
   let xs = msb i.x in
@@ -141,17 +146,17 @@ let create (i : _ I.t) : _ O.t =
   (* convert a negative operand to two's complement before the add (not for FLT) *)
   let x0 = mux2 (xs &: ~:(i.u)) (negate xm) xm in
   let y0 = mux2 (ys &: ~:(i.u)) (negate ym) ym in
-  let x3 = reg spec (denorm x0 ~sign:xs ~by:sx) in
-  let y3 = reg spec (denorm y0 ~sign:ys ~by:sy) in
+  let x3 = reg spec (denorm x0 ~sign:xs ~by:sx) -- "x3" in
+  let y3 = reg spec (denorm y0 ~sign:ys ~by:sy) -- "y3" in
   (* ---- Stage 1: two's-complement add -> Sum (sign-extended by 2 to hold the carry) ---- *)
-  let sum = reg spec ((xs @: xs @: x3) +: (ys @: ys @: y3)) in
+  let sum = reg spec ((xs @: xs @: x3) +: (ys @: ys @: y3)) -- "Sum" in
   (* ---- Stage 2: sign-magnitude + guard round, leading-one detect, post-normalize ---- *)
   (* back to sign-magnitude, then +1 rounds via the guard bit *)
   let s = mux2 (msb sum) (negate sum) sum +:. 1 in
   let sc = shift_count s in
   let e1 = e0 -: uresize sc ~width:9 +:. 1 in
   (* post-normalize: shift the leading one up to the hidden-bit position *)
-  let t3 = reg spec (log_shift ~f:sll (select s ~high:25 ~low:1) ~by:sc) in
+  let t3 = reg spec (log_shift ~f:sll (select s ~high:25 ~low:1) ~by:sc) -- "t3" in
   (* ---- output assembly ---- *)
   (* FLOOR reads the integer straight out of the aligned sum (sign-extended) *)
   let floor_z = sresize (select sum ~high:26 ~low:1) ~width:32 in

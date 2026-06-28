@@ -47,7 +47,10 @@ end
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* S : 5-bit state counter; [run] is both enable and synchronous clear (no reset). *)
-  let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) in
+  (* Registers named to match the RTL ([S]/[P]) so the Phase-8 formal harness can pair the
+     flip-flops with FPMultiplier.v's (yosys [equiv_make] matches FFs by name —
+     test/formal), exactly as the integer Multiplier names its [S]/[P]. *)
+  let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) -- "S" in
   (* P : 48-bit dual-role register (hi = accumulator, lo = x's mantissa). [s] is in scope,
      so P's feedback can test S==0 for the load. *)
   let p =
@@ -61,6 +64,7 @@ let create (i : _ I.t) : _ O.t =
         (s ==:. 0)
         (zero 24 @: vdd @: select i.x ~high:22 ~low:0)
         (w1 @: select p ~high:23 ~low:1))
+    -- "P"
   in
   (* ---- combinational FP wrapper off the held inputs + P ---- *)
   let sign = msb i.x ^: msb i.y in

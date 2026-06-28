@@ -33,10 +33,25 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the controller, cycle-faithful to [VID60.v]. NB the async-set CDC
-    flop [req1] (RTL [always @(posedge req0, posedge clk)]) is modelled as a [pclk]-domain
-    capture: Cyclesim samples async reset only at the clock edge, so a literal
-    transcription would drop a request pulse that lands between two [clk] edges. The
-    pixel/sync datapath is a direct transliteration. The Verilator co-sim proves
-    output-equivalence to [VID60.v]. *)
+(** [pulse_sync ~src_spec ~dst_spec ~pulse] crosses a 1-cycle [pulse] in the [src_spec]
+    clock domain into the [dst_spec] domain as a 1-cycle pulse, metastability-safe: a
+    toggle flop in the source domain turns the pulse into a level, a 3-FF [dst_spec]
+    synchroniser settles it, and an edge-detect regenerates one [dst_spec] pulse. The CDC
+    primitive [vid] uses for the framebuffer fetch (the substitute for [VID60.v]'s
+    async-set [req1]); proven no-loss/no-spurious for all clk/pclk phases in test/formal. *)
+val pulse_sync
+  :  src_spec:Signal.Reg_spec.t
+  -> dst_spec:Signal.Reg_spec.t
+  -> pulse:Signal.t
+  -> Signal.t
+
+(** [create i] builds the controller, cycle-faithful to [VID60.v] on the raster/pixel
+    datapath. The one departure is the framebuffer-fetch CDC: the RTL's async-set capture
+    flop [req1] (RTL [always @(posedge req0, posedge clk)]) is unrepresentable in
+    Cyclesim, so [req0] crosses [pclk]→[clk] through a TOGGLE PULSE SYNCHRONISER
+    ([req_toggle] → [sync0]/[sync1]/[sync2] → edge-detect [req]) — the textbook
+    metastability-safe crossing. It emits exactly one [clk] [req] per [req0] and is robust
+    on real silicon (the [sync0]/ [sync1] flops want an ASYNC_REG / CDC constraint in the
+    board [.xdc]). The pixel/sync datapath is a direct transliteration; the Verilator
+    co-sim checks output-equivalence to [VID60.v]. *)
 val create : Signal.t I.t -> Signal.t O.t
