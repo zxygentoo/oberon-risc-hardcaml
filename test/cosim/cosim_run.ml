@@ -151,10 +151,7 @@ let verilate ~top ~objdir ~sources ~vlog =
 let run_stimulus name ~rtl ~top ~cpp ~dumper ~extra =
   let work = Filename.concat work_root name in
   mkdir_p work;
-  Printf.printf
-    "=== %s ===\n[1/3] dumping Hardcaml %s outputs over the stimulus set ...\n"
-    name
-    name;
+  Printf.printf "[1/3] dumping Hardcaml %s outputs over the stimulus set ...\n" name;
   let dexe = Printf.sprintf "_build/default/test/cosim/%s.exe" dumper in
   (* shared dumpers take the unit name: fp_dump (all 3 FP units) also takes the fp_vectors
      path; rs232_dump picks tx/rx by name. The rest take no args. *)
@@ -191,7 +188,6 @@ let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
   let work = Filename.concat work_root name in
   mkdir_p work;
   let trace = Filename.concat work "core_boot.trace" in
-  Printf.printf "=== %s ===\n" name;
   let cap_ok =
     if Sys.file_exists trace && (Unix.stat trace).st_size > 0
     then (
