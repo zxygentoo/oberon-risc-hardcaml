@@ -26,7 +26,6 @@ let () =
   let bit1 b = Bits.of_unsigned_int ~width:1 (if b then 1 else 0) in
   let dev_msclk_low = ref false
   and dev_msdat_low = ref false in
-  let cycles = ref 0 in
   (* open-drain wired-AND: each line = ~(host pulls low | device pulls low) *)
   let resolve () =
     inp.msclk := bit1 (not (rd outp.msclk_oe = 1 || !dev_msclk_low));
@@ -42,8 +41,7 @@ let () =
       (if !dev_msdat_low then 1 else 0)
       (rd outp.msclk_oe)
       (rd outp.msdat_oe)
-      (rd outp.out);
-    cycles := !cycles + 1
+      (rd outp.out)
   in
   let wait_until cond cap =
     let g = ref 0 in
@@ -113,11 +111,10 @@ let () =
   in
   (* exercise +ve, -ve (sign bits), buttons, overflow — the report-decode corners *)
   send_report ~status:0x08 ~mx:3 ~my:5;
-  send_report ~status:0x09 ~mx:0x7F ~my:1;
   (* Left button, large +X *)
-  send_report ~status:0x30 ~mx:0xF0 ~my:0xF0;
+  send_report ~status:0x09 ~mx:0x7F ~my:1;
   (* X/Y sign bits set (-ve moves) *)
-  send_report ~status:0xC0 ~mx:0x11 ~my:0x22;
+  send_report ~status:0x30 ~mx:0xF0 ~my:0xF0;
   (* X/Y overflow bits set *)
-  Printf.eprintf "mouse_dump: %d cycles (init + 4 reports)\n" !cycles
+  send_report ~status:0xC0 ~mx:0x11 ~my:0x22
 ;;

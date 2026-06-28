@@ -105,9 +105,7 @@ let () =
     | "fp_divider" -> div_driver ()
     | other -> failwith (Printf.sprintf "fp_dump: unknown unit %S" other)
   in
-  let n = ref 0 in
   let emit ~u ~v ~x ~y =
-    incr n;
     let z, cycles = d.run ~u ~v ~x ~y in
     if d.has_uv
     then Printf.printf "%08X %08X %d %d %08X %d\n" x y u v z cycles
@@ -145,10 +143,5 @@ let () =
     let x = rand32 rng in
     let y = rand32 rng in
     emit ~u ~v ~x ~y
-  done;
-  Printf.eprintf
-    "fp_dump(%s): %d stimuli (fp_vectors %s-lines + 20000 fuzz)\n"
-    unit_name
-    !n
-    d.tag
+  done
 ;;

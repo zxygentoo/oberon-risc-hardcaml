@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 // Black-box stubs for the 8 submodules RISC5.v instantiates — port-only, marked blackbox.
-// The in-situ core proof (test_formal.ml `core`) reads these so BOTH RISC5.v (gold) and our
+// The in-situ core proof (formal_run.ml `core`) reads these so BOTH RISC5.v (gold) and our
 // emitted core (gate) reference the same opaque modules; yosys equiv_make then pairs/merges
 // the matched instances and `cutpoint -blackbox` turns their outputs into shared free signals
 // (assume-guarantee — each submodule is proven equivalent separately, §6). Headers match the

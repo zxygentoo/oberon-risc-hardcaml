@@ -89,16 +89,11 @@ let tx () =
     done;
     !n, Buffer.contents buf
   in
-  let count = ref 0 in
   let emit ~fsel ~data =
     let cycles, trace = frame ~fsel ~data in
-    Printf.printf "%d %02X %d %s\n" fsel data cycles trace;
-    incr count
+    Printf.printf "%d %02X %d %s\n" fsel data cycles trace
   in
-  drive ~emit ~fast_n:64 ~slow_n:8;
-  Printf.eprintf
-    "rs232_dump rs232t: %d frames (corners x2 + 64 fast + 8 slow fuzz)\n"
-    !count
+  drive ~emit ~fast_n:64 ~slow_n:8
 ;;
 
 (* ── receiver ── *)
@@ -156,16 +151,11 @@ let rx () =
     done;
     recv, Buffer.contents buf
   in
-  let count = ref 0 in
   let emit ~fsel ~data =
     let recv, trace = frame ~fsel ~data in
-    Printf.printf "%d %02X %s\n" fsel recv trace;
-    incr count
+    Printf.printf "%d %02X %s\n" fsel recv trace
   in
-  drive ~emit ~fast_n:32 ~slow_n:4;
-  Printf.eprintf
-    "rs232_dump rs232r: %d frames (corners x2 + 32 fast + 4 slow fuzz)\n"
-    !count
+  drive ~emit ~fast_n:32 ~slow_n:4
 ;;
 
 let () =

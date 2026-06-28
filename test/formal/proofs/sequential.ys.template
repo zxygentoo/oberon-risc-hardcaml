@@ -1,0 +1,24 @@
+# Sequential equivalence — the shared tactic for every clean single-clock FSM proven by
+# yosys-native SEC (AGENT.md §6). Driven by Yosys_equiv.run_proof; per-unit data is filled
+# from the sequential/behavioral rows in formal_run.ml. Placeholders (named WITHOUT braces
+# here on purpose — substitution is blind and would splice a value into this comment):
+#   rtl      reference .v (rtl_dir for the Wirth originals, spec_dir for registers_spec.v)
+#   ours/gate  our emitted Verilog + its module name (both harness-supplied)
+#   top      reference top module
+#   renames  a cd/rename block aligning our register names to the RTL's ("" when they match)
+# equiv_make pairs flip-flops by name (after renames), equiv_induct proves the step by
+# temporal induction, equiv_status -assert fails iff any $equiv is left open.
+read_verilog {rtl}
+read_verilog {ours}
+proc
+{renames}
+# lower any $mem (ps2's fifo, the register-file array) to FFs so equiv_make pairs the memory
+# state by name; a no-op for the memory-less iterative units
+memory
+opt
+equiv_make {top} {gate} equiv
+hierarchy -top equiv
+opt -full
+equiv_simple
+equiv_induct
+equiv_status -assert

@@ -22,7 +22,10 @@
    [dune exec test/cosim/cosim_run.exe -- <unit>] runs one live (uncaptured) for
    debugging; a trailing count ([-- all 4]) caps the job pool. *)
 
-let repo_root =
+(* Resolve and cd to the repo root so every path below is repo-root-relative no matter
+   where we're launched (directly, via dune exec, or as the @cosim dune action). Called
+   once at the top of the only [let ()]. *)
+let cd_to_repo_root () =
   let rec up d =
     if Sys.file_exists (Filename.concat d "dune-project")
     then d
@@ -30,10 +33,9 @@ let repo_root =
       let p = Filename.dirname d in
       if String.equal p d then failwith "cosim_run: no dune-project above cwd" else up p)
   in
-  up (Sys.getcwd ())
+  Sys.chdir (up (Sys.getcwd ()))
 ;;
 
-let () = Sys.chdir repo_root (* all paths below are repo-root-relative *)
 let rtl_dir = "test/_po/verilog/src"
 let cosim_dir = "test/cosim"
 let work_root = "test/_work/cosim"
@@ -108,7 +110,9 @@ let units =
 (* ── shell helpers (used inside each forked worker, where stdout/stderr point at the log)
    ── *)
 let quote = Filename.quote
-let abs p = Filename.concat repo_root p
+
+(* absolutise a repo-root-relative path; cwd is the repo root after [cd_to_repo_root] *)
+let abs p = Filename.concat (Sys.getcwd ()) p
 
 let sh cmd =
   flush stdout;
@@ -147,10 +151,7 @@ let verilate ~top ~objdir ~sources ~vlog =
 let run_stimulus name ~rtl ~top ~cpp ~dumper ~extra =
   let work = Filename.concat work_root name in
   mkdir_p work;
-  Printf.printf
-    "=== %s ===\n[1/3] dumping Hardcaml %s outputs over the stimulus set ...\n"
-    name
-    name;
+  Printf.printf "[1/3] dumping Hardcaml %s outputs over the stimulus set ...\n" name;
   let dexe = Printf.sprintf "_build/default/test/cosim/%s.exe" dumper in
   (* shared dumpers take the unit name: fp_dump (all 3 FP units) also takes the fp_vectors
      path; rs232_dump picks tx/rx by name. The rest take no args. *)
@@ -187,7 +188,6 @@ let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
   let work = Filename.concat work_root name in
   mkdir_p work;
   let trace = Filename.concat work "core_boot.trace" in
-  Printf.printf "=== %s ===\n" name;
   let cap_ok =
     if Sys.file_exists trace && (Unix.stat trace).st_size > 0
     then (
@@ -265,6 +265,7 @@ let ensure_exes selected =
 ;;
 
 let () =
+  cd_to_repo_root ();
   let argv = Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
   let selected =

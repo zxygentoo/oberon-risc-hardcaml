@@ -61,7 +61,7 @@ them to flip-flops that pair by name and `equiv_induct` closes (unbounded). That
 `RAM16X1D` duplication implements the same contract is *his* synthesis concern (Vivado's
 distributed-RAM inference), not ours.
 
-### In-situ core glue — `core_blackbox.ml` + `Yosys_equiv.check_core` (assume-guarantee)
+### In-situ core glue — `core_blackbox.ml` + `proofs/core.ys.template` (assume-guarantee)
 
 ```
 RISC5.v (gold) ──────┐  8 units = black boxes on both sides (core_stubs.v)
@@ -79,7 +79,7 @@ interrupt state).
 
 The seam is `Risc5_core.create_with_units`: `Core_blackbox` passes `Instantiation` stubs whose
 module / instance / port / **output-wire** names match `RISC5.v` (so `equiv_make` pairs them).
-The flow (`check_core`): rename our registers to the RTL's → `equiv_make` (pairs the top
+The flow (`proofs/core.ys.template`): rename our registers to the RTL's → `equiv_make` (pairs the top
 flip-flops and *merges* the matched black-box cells, checking their **inputs** via the `$equiv`
 on the named nets) → **`cutpoint -blackbox`** (replaces the merged units with shared free
 signals — the *assume* side) → `equiv_simple` + `equiv_induct` on the resulting pure-glue
@@ -91,6 +91,25 @@ non-looping interface), so the core genuinely decomposes into glue + proven leav
 unproven — `PC[0]` and `adr[2]` (= `PC<<2`) — so the proof catches glue bugs and localizes
 them; it is not vacuous.
 
+## The driver — one `run_proof` + per-proof `.ys.template`
+
+Every yosys-backed proof above — the ten single-clock units *and* the core/mouse/vid/vid_invariant
+one-offs — runs through a single driver, `Yosys_equiv.run_proof`. The proof *tactic* (the actual
+yosys commands) lives in a checked-in template under [`proofs/`](proofs), beside the `.v` it reads.
+`run_proof` emits our circuit to Verilog, substitutes `{placeholder}` → value into the template
+(the `.v`/spec paths, the top/gate module names, any rename block — plus the harness-owned `{ours}`/
+`{gate}`/`{smt2}`), writes the **concrete** script to `test/_work/formal/<check>/proof.ys`
+(inspectable *and* runnable), runs yosys, and maps the exit code. The one property proof
+(`vid_invariant`) adds a `yosys-smtbmc` step via `~smtbmc` (yosys only emits the SMT problem there;
+the verdict is the k-induction). A leftover `{…}` after substitution raises — a real yosys command
+never contains a brace, so any survivor is an unfilled placeholder.
+
+So a proof is its `proofs/*.ys.template` (read it to see exactly what yosys does) plus a few lines of
+OCaml supplying the data. The shared `sequential.ys.template` serves all ten single-clock units;
+`core`/`mouse`/`vid`/`vid_invariant` each have their own template for their bespoke tactic
+(black-boxing, the open-drain shim, the CDC cut, the SMT property). *Only* the combinational shifters
+sit outside this — they use `hardcaml_verify`'s `Sec`/z3 (`formal_equiv.ml`), no yosys, no template.
+
 ## Running
 
 Opt-in (like the cosim) — needs **yosys** on `PATH` (both modes) and **z3** (combinational
@@ -98,12 +117,12 @@ mode), plus the `hardcaml_verify` / `hardcaml_of_verilog` libraries (AGENT.md §
 
 ```
 dune build @formal                              # prove every unit, in parallel
-dune exec test/formal/test_formal.exe -- core   # one check, live (e.g. core | vid_invariant |
+dune exec test/formal/formal_run.exe -- core    # one check, live (e.g. core | vid_invariant |
                                                 #   left_shifter | multiplier | mouse | …)
-dune exec test/formal/test_formal.exe -- all 4  # all, capping parallelism at 4 jobs
+dune exec test/formal/formal_run.exe -- all 4   # all, capping parallelism at 4 jobs
 ```
 
-`test_formal` is a self-contained OCaml runner (like cosim's `cosim_run`): it cd's to the repo
+`formal_run` is a self-contained OCaml runner (like cosim's `cosim_run`): it cd's to the repo
 root, checks `yosys`/`z3` on `PATH`, fetches + checksum-verifies the reference Verilog on demand
 (toolchain-free [`../fetch-rtl.sh`](../rtl-sources.txt), shared provenance with the cosim), then
 runs the checks through the shared parallel `Fork_pool` — each in its own
@@ -112,7 +131,7 @@ yosys/z3 are RAM-heavy, so it defaults to ~half the cores; pass a job count to o
 
 ## Adding a unit
 
-In `test_formal.ml`:
+In `formal_run.ml`:
 - **Combinational** (standalone `.v`, no state): add a row to `combinational` — a thunk building
   the circuit via `Circuit.With_interface (Unit.I) (Unit.O)` (ports match the `.v`), plus the
   reference `.v` + top-module name.
@@ -124,27 +143,29 @@ In `test_formal.ml`:
   `register_renames`; `[]` when they already match). Keep the lib's waveform/SoC-namespaced names
   and rename here — e.g. `q0→Q0`, `spi_shreg→shreg`.
 - **Behavioural spec** (a unit whose RTL is a synthesis idiom, not behaviour — so far only the
-  register file): add a checked-in `*_spec.v` here, a thunk, and a row to `behavioral` (reference
-  dir is `spec_dir = test/formal`, not the fetched `test/_po/`). Same `equiv_induct` path.
+  register file): add a checked-in `*_spec.v` under `proofs/`, a thunk, and a row to `behavioral`
+  (reference dir is `proofs_dir = test/formal/proofs`, not the fetched `test/_po/`). Same
+  `sequential.ys.template` / `equiv_induct` path.
+
+Each one-off is its own runner (not a list row) + its own `proofs/<name>.ys.template`:
 
 - **In-situ core** (whole core, submodules black-boxed): see `core_blackbox.ml` (the gate, via
-  `Risc5_core.create_with_units`), `core_stubs.v` (the stubs), and `run_core` /
-  `Yosys_equiv.check_core` (the `cutpoint`-based flow). One-off, so it's its own runner, not a list.
+  `Risc5_core.create_with_units`), `proofs/core_stubs.v` (the stubs), and `run_core` +
+  `proofs/core.ys.template` (the `cutpoint`-based flow).
 - **Open-drain shim** (a unit whose RTL has bidirectional `inout` pins our port splits into
-  `*_oe`+resolved-input — so far only the Mouse): see `mouse_shim.v` (the two wrappers) and
-  `run_mouse` / `Yosys_equiv.check_shim` (wrap both sides into one explicit interface, lower the
-  tristate with `tribuf -formal`/`chformal -remove`/`setundef -one`, then `equiv_induct`). One-off.
+  `*_oe`+resolved-input — so far only the Mouse): see `proofs/mouse_shim.v` (the two wrappers) and
+  `run_mouse` + `proofs/mouse.ys.template` (wrap both sides into one explicit interface, lower the
+  tristate with `tribuf -formal`/`chformal -remove`/`setundef -one`, then `equiv_induct`).
 - **Multiclock + CDC cut** (a two-clock unit with a deliberate CDC departure — so far only VID): see
-  `vid_stubs.v` (DCM/BUFG stubs) and `run_vid` / `Yosys_equiv.check_vid` (drop the DCM + `expose
-  -input pclk`, `expose -input` the CDC boundary signal to a shared free input on both sides, and
-  `equiv_remove` the departed output). A *partial* proof by construction — proves around the CDC.
-  One-off.
+  `proofs/vid_stubs.v` (DCM/BUFG stubs) and `run_vid` + `proofs/vid.ys.template` (drop the DCM +
+  `expose -input pclk`, `expose -input` the CDC boundary signal to a shared free input on both sides,
+  and `equiv_remove` the departed output). A *partial* proof by construction — proves around the CDC.
 - **Temporal property** (a claim that's *not* a cycle-equivalence — so far the VID fetch invariant):
-  see `vid_invariant.v` (a monitor wrapping the emitted gate with assumptions + assertions) and
-  `run_vid_invariant` / `Yosys_equiv.check_property` (emit → `clk2fflogic` → `write_smt2` →
-  `yosys-smtbmc -i -s z3 -t <k>`, k-induction — the engine SymbiYosys wraps, no `sby` needed). An
-  unbounded proof over all clock interleavings; use when there's a property to prove but no
-  equivalence.
+  see `proofs/vid_invariant.v` (a monitor wrapping the emitted gate with assumptions + assertions)
+  and `run_vid_invariant` + `proofs/vid_invariant.ys.template`, run with `~smtbmc` (the template emits
+  the SMT problem: emit → `clk2fflogic` → `write_smt2`; then `yosys-smtbmc -i -s z3 -t <k>`,
+  k-induction — the engine SymbiYosys wraps, no `sby` needed). An unbounded proof over all clock
+  interleavings; use when there's a property to prove but no equivalence.
 
 The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
@@ -166,8 +187,8 @@ passes — added rigor (rare corners, the bright line), not a new capability. Th
 (`RISC5Top`) is **out of scope** — board-specific (our sim `Soc` ≠ `RISC5Top.OStation.v` by design:
 DCM/PROM/IOBUF/memory are Phase 7).
 
-**Tier 1 — done (`Yosys_equiv.check`, a `sequential` row each).** Single-clock FSMs with a direct
-standalone `.v`, closed by the standard `equiv_induct` recipe; each row carries the `renames` that
+**Tier 1 — done (a `sequential` row each, via `run_proof` + `sequential.ys.template`).** Single-clock
+FSMs with a direct standalone `.v`, closed by the standard `equiv_induct` recipe; each row carries the `renames` that
 pair our lib reg names to the RTL's (the lib keeps its waveform/SoC-namespaced names). Each proof
 mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells unproven):
 - [x] `RS232T` ≡ `RS232T.v` — names already match (`run`/`tick`/`bitcnt`/`shreg`), no renames.
@@ -180,8 +201,8 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   by name (128 of the 160 cells), the same mechanism as the register-file proof.
 
 **Tier 2 — one wrinkle each:**
-- [x] `Mouse` ≡ `MousePM.v` (module `MouseP`) — **done** (`run_mouse` / `Yosys_equiv.check_shim`,
-  `mouse_shim.v`). `MouseP` has open-drain `inout msclk, msdat`; we split each into a `*_oe` drive +
+- [x] `Mouse` ≡ `MousePM.v` (module `MouseP`) — **done** (`run_mouse` + `proofs/mouse.ys.template`,
+  `proofs/mouse_shim.v`). `MouseP` has open-drain `inout msclk, msdat`; we split each into a `*_oe` drive +
   the resolved input. Two shims wrap *both* sides into one explicit interface whose external read is
   a **free** input (essential — without it yosys ties the inout read to 0 and the FSM degenerates to
   constants, a vacuous proof) and whose observable is the **resolved line** `oe ? 0 : ext`. The
@@ -190,8 +211,8 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   wire-AND) + `setundef -one` (the both-released float = the pad pull-up). 160 cells; mutation-checked
   on state, the `*_oe` drive, *and* the resolved-line read. `count`/`filter` newly named in the lib;
   the flattened FFs are renamed `g.X→X` to pair with the RTL.
-- [x] `VID` ≡ `VID60.v` — **done, partial by design** (`run_vid` / `Yosys_equiv.check_vid`,
-  `vid_stubs.v`). Two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv. Gold prep:
+- [x] `VID` ≡ `VID60.v` — **done, partial by design** (`run_vid` + `proofs/vid.ys.template`,
+  `proofs/vid_stubs.v`). Two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv. Gold prep:
   `VID60.v` makes `pclk` with a Xilinx DCM (a Phase-7 primitive), so we stub + drop the DCM/BUFG and
   `expose -input pclk` to match our gate; `chparam RGBW=6`. The framebuffer-fetch CDC *deliberately*
   departs from the RTL (our toggle pulse-synchroniser vs `VID60.v`'s async-set `req1`), so a whole-VID
@@ -201,8 +222,8 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   it's never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `vidadr/hsync/vsync`) + the
   pixel datapath ≡ `VID60.v` (79 cells; mutation-checked on raster *and* pixel paths). The fetch CDC
   itself — the cut part — is closed by a **separate property proof** (`vid_invariant`, below).
-- [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` /
-  `Yosys_equiv.check_bmc`, `vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
+- [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` +
+  `proofs/vid_invariant.ys.template`, `proofs/vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
   synchroniser vs the async-set `req1`), so equiv can't touch it — but the *protocol* is provable:
   **one `req` per `req0`, no loss, no duplication**. `vid.ml`'s `pulse_sync` is extracted as a
   reusable primitive; the harness isolates it (`req0` an input), wraps it with a `req0` generator +

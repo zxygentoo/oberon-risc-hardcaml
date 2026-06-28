@@ -268,7 +268,7 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
    name → `equiv_induct`, *unbounded* temporal induction — all states, not a bounded trace); needs
    only yosys, but the *register* names must match the RTL too (the Multiplier names its `S`/`P`).
    Multiplier, Divider and all three FP units proven ≡ their `.v`. The **register file** is the one
-   unit proven against a *behavioural spec* (`test/formal/registers_spec.v`: 16×32, 3 async reads, 1
+   unit proven against a *behavioural spec* (`test/formal/proofs/registers_spec.v`: 16×32, 3 async reads, 1
    sync write) instead of Wirth's `Registers.v` — whose 64 duplicated, bit-sliced `RAM16X1D`
    primitives are a synthesis idiom whose state (1024 bits, vs our array's 512) is structurally
    incongruent: nothing for `equiv_make` to pair, and a memory miter isn't inductive on outputs alone
@@ -281,12 +281,14 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
    (decode, the inline ALU, control, flags, the 13 state registers) is checked ≡ `RISC5.v` with the 8
    submodules black-boxed and *assumed*-equivalent on the leaf proofs above. `Risc5_core.create_with_units`
    is the seam — `Core_blackbox` feeds it `Instantiation` stubs (names matched to the RTL), and
-   `Yosys_equiv.check_core` runs the assume-guarantee flow: `equiv_make` merges the matched unit cells
+   `proofs/core.ys.template` (via `Yosys_equiv.run_proof`) runs the assume-guarantee flow: `equiv_make` merges the matched unit cells
    (checking their *inputs* via the `$equiv` on the named nets), `cutpoint -blackbox` cuts the merged
    units' *outputs* to shared free signals, and `equiv_simple`/`equiv_induct` close the glue. Sound
    because no combinational path crosses a submodule boundary (so the core decomposes into glue +
    proven leaves); teeth-checked — mutating a glue constant leaves exactly the affected `$equiv`
-   unproven.
+   unproven. *(Harness: every yosys proof — the sequential units, the core, and the Tier-2 one-offs
+   below — is one `Yosys_equiv.run_proof` driver filling a checked-in `.ys.template` under
+   `test/formal/proofs/`; the proofs differ only in their template + a few subst values.)*
 
    **Peripherals (Tier 1/2).** The same path extends to the faithful-`.v` peripherals: RS232R/T,
    SPI, PS2 ≡ their `.v` (sequential `equiv_induct`, lib registers renamed to the RTL's); the

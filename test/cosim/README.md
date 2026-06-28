@@ -3,7 +3,7 @@
 Confirms a Hardcaml design is **bit-exact to Wirth's original Verilog** — in both result
 *and* timing — by driving the reference RTL through **Verilator** and comparing each
 stimulus's output against the Hardcaml port. This is the simulation-based preview of the
-Phase-8 formal-equivalence proof (`hardcaml_verify`), and the project's *fidelity* oracle —
+Phase-8 formal-equivalence proof ([`test/formal`](../formal)), and the project's *fidelity* oracle —
 distinct from the OCaml emulator, which is the *behavioural / system-state* oracle (see AGENT.md §6).
 
 It is **not** part of `dune runtest`. It needs only:
