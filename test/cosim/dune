@@ -8,7 +8,7 @@
 (executable
  (name cosim_run)
  (modules cosim_run)
- (libraries unix))
+ (libraries unix fork_pool))
 
 (executables
  (names fp_dump spi_dump rs232_dump ps2_dump vid_dump mouse_dump)

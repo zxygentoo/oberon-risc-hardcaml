@@ -1,6 +1,22 @@
 open! Base
 open Hardcaml
 
+(* cd to the repo root so every relative path (test/_po, test/_work, the spec .v) resolves
+   no matter where we're launched — directly, via dune exec, or as the @formal dune
+   action. Mirrors cosim_run; the only remaining bash is the toolchain-free fetch-rtl.sh. *)
+let () =
+  let rec up d =
+    if Stdlib.Sys.file_exists (Stdlib.Filename.concat d "dune-project")
+    then Stdlib.Sys.chdir d
+    else (
+      let parent = Stdlib.Filename.dirname d in
+      if String.equal parent d
+      then failwith "test_formal: no dune-project above cwd"
+      else up parent)
+  in
+  up (Stdlib.Sys.getcwd ())
+;;
+
 (* ── Combinational units: our circuit's ports match the reference .v; proven by importing
    the .v and SAT-checking against ours with hardcaml_verify's Sec + z3 (Formal_equiv). ── *)
 
@@ -258,26 +274,28 @@ let registers () =
 
 (* ── Runner ── *)
 
-(* Scratch root: in-repo + self-contained (git-ignored test/_work; run.sh runs from the
-   repo root, so this relative path resolves there). *)
-let work_dir = "test/_work/formal"
+(* Scratch root: in-repo + self-contained (git-ignored test/_work; test_formal cd's to the
+   repo root at startup, so this relative path resolves there). Each check runs in its own
+   subdir test/_work/formal/<name>, so the parallel pool's per-check yosys/z3 files never
+   collide. *)
+let work_root = "test/_work/formal"
 let rtl_dir = "test/_po/verilog/src" (* Wirth's originals, fetched on demand *)
 let spec_dir = "test/formal" (* our checked-in behavioural specs, e.g. registers_spec.v *)
 
-let run_combinational (name, ours, v, top_module) =
+let run_combinational ~work_dir (name, ours, v, top_module) =
   Stdio.printf "=== %s : ours  vs  %s   [combinational · Sec/z3] ===\n%!" name v;
   match
     Formal_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
   with
   | Formal_equiv.Equivalent ->
     Stdio.printf "  EQUIVALENT  (no input makes the outputs differ)\n%!";
-    false
+    true
   | Formal_equiv.Counterexample ->
     Stdio.printf "  NOT EQUIVALENT  (counterexample found)\n%!";
-    true
+    false
 ;;
 
-let run_sequential ~dir ~kind (name, ours, v, top_module, renames) =
+let run_sequential ~work_dir ~dir ~kind (name, ours, v, top_module, renames) =
   Stdio.printf "=== %s : ours  vs  %s   [%s] ===\n%!" name v kind;
   match
     Yosys_equiv.check
@@ -289,10 +307,10 @@ let run_sequential ~dir ~kind (name, ours, v, top_module, renames) =
   with
   | Yosys_equiv.Equivalent ->
     Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
-    false
+    true
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    true
+    false
 ;;
 
 let combinational : (string * (unit -> Circuit.t) * string * string) list =
@@ -335,7 +353,7 @@ let behavioral
    separately). See [Core_blackbox] (the gate) and [Yosys_equiv.check_core] (the flow:
    equiv_make merges the units, cutpoint -blackbox cuts their outputs, equiv_induct closes
    the glue). *)
-let run_core () =
+let run_core ~work_dir =
   Stdio.printf
     "=== core : ours glue  vs  RISC5.v   [in-situ · 8 units black-boxed · yosys \
      equiv_induct] ===\n\
@@ -352,10 +370,10 @@ let run_core () =
   | Yosys_equiv.Equivalent ->
     Stdio.printf
       "  EQUIVALENT  (glue proven — all $equiv closed; units assumed-equiv)\n%!";
-    false
+    true
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    true
+    false
 ;;
 
 (* The Mouse (Tier 2): its own runner (distinct yosys flow, like run_core), since MouseP's
@@ -376,7 +394,7 @@ let mouse_renames =
   ]
 ;;
 
-let run_mouse () =
+let run_mouse ~work_dir =
   Stdio.printf
     "=== mouse : ours (shimmed)  vs  MousePM.v   [open-drain inout · yosys equiv_induct] \
      ===\n\
@@ -393,10 +411,10 @@ let run_mouse () =
   with
   | Yosys_equiv.Equivalent ->
     Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
-    false
+    true
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    true
+    false
 ;;
 
 (* VID (Tier 2): its own runner (distinct yosys flow, like run_core/run_mouse). Two-clock,
@@ -405,7 +423,7 @@ let run_mouse () =
    raster
    + pixel datapath ≡ VID60.v, with the CDC handshake cut/excluded (argued by the cosim +
      the one-req-per-req0 invariant test in [vid.ml]). See [Yosys_equiv.check_vid]. *)
-let run_vid () =
+let run_vid ~work_dir =
   Stdio.printf
     "=== vid : ours (raster+pixels)  vs  VID60.v   [multiclock · CDC cut · yosys \
      equiv_induct] ===\n\
@@ -421,10 +439,10 @@ let run_vid () =
   | Yosys_equiv.Equivalent ->
     Stdio.printf
       "  EQUIVALENT  (raster + pixel datapath proven; CDC fetch handshake excluded)\n%!";
-    false
+    true
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    true
+    false
 ;;
 
 (* The VID fetch-CDC invariant — the property check_vid cuts. Proves [Vid.pulse_sync] is
@@ -435,7 +453,7 @@ let run_vid () =
    margin. *)
 let vid_invariant_k = 48
 
-let run_vid_invariant () =
+let run_vid_invariant ~work_dir =
   Stdio.printf
     "=== vid_invariant : pulse_sync no-loss/no-spurious   [all-phase CDC · yosys-smtbmc \
      k-induction k=%d] ===\n\
@@ -452,35 +470,98 @@ let run_vid_invariant () =
   | Yosys_equiv.Equivalent ->
     Stdio.printf
       "  PROVEN  (one req per req0 — no loss, no spurious — all phases, all states)\n%!";
-    false
+    true
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "  NOT PROVEN  (induction counterexample)\n%!";
-    true
+    false
+;;
+
+(* All checks as one uniform list — [name, run ~work_dir -> passed?]. The combinational
+   and sequential rows wrap their tuple-driven runners; core/mouse/vid/vid_invariant are
+   their own one-off flows. [run] is only invoked inside a worker (or a single-check run),
+   so building this list touches no circuit / yosys / z3 — keeping the parent clean before
+   [Fork_pool] forks. *)
+let checks : (string * (work_dir:string -> bool)) list =
+  List.concat
+    [ List.map combinational ~f:(fun ((name, _, _, _) as row) ->
+        name, fun ~work_dir -> run_combinational ~work_dir row)
+    ; List.map sequential ~f:(fun ((name, _, _, _, _) as row) ->
+        ( name
+        , fun ~work_dir ->
+            run_sequential
+              ~work_dir
+              ~dir:rtl_dir
+              ~kind:"sequential · yosys equiv_induct"
+              row ))
+    ; List.map behavioral ~f:(fun ((name, _, _, _, _) as row) ->
+        ( name
+        , fun ~work_dir ->
+            run_sequential
+              ~work_dir
+              ~dir:spec_dir
+              ~kind:"sequential · yosys equiv_induct · behavioural spec"
+              row ))
+    ; [ "core", run_core
+      ; "mouse", run_mouse
+      ; "vid", run_vid
+      ; "vid_invariant", run_vid_invariant
+      ]
+    ]
 ;;
 
 let () =
-  let fails =
-    List.count combinational ~f:run_combinational
-    + List.count
-        sequential
-        ~f:(run_sequential ~dir:rtl_dir ~kind:"sequential · yosys equiv_induct")
-    + List.count
-        behavioral
-        ~f:
-          (run_sequential
-             ~dir:spec_dir
-             ~kind:"sequential · yosys equiv_induct · behavioural spec")
-    + Bool.to_int (run_core ())
-    + Bool.to_int (run_mouse ())
-    + Bool.to_int (run_vid ())
-    + Bool.to_int (run_vid_invariant ())
+  let argv = Stdlib.Sys.argv in
+  let sel = if Array.length argv >= 2 then argv.(1) else "all" in
+  let selected =
+    if String.equal sel "all"
+    then checks
+    else (
+      match List.find checks ~f:(fun (n, _) -> String.equal n sel) with
+      | Some c -> [ c ]
+      | None ->
+        Stdio.eprintf
+          "unknown check: %s (expected %s | all)\n"
+          sel
+          (String.concat ~sep:" " (List.map checks ~f:fst));
+        Stdlib.exit 2)
   in
-  let total =
-    List.length combinational + List.length sequential + List.length behavioral + 4
+  let jobs =
+    if Array.length argv >= 3
+    then (
+      match Stdlib.int_of_string_opt argv.(2) with
+      | Some j -> Int.max 1 j
+      | None ->
+        Stdio.eprintf "bad jobs count: %s\n" argv.(2);
+        Stdlib.exit 2
+        (* yosys/z3 are RAM-heavy (the core proof + vid_invariant k-induction especially),
+           so default to ~half the cores; override with the 2nd arg. *))
+    else
+      Int.max 1 (Int.min (List.length selected) (Domain.recommended_domain_count () / 2))
   in
-  if fails > 0
+  (* prep: yosys + z3 on PATH, and the reference RTL fetched + checksum-verified on demand
+     (the fetch itself stays toolchain-free bash). *)
+  List.iter [ "yosys"; "z3" ] ~f:(fun tool ->
+    if Stdlib.Sys.command (Printf.sprintf "command -v %s > /dev/null 2>&1" tool) <> 0
+    then (
+      Stdio.eprintf "[formal] needs '%s' on PATH — see test/formal/README.md\n" tool;
+      Stdlib.exit 2));
+  if Stdlib.Sys.command "bash test/fetch-rtl.sh" <> 0
   then (
-    Stdio.printf "\n%d of %d formal check(s) FAILED\n" fails total;
-    Stdlib.exit 1)
-  else Stdio.printf "\nall %d formal check(s) passed\n" total
+    Stdio.eprintf "[formal] reference RTL fetch failed\n";
+    Stdlib.exit 2);
+  let check_dir name = work_root ^ "/" ^ name in
+  match selected with
+  | [ (name, run) ] ->
+    (* single check: run live (uncaptured) for debugging *)
+    Stdlib.exit (if run ~work_dir:(check_dir name) then 0 else 1)
+  | _ ->
+    let fails =
+      Fork_pool.run
+        ~what:"formal"
+        ~jobs
+        ~work_root
+        (List.map selected ~f:(fun (name, run) ->
+           name, fun () -> run ~work_dir:(check_dir name)))
+    in
+    if fails > 0 then Stdlib.exit 1
 ;;

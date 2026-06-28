@@ -9,7 +9,7 @@
 # §8's RTL line-number citations) was verified against, so we refuse rather than co-sim against
 # unknown RTL. Updating to a newer upstream revision is a deliberate edit of rtl-sources.txt.
 #
-# Standalone or called by run.sh; toolchain-free (curl/unzip/sha256sum/awk/grep only, no opam).
+# Standalone or called by the cosim/formal runners; toolchain-free (curl/unzip/sha256sum/awk/grep, no opam).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 

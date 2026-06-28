@@ -232,121 +232,8 @@ let run_unit spec =
     run_core spec.name ~rtls ~extra_v ~cpp ~top ~skip
 ;;
 
-(* ── parallel pool: one forked worker per unit, throttled to <jobs> concurrent ── *)
-
-(* a worker: redirect stdout/stderr to the unit's log, run the pipeline, exit with its
-   code *)
-let worker spec =
-  let work = Filename.concat work_root spec.name in
-  mkdir_p work;
-  let logp = Filename.concat work "run.log" in
-  let fd = Unix.openfile logp [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
-  Unix.dup2 fd Unix.stdout;
-  Unix.dup2 fd Unix.stderr;
-  Unix.close fd;
-  let rc =
-    try run_unit spec with
-    | e ->
-      Printf.printf "EXN: %s\n" (Printexc.to_string e);
-      1
-  in
-  flush stdout;
-  flush stderr;
-  exit rc
-;;
-
-let run_pool jobs specs =
-  let queue = ref specs in
-  let running : (int, string * float) Hashtbl.t = Hashtbl.create 16 in
-  let results = ref [] in
-  let launch spec =
-    flush stdout;
-    flush stderr;
-    (* so the child doesn't inherit (and re-flush) the parent's buffer *)
-    let t0 = Unix.gettimeofday () in
-    match Unix.fork () with
-    | 0 -> worker spec (* child: never returns *)
-    | pid -> Hashtbl.replace running pid (spec.name, t0)
-  in
-  let reap () =
-    let pid, status = Unix.wait () in
-    match Hashtbl.find_opt running pid with
-    | None -> ()
-    | Some (name, t0) ->
-      Hashtbl.remove running pid;
-      let code =
-        match status with
-        | Unix.WEXITED c -> c
-        | _ -> 255
-      in
-      let dt = Unix.gettimeofday () -. t0 in
-      results := (name, code, dt) :: !results;
-      if code = 0
-      then Printf.printf "  [PASS] %-14s %4.0fs\n%!" name dt
-      else
-        Printf.printf
-          "  [FAIL] %-14s %4.0fs  (see %s/run.log)\n%!"
-          name
-          dt
-          (Filename.concat work_root name)
-  in
-  while
-    (match !queue with
-     | [] -> false
-     | _ -> true)
-    || Hashtbl.length running > 0
-  do
-    while
-      Hashtbl.length running < jobs
-      &&
-      match !queue with
-      | [] -> false
-      | _ -> true
-    do
-      match !queue with
-      | s :: rest ->
-        queue := rest;
-        launch s
-      | [] -> ()
-    done;
-    if Hashtbl.length running > 0 then reap ()
-  done;
-  !results
-;;
-
-let print_summary selected results =
-  let result_of name = List.find_opt (fun (n, _, _) -> String.equal n name) results in
-  Printf.printf "\n======== cosim results ========\n";
-  let pass = ref 0
-  and fail = ref 0 in
-  List.iter
-    (fun spec ->
-      match result_of spec.name with
-      | Some (_, 0, dt) ->
-        incr pass;
-        Printf.printf "  PASS  %-14s %4.0fs\n" spec.name dt
-      | Some (_, _, dt) ->
-        incr fail;
-        Printf.printf "  FAIL  %-14s %4.0fs\n" spec.name dt
-      | None ->
-        incr fail;
-        Printf.printf "  FAIL  %-14s   (no result)\n" spec.name)
-    selected;
-  Printf.printf "-------------------------------\n";
-  Printf.printf "  %d passed, %d failed of %d\n" !pass !fail (List.length selected);
-  if !fail > 0
-  then
-    List.iter
-      (fun spec ->
-        match result_of spec.name with
-        | Some (_, 0, _) -> ()
-        | _ ->
-          let log = Filename.concat (Filename.concat work_root spec.name) "run.log" in
-          Printf.printf "\n----- %s FAILED — tail of %s -----\n%!" spec.name log;
-          ignore (sh (Printf.sprintf "tail -20 %s" (quote log)) : int))
-      selected;
-  !fail = 0
-;;
+(* The parallel pool + PASS/FAIL summary live in the shared [Fork_pool] (fork_pool.mli),
+   used by both this runner and test/formal. *)
 
 (* build only the dumper/capture exes that are missing — so @cosim (which declares them as
    deps, pre-building them) never triggers a nested `dune build` inside the dune action. *)
@@ -416,14 +303,12 @@ let () =
   match selected with
   | [ one ] -> exit (run_unit one) (* single unit: run live (uncaptured) for debugging *)
   | _ ->
-    Printf.printf
-      "[cosim] running %d units, up to %d in parallel (logs: %s/<unit>/run.log):\n%!"
-      (List.length selected)
-      jobs
-      work_root;
-    let t0 = Unix.gettimeofday () in
-    let results = run_pool jobs selected in
-    let ok = print_summary selected results in
-    Printf.printf "  (wall %.0fs)\n" (Unix.gettimeofday () -. t0);
-    exit (if ok then 0 else 1)
+    let fails =
+      Fork_pool.run
+        ~what:"cosim"
+        ~jobs
+        ~work_root
+        (List.map (fun spec -> spec.name, fun () -> run_unit spec = 0) selected)
+    in
+    exit (if fails = 0 then 0 else 1)
 ;;

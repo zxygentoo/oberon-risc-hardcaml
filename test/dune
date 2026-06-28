@@ -17,6 +17,14 @@
  (modules sd_bridge)
  (libraries oracle))
 
+; Shared bounded forked-worker pool + PASS/FAIL summary, used by both opt-in RTL-fidelity
+; runners — cosim's cosim_run and formal's test_formal (see fork_pool.mli).
+
+(library
+ (name fork_pool)
+ (modules fork_pool)
+ (libraries unix))
+
 (tests
  (names test_fp_adder test_fp_multiplier test_fp_divider test_cpu_lockstep)
  (modules
