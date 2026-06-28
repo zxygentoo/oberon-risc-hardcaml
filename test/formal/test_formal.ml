@@ -3,8 +3,9 @@ open Hardcaml
 
 (* cd to the repo root so every relative path (test/_po, test/_work, the spec .v) resolves
    no matter where we're launched — directly, via dune exec, or as the @formal dune
-   action. Mirrors cosim_run; the only remaining bash is the toolchain-free fetch-rtl.sh. *)
-let () =
+   action. Mirrors cosim_run; called once at the top of the only [let ()]. The only
+   remaining bash is the toolchain-free fetch-rtl.sh. *)
+let cd_to_repo_root () =
   let rec up d =
     if Stdlib.Sys.file_exists (Stdlib.Filename.concat d "dune-project")
     then Stdlib.Sys.chdir d
@@ -510,6 +511,7 @@ let checks : (string * (work_dir:string -> bool)) list =
 ;;
 
 let () =
+  cd_to_repo_root ();
   let argv = Stdlib.Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
   let selected =
