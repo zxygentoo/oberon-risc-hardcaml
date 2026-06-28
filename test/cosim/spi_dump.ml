@@ -76,11 +76,9 @@ let () =
     done;
     Bits.to_unsigned_int !(outp.data_rx), !n, Buffer.contents buf
   in
-  let count = ref 0 in
   let emit ~fast ~data_tx =
     let data_rx, cycles, trace = transfer ~fast ~data_tx in
-    Printf.printf "%d %08X %08X %d %s\n" fast data_tx data_rx cycles trace;
-    incr count
+    Printf.printf "%d %08X %08X %d %s\n" fast data_tx data_rx cycles trace
   in
   (* corner data words in both modes, then a random fuzz pass biased toward the cheap fast
      mode (96 cy) over the slow byte (512 cy). The SPI datapath is tiny and fully
@@ -108,6 +106,5 @@ let () =
   done;
   for _ = 1 to 128 do
     emit ~fast:0 ~data_tx:(rand32 rng)
-  done;
-  Printf.eprintf "spi_dump: %d transfers (corners x2 + 512 fast + 128 slow fuzz)\n" !count
+  done
 ;;

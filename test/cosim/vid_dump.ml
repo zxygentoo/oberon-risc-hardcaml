@@ -60,6 +60,5 @@ let () =
       (rd outp.hsync)
       (rd outp.vsync)
       (rd outp.rgb)
-  done;
-  Printf.eprintf "vid_dump: %d ticks (~2 scanlines)\n" ticks
+  done
 ;;

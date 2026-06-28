@@ -91,17 +91,14 @@ let () =
     done;
     recv, Buffer.contents buf
   in
-  let count = ref 0 in
   let emit ~data =
     let recv, trace = frame ~data in
-    Printf.printf "%02X %s\n" recv trace;
-    incr count
+    Printf.printf "%02X %s\n" recv trace
   in
   let corners = [ 0x00; 0xFF; 0xA5; 0x5A; 0x01; 0x80; 0x7F; 0x1C ] in
   List.iter (fun d -> emit ~data:d) corners;
   let rng = Random.State.make [| 0x732 |] in
   for _ = 1 to 40 do
     emit ~data:(Random.State.int rng 256)
-  done;
-  Printf.eprintf "ps2_dump: %d frames (8 corners + 40 fuzz)\n" !count
+  done
 ;;
