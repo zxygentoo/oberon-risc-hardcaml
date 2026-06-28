@@ -24,7 +24,7 @@
    Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Sd_bridge} SD
    card), trimmed to the capture. Opt-in (run via the cosim runner, cosim_run); needs the
    disk image. Env: [DISK_IMG] (default the vendored .dsk), [CORE_TRACE] (output path),
-   [CAP] (hard cycle cap, default 25_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
+   [CAP] (hard cycle cap, default 2_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
    print a windowed pc/ir/flags/regs dump and [NOTRACE] skips writing the (large) trace
    file. *)
 
@@ -73,10 +73,15 @@ let () =
       ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
   in
+  (* Cycle-fidelity is a spot-check, not a full boot (boot_checkpoint / visual_golden own
+     boot correctness): ~2M cycles covers reset + ROM init + a solid run of the SD-load
+     driver — a real instruction stream exercising
+     decode/control/stall/flags/branch/byte-mem — at a small fraction of the full-boot
+     time/trace. Raise CAP to replay deeper (handoff is ~8M, the inner core 8M+). *)
   let cap =
     match Sys.getenv_opt "CAP" with
     | Some s -> int_of_string s
-    | None -> 25_000_000
+    | None -> 2_000_000
   in
   (* ── boot + capture (SoC + the shared off-chip SD card) ─────────────────────── *)
   let tmp = copy_to_temp disk_image in

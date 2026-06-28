@@ -30,8 +30,8 @@ with `--force`. The runner (`cosim_run.ml`) ensures the reference RTL is present
 first run via `../fetch-rtl.sh`) and the dumper/capture exes are built **once** up front, then runs
 every unit **concurrently** in a forked-worker pool (default one job per core) — Verilator is ~5 s
 per stimulus unit, so their wall time is roughly *one* unit, not nine. The **CPU core** is folded in
-(see *CPU core* below) and is the heavy one — ~90 s for the first boot capture, ~15 s once its
-~400 MiB trace is cached — so it dominates a full run's wall time. Each unit's output is captured to
+(see *CPU core* below) and is the heavier one — ~10 s for its first ~2 M-cycle capture, then reuses
+the cached ~33 MiB trace — so it's the long pole of a full run's wall time. Each unit's output is captured to
 `test/_work/cosim/<unit>/run.log`; the run ends with a PASS/FAIL table (plus the tail of any failing
 log) and exits nonzero iff any unit failed. A single `cosim_run.exe -- <unit>` runs **live**
 (uncaptured) for debugging.
@@ -117,9 +117,13 @@ silently rot even though the cross-check itself only runs via `cosim_run`.
 
 ## CPU core (boot-stream RTL co-sim)
 
-The core gets a different *shape* of check — not a stimulus dump but a **whole-core, cycle-level
-replay of a real boot** (it otherwise has no cycle-level RTL check before the Phase-8 proof,
-AGENT.md §6). It's folded into the unified runner as the `core` unit:
+The core gets a different *shape* of check — not a stimulus dump but a **cycle-level replay of a
+real-boot instruction stream**: a *fidelity* spot-check (does our core match `RISC5.v`
+cycle-by-cycle?), complementary to `boot_checkpoint`/`visual_golden`, which own boot *correctness*.
+By default it replays **~2 M cycles** — reset + ROM init + a solid run of the SD-load driver, a
+representative branch/ALU/load-store-stall/byte-mem mix that exercises the core's
+decode/control/stall/flags machinery; raise `CAP` to go deeper (handoff ~8 M, inner core 8 M+).
+It's folded into the unified runner as the `core` unit:
 
 ```sh
 dune build @cosim                            # runs it alongside the other units
@@ -128,7 +132,7 @@ dune exec test/cosim/cosim_run.exe -- core   # just the core
 
 `core_dump.ml` boots the SoC from the real disk (the shared `Sd_bridge` SD card) and records the
 core's per-cycle I/O — `rst`/`irq`/`stallX`/`codebus`/`inbus` (inputs) and `adr`/`rd`/`wr`/`ben`/
-`outbus` (outputs) — to a 17-byte-per-cycle trace (~25 M cycles, ~400 MiB, cached in
+`outbus` (outputs) — to a 17-byte-per-cycle trace (~2 M cycles, ~33 MiB, cached in
 `test/_work/cosim/core`). `core.cpp` Verilates `RISC5.v` + its 8 submodules (`ram16x1d.v` supplies
 the `RAM16X1D` primitive `Registers.v` infers, the way `vid_cosim.v` stubs the `DCM`) and replays
 the trace: it drives `RISC5.v` with the captured **inputs** and asserts its **outputs** match every
@@ -138,7 +142,9 @@ Why the first output mismatch pins any divergence exactly: both cores start from
 state, and as long as our outputs match the spec's, memory — hence the inputs, which are functions
 of memory — evolves identically, so the comparison stays valid right up to the first cycle our core
 does something `RISC5.v` wouldn't (a minimal reproducer). This is what found + verified the phase-6b
-ALU flag-leak.
+ALU flag-leak — which sat ~17.3 M cycles in, so reproducing a divergence that deep means raising
+`CAP`; `visual_golden`/`boot_checkpoint` surface such bugs at the system level, and this co-sim
+then root-causes the exact cycle.
 
 The trace is recorded **pre-edge** (each record = the inputs a state consumes + the outputs it
 drives), which keeps it self-consistent across the `rst` 0→1 reset boundary — the codebus consumed
