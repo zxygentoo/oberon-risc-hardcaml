@@ -77,8 +77,8 @@ let units =
       None
   ; stim "fp_divider" "FPDivider.v" "FPDivider" "fp_divider.cpp" "fp_dump" None
   ; stim "spi" "SPI.v" "SPI" "spi.cpp" "spi_dump" None
-  ; stim "rs232t" "RS232T.v" "RS232T" "rs232t.cpp" "rs232t_dump" None
-  ; stim "rs232r" "RS232R.v" "RS232R" "rs232r.cpp" "rs232r_dump" None
+  ; stim "rs232t" "RS232T.v" "RS232T" "rs232t.cpp" "rs232_dump" None
+  ; stim "rs232r" "RS232R.v" "RS232R" "rs232r.cpp" "rs232_dump" None
   ; stim "ps2" "PS2.v" "PS2" "ps2.cpp" "ps2_dump" None
   ; stim "vid" "VID60.v" "vid_cosim" "vid.cpp" "vid_dump" (Some "vid_cosim.v")
   ; stim "mouse" "MousePM.v" "mouse_cosim" "mouse.cpp" "mouse_dump" (Some "mouse_cosim.v")
@@ -152,9 +152,14 @@ let run_stimulus name ~rtl ~top ~cpp ~dumper ~extra =
     name
     name;
   let dexe = Printf.sprintf "_build/default/test/cosim/%s.exe" dumper in
-  (* fp_dump serves all three FP units, selected by name; the rest take no args *)
+  (* shared dumpers take the unit name: fp_dump (all 3 FP units) also takes the fp_vectors
+     path; rs232_dump picks tx/rx by name. The rest take no args. *)
   let dargs =
-    if String.equal dumper "fp_dump" then Printf.sprintf "%s %s" name (quote vec) else ""
+    if String.equal dumper "fp_dump"
+    then Printf.sprintf "%s %s" name (quote vec)
+    else if String.equal dumper "rs232_dump"
+    then name
+    else ""
   in
   let port = Filename.concat work "port.txt" in
   if sh (Printf.sprintf "%s %s > %s" (quote dexe) dargs (quote port)) <> 0

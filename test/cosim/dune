@@ -11,20 +11,12 @@
  (libraries unix))
 
 (executables
- (names
-  fp_dump
-  spi_dump
-  rs232t_dump
-  rs232r_dump
-  ps2_dump
-  vid_dump
-  mouse_dump)
+ (names fp_dump spi_dump rs232_dump ps2_dump vid_dump mouse_dump)
  (modules
   cosim_dump
   fp_dump
   spi_dump
-  rs232t_dump
-  rs232r_dump
+  rs232_dump
   ps2_dump
   vid_dump
   mouse_dump)
@@ -42,8 +34,7 @@
   cosim_run.exe
   fp_dump.exe
   spi_dump.exe
-  rs232t_dump.exe
-  rs232r_dump.exe
+  rs232_dump.exe
   ps2_dump.exe
   vid_dump.exe
   mouse_dump.exe
