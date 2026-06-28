@@ -2,7 +2,7 @@
    by the first argument) over a stimulus set and writes "x y z cycles" / "x y u v z
    cycles" lines (cycles = how many clock cycles the unit stalls), which the matching
    Verilator harness (test/cosim/<unit>.cpp) replays through the reference
-   _po/verilog/src/<Unit>.v to assert RTL z == port z AND RTL stall-length == port
+   test/_po/verilog/src/<Unit>.v to assert RTL z == port z AND RTL stall-length == port
    stall-length — value- AND cycle-fidelity, the latter the simulation preview of the
    Phase-8 equivalence proof. This is a port-vs-RTL FIDELITY check, so the stimuli are (a)
    the frozen fp_vectors lines tagged for this unit (the expected-z column is ignored — we

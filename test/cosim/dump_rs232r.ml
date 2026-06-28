@@ -3,7 +3,7 @@
    driving a UART frame on [rxd] (start, 8 data LSbit-first, stop) at the baud timing plus
    a [done_] ack, and records per cycle the inputs it drove and the [rdy] it observed. The
    matching Verilator harness (test/cosim/rs232r.cpp) replays the identical (rxd, done_)
-   waveform through _po/verilog/src/RS232R.v and asserts, cycle-by-cycle, RTL rdy ==
+   waveform through test/_po/verilog/src/RS232R.v and asserts, cycle-by-cycle, RTL rdy ==
    port's, plus RTL data == the recovered byte whenever rdy is high. Fully
    input-determined, so it's a fixed-length trace replay (no drain-until-rdy needed in the
    .cpp).

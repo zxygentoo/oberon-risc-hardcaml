@@ -6,10 +6,10 @@
    For each transfer it drives Risc5.Spi over (fast, data_tx) with a deterministic
    per-cycle MISO sequence and records, for EVERY cycle, the MISO it drove and the (rdy,
    sclk, mosi) it observed; the matching Verilator harness (test/cosim/spi.cpp) replays
-   the identical (fast, data_tx, MISO sequence) through _po/verilog/src/SPI.v and asserts,
-   cycle-by-cycle, RTL (rdy, sclk, mosi) == port's, plus final data_rx == port's and cycle
-   count == port's — value-, waveform-, and cycle-fidelity, the serial-peripheral analog
-   of the FP units' z + stall-length check.
+   the identical (fast, data_tx, MISO sequence) through test/_po/verilog/src/SPI.v and
+   asserts, cycle-by-cycle, RTL (rdy, sclk, mosi) == port's, plus final data_rx == port's
+   and cycle count == port's — value-, waveform-, and cycle-fidelity, the
+   serial-peripheral analog of the FP units' z + stall-length check.
 
    MISO is driven from an RNG (not looped back from MOSI): a fixed, DUT-independent
    stimulus decouples the input from internal state, so a bug in WHEN the port samples

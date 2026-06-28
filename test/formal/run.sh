@@ -20,7 +20,7 @@ for tool in yosys z3; do
     || { echo "[formal] needs '$tool' on PATH — see test/formal/README.md" >&2; exit 2; }
 done
 
-bash test/cosim/fetch-rtl.sh # populate + checksum-verify _po/verilog/src/*.v (shared with cosim)
+bash test/fetch-rtl.sh # populate + checksum-verify test/_po/verilog/src/*.v (shared with cosim)
 
 # Build the exe only when absent — `dune build @formal` declares it a dep (pre-built), so this
 # never nests a dune invocation inside the dune action.

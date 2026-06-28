@@ -1,4 +1,4 @@
-// RTL-fidelity co-sim for Fp_multiplier: drive the reference _po/verilog/src/FPMultiplier.v
+// RTL-fidelity co-sim for Fp_multiplier: drive the reference test/_po/verilog/src/FPMultiplier.v
 // through Verilator on each stimulus dumped by test/cosim/dump_fp, and assert RTL z == port z AND
 // RTL stall-length == port stall-length. Exit 0 iff bit-exact AND cycle-exact to FPMultiplier.v.
 //   usage:  cosim <port_dump_path>          (lines: "x y port_z port_cycles")

@@ -5,8 +5,8 @@
    For each frame it drives Risc5.Rs232t over (fsel, data) and records, for EVERY cycle
    from [start] to [rdy] re-raising, the (rdy, txd) it observed; the matching Verilator
    harness (test/cosim/rs232t.cpp) replays the identical (fsel, data) through
-   _po/verilog/src/RS232T.v and asserts, cycle-by-cycle, RTL (rdy, TxD) == port's, plus
-   frame length == port's. There is no value column: [txd] IS the serialised value,
+   test/_po/verilog/src/RS232T.v and asserts, cycle-by-cycle, RTL (rdy, TxD) == port's,
+   plus frame length == port's. There is no value column: [txd] IS the serialised value,
    checked every cycle.
 
    Line format: "fsel data cycles hextrace" where hextrace is one hex digit per cycle:

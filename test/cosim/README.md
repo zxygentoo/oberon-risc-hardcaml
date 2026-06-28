@@ -12,7 +12,7 @@ It is **not** part of `dune runtest`. It needs only:
 - `verilator` on `PATH` (it is not in the ox/opam toolchain).
 
 The reference Verilog is **not vendored** (its licensing is unclear and we prefer not to
-redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifies it against
+redistribute it). `run.sh` fetches it on demand into `test/_po/` and checksum-verifies it against
 `rtl-sources.txt` (see *Reference RTL* below), so a fresh clone with `verilator` just works.
 
 ## Run
@@ -77,19 +77,21 @@ and asserts the RTL matches the port in **both result and timing** for every sti
   resolve `wire = ~(own DUT oe | device low)`, so a divergence shows as an output mismatch. Asserts,
   **every cycle** over ~505 K cycles, `RTL (msclk_oe, msdat_oe, out) == port's` (`0 mismatch`).
 
-Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
-only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
+Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `test/_work/cosim` (git-ignored,
+in-repo + self-contained); the other write is the fetched `test/_po/verilog/src/*.v` (also
+git-ignored). Both `test/_po` and `test/_work` are marked `data_only_dirs` so dune skips them.
 
 ## Reference RTL (fetch-on-demand + checksum pin)
 
-`fetch-rtl.sh` populates `_po/verilog/src/` once, on demand: if the pinned `.v` are
+`test/fetch-rtl.sh` — hoisted one level up so cosim + formal share it — populates
+`test/_po/verilog/src/` once, on demand: if the pinned `.v` are
 already cached and match, it does nothing; otherwise it downloads `OStationVerilog.zip` from the
 upstream URL, verifies the archive SHA-256, extracts `src/*.v`, and verifies each file against
 `rtl-sources.txt` before trusting it. The pins are **fidelity-critical**: a mismatch means
 upstream drifted from the exact revision the port (and AGENT.md §8's line-number citations) was
 verified against, so the co-sim refuses rather than compare against unknown RTL. Updating to a
 newer upstream revision is a deliberate edit of `rtl-sources.txt`. Offline fallback: download the
-zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
+zip yourself and unzip its `src/*.v` into `test/_po/verilog/src/`.
 
 ## How it works
 
@@ -104,8 +106,8 @@ zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
 | `dump_mouse.ml` + `mouse_cosim.v` | the mouse dumper (bidirectional, single-clock): play a PS/2 mouse against `Risc5.Mouse` through the init handshake + 4 reports, dump `"rstn dmc dmd mco mdo out"` per cycle (the device's open-drain pull-lows + the port outputs). `mouse.cpp` replays through `mouse_cosim.v` — the real `MousePM.v` with the `inout` lines split via `force` + XMR — resolving the open-drain against the RTL's own oe, and compares every cycle |
 | `cosim.h` | shared harness: universal `cosim_open` + `Unit` + `tick` + `hexval`, and two cross-check runners — `run_drain_cosim` for the stall-based FP units (open → run → drain on `stall` → compare `z`, with `parse_xy`/`parse_xyuv`), and `run_serial_cosim` for the cycle-by-cycle serial units (reset → per-line `replay` → value/wave/cycle tally → summary). Each FP/serial `.cpp` is a thin shell |
 | `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial units (`spi`, `rs232t`, `rs232r`, `ps2`) are a `reset` + a `replay` + `run_serial_cosim`. `vid` (two-clock) and `mouse` (bidirectional `inout`, split via `force`+XMR) keep their own `main` — different shapes |
-| `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
-| `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
+| `../fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `test/_po/` against `../rtl-sources.txt` (both at `test/`, shared with formal; toolchain-free; idempotent once cached) |
+| `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `../fetch-rtl.sh` first |
 
 The OCaml dumpers build under `dune build @check` (Verilator-free), so they can't silently rot
 even though the cross-check itself only runs via `run.sh`.

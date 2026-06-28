@@ -2,8 +2,8 @@
    dumper plays the keyboard, clocking an 11-bit frame on (ps2c, ps2d) plus a [done_] pop,
    and records per cycle the inputs it drove and the [rdy] it observed. The Verilator
    harness (test/cosim/ps2.cpp) does a fixed-length replay of the identical (ps2c, ps2d,
-   done_) waveform through _po/verilog/src/PS2.v and asserts, cycle-by-cycle, RTL rdy ==
-   port's, plus RTL data == the recovered byte whenever rdy is high.
+   done_) waveform through test/_po/verilog/src/PS2.v and asserts, cycle-by-cycle, RTL rdy
+   == port's, plus RTL data == the recovered byte whenever rdy is high.
 
    [shift] is ps2c-derived ([Q1 & ~Q0]) and trivially identical given the same ps2c, so it
    isn't in the trace; multi-byte FIFO ordering is covered by the co-located test. The

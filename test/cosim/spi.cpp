@@ -1,5 +1,5 @@
 // RTL-fidelity co-sim for Spi: replay each transfer dumped by test/cosim/dump_spi through the
-// reference _po/verilog/src/SPI.v under Verilator, asserting cycle-by-cycle that RTL (rdy, sclk,
+// reference test/_po/verilog/src/SPI.v under Verilator, asserting cycle-by-cycle that RTL (rdy, sclk,
 // mosi) == port's, plus final dataRx == port's and cycle count == port's. Exit 0 iff bit- and
 // cycle-exact to SPI.v.   usage:  cosim <port_dump_path>  (lines: "fast dataTx dataRx cycles hextrace")
 //

@@ -41,12 +41,12 @@ Concretely, as the agent on this project you should:
 
 ## 1. What we're porting (the sources)
 
-Everything lives under `_po/` (originals, git-ignored; the co-sim fetches the Verilog on
+Everything lives under `test/_po/` (originals, git-ignored; the co-sim fetches the Verilog on
 demand — §6) and the three sibling emulator repos.
 
 ### The Verilog — this is the spec
-`_po/verilog/src/` (from `OStationVerilog.zip`, rev. 2015/2018 — fetched + checksum-pinned by
-`test/cosim/rtl-sources.txt`):
+`test/_po/verilog/src/` (from `OStationVerilog.zip`, rev. 2015/2018 — fetched + checksum-pinned by
+`test/rtl-sources.txt`):
 
 | File | What it is | Notes |
 |---|---|---|
@@ -65,12 +65,12 @@ demand — §6) and the three sibling emulator repos.
 | `PS2.v` / `MousePM.v` | PS/2 keyboard / PS/2 mouse | |
 | `RISC5.OStation.ucf` | Pin constraints (Spartan-3) | we rewrite as a Nexys 4 `.xdc` in Phase 7 |
 
-Boot ROM image: `_po/verilog/prom.mem` (hex) + `_po/verilog/prom.bmm`.
+Boot ROM image: `test/_po/verilog/prom.mem` (hex) + `test/_po/verilog/prom.bmm`.
 
 ### The docs
-- `_po/RISC-Arch.pdf` (3 pp) — **ISA encoding** (the cheat sheet in §7 is distilled from this).
-- `_po/RISC.pdf` (24 pp) — Wirth's detailed design writeup.
-- `_po/PO.Computer.pdf` (21 pp) — the board/SoC overview.
+- `test/_po/RISC-Arch.pdf` (3 pp) — **ISA encoding** (the cheat sheet in §7 is distilled from this).
+- `test/_po/RISC.pdf` (24 pp) — Wirth's detailed design writeup.
+- `test/_po/PO.Computer.pdf` (21 pp) — the board/SoC overview.
 
 ### The reference emulators (oracles & cross-checks) — sibling repos
 - `../oberon-risc-emu-ocaml/` — **OCaml emulator; our primary golden model.** Library
@@ -239,7 +239,7 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
 3. **RTL co-sim (fidelity)** — our `test/cosim/`: dump the Hardcaml unit's outputs over a
    stimulus set, replay them through the reference `.v` under Verilator, assert bit-exact.
    Opt-in (needs Verilator; outside `dune runtest`). The reference `.v` is not vendored — the
-   harness fetches it on demand into `_po/`, checksum-pinned (`test/cosim/rtl-sources.txt`). The
+   harness fetches it on demand into `test/_po/`, checksum-pinned (`test/rtl-sources.txt`). The
    OCaml dumper builds under `@check` so it can't rot. The simulation preview of layer 6: one
    shared `dump_fp.ml` over all units + a per-unit `<unit>.cpp`.
 4. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
@@ -430,13 +430,17 @@ oberon-risc-hardcaml/
                             `test_boot_checkpoint` = Phase-5 boot checkpoint
                             (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
                             formal/ = logic-equivalence proofs (`@formal`, Phase 8)
+    fetch-rtl.sh          ← fetch + checksum-verify the reference .v on demand (shared by
+    rtl-sources.txt         cosim + formal); the provenance pins live in rtl-sources.txt
+    _po/                  ← original sources, git-ignored; fetch-rtl.sh populates
+                            verilog/src/*.v on demand. prom.mem + *.pdf placed locally
+    _work/                ← test scratch, git-ignored (Verilator obj_dirs, dumped traces,
+                            the downloaded zip, yosys/z3 intermediates); safe to delete
   vendor/
     oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
                               (data_only_dirs: dune ignores its own project files)
     oracle/               ← compiles the submodule's lib/ into library `oracle`
                             (Oracle.Risc, Oracle.Fp, Oracle.Boot_rom, …)
-  _po/                    ← original sources, git-ignored; the co-sim fetches
-                            verilog/src/*.v on demand. prom.mem + *.pdf placed locally
 ```
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under

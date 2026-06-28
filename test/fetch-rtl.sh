@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Populate + verify _po/verilog/src/*.v for the Verilator co-sim, on demand.
+# Populate + verify test/_po/verilog/src/*.v for the Verilator co-sim, on demand.
 #
 # The reference Verilog is NOT vendored (licensing); it is fetched from the pinned upstream
-# archive and checksum-verified against test/cosim/rtl-sources.txt — so a fresh clone with
+# archive and checksum-verified against test/rtl-sources.txt — so a fresh clone with
 # verilator just works while we ship only the provenance pins, never the copyrighted RTL.
 #
 # A checksum mismatch means upstream drifted from the exact revision the port (and AGENT.md
@@ -13,9 +13,11 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-manifest=test/cosim/rtl-sources.txt
-rtl_dir=_po/verilog/src
-work_root="${CLAUDE_JOB_DIR:-/tmp}/oberon-cosim"
+manifest=test/rtl-sources.txt
+rtl_dir=test/_po/verilog/src
+# Scratch root: in-repo + self-contained (git-ignored test/_work). The downloaded zip +
+# extraction staging live here.
+work_root="test/_work/cosim"
 mkdir -p "$work_root"
 
 # the "<sha256>  <path>" pin lines from the manifest (comments + blanks stripped); they double

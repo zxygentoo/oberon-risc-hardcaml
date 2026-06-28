@@ -4,7 +4,7 @@
    skeleton exactly: the registered signals (the three pipeline stages x3/y3, Sum, t3, plus
    the 2-bit State) and the stall timing are the spec the oracle checks and synthesis
    preserves; the combinational datapath between the register boundaries is idiomatic
-   Hardcaml. Original RTL is [_po/verilog/src/FPAdder.v] (132 lines).
+   Hardcaml. Original RTL is [test/_po/verilog/src/FPAdder.v] (132 lines).
 
    The pipeline. Stage 0 unpacks x/y into sign, 8-bit exponent and 25-bit mantissa (restored
    hidden bit + a low guard bit), takes the exponent difference to pick the larger exponent

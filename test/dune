@@ -3,6 +3,12 @@
 ; (~22 s — it boots the real Oberon disk to the OS handoff) is OPT-IN, like the RTL co-sim
 ; (AGENT.md §6); run it with:  dune build @boot_checkpoint
 
+; The fetched reference RTL (test/_po) and all test scratch (test/_work — Verilator obj_dirs,
+; dumped traces, the downloaded zip, yosys/z3 intermediates) are git-ignored generated trees;
+; mark them data-only so dune never scans them for build rules.
+
+(data_only_dirs _po _work)
+
 ; Shared off-chip SD card (bit-level SPI slave over Oracle.Disk) used by the three SoC
 ; integration tests below (boot checkpoint / visual golden / core RTL co-sim capture).
 
@@ -77,8 +83,8 @@
  (deps
   dump_core_trace.exe
   cosim/run-core.sh
-  cosim/fetch-rtl.sh
-  cosim/rtl-sources.txt
+  fetch-rtl.sh
+  rtl-sources.txt
   cosim/cosim.h
   cosim/risc5.cpp
   cosim/ram16x1d.v

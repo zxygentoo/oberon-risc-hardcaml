@@ -7,7 +7,8 @@
 # OPT-IN and heavy: needs verilator + the disk image + the ox toolchain (for the ~25M-cycle
 # capture, ~90 s, ~400 MiB trace). The trace is cached; re-running only re-verilates + replays
 # (~15 s), so iterate on risc5.cpp cheaply. Env: CAPTURE=1 forces a recapture; SKIP overrides
-# the leading compared-skip (default 1); CORE_TRACE overrides the trace path; DISK_IMG / CAP
+# the leading compared-skip (default 2 — the reset transient; see risc5.cpp); CORE_TRACE
+# overrides the trace path; DISK_IMG / CAP
 # are read by the capture (see test/dump_core_trace.ml).
 #
 #   usage:  bash test/cosim/run-core.sh    (or: dune build @core_cosim)
@@ -19,14 +20,14 @@ command -v verilator >/dev/null || {
   exit 2
 }
 
-rtl_dir=_po/verilog/src
-work="${CLAUDE_JOB_DIR:-/tmp}/oberon-cosim/core"
+rtl_dir=test/_po/verilog/src
+work="test/_work/cosim/core"
 mkdir -p "$work"
 trace="${CORE_TRACE:-$work/core_boot.trace}"
 capture_exe=_build/default/test/dump_core_trace.exe
 
 # the reference RTL (RISC5.v + submodules) — fetched + checksum-verified on demand
-bash test/cosim/fetch-rtl.sh
+bash test/fetch-rtl.sh
 
 # 1. capture the core's boot I/O (skip if a trace is already present and CAPTURE != 1). Only
 #    build the capture exe if it isn't already present — so the @core_cosim alias (which
@@ -75,4 +76,4 @@ tail -3 "$vlog"
 
 # 3. replay the captured trace through the RTL and report the first divergence
 echo "[3/3] replaying the boot trace through RISC5.v ..."
-"$work/obj_dir/cosim" "$trace" "${SKIP:-1}"
+"$work/obj_dir/cosim" "$trace" "${SKIP:-2}"

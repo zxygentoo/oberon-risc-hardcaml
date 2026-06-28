@@ -4,7 +4,7 @@
    skeleton exactly: the registered signals (the 24-bit remainder [R], the 26-bit quotient
    [Q] and the 5-bit state [S]) and the stall timing are the spec the oracle checks
    cycle-by-cycle and synthesis preserves; the combinational FP wrapper is idiomatic
-   Hardcaml. The original RTL is [_po/verilog/src/FPDivider.v] (45 lines).
+   Hardcaml. The original RTL is [test/_po/verilog/src/FPDivider.v] (45 lines).
 
    Restoring division — the dual of the integer/FP multiplier's shift-and-add. Each step
    doubles the remainder ([{R, 1'b0}], a left shift) and trial-subtracts the divisor

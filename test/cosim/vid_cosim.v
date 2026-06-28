@@ -4,7 +4,7 @@
 // real input, while pclk is generated *inside* VID, so we `force` its internal net to this
 // wrapper's pclk input. The harness toggles clk (period 13) and pclk (period 5) on a fine
 // base tick — the 65:25 MHz ratio — matching the Hardcaml dumper's By_input_clocks model.
-// VID60.v itself is byte-for-byte the pinned reference (test/cosim/rtl-sources.txt).
+// VID60.v itself is byte-for-byte the pinned reference (test/rtl-sources.txt).
 
 module BUFG (
     input  I,

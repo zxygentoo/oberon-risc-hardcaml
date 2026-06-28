@@ -1,0 +1,33 @@
+# Reference RTL provenance for the Verilator co-sim (test/cosim/run.sh).
+#
+# The original Project Oberon / OberonStation Verilog is NOT vendored into this repo (its
+# licensing is unclear and we prefer not to redistribute it). Instead run.sh fetches it on
+# demand into test/_po/ and verifies it against the pins below — so a fresh clone with `verilator`
+# installed Just Works, while we ship only these facts, never the copyrighted Verilog.
+#
+# A pin mismatch means upstream drifted from the exact revision our port was verified against
+# (AGENT.md §8 cites specific RTL line numbers); the co-sim then refuses rather than compare
+# against unknown RTL. Updating to a newer upstream revision is a deliberate edit of this file.
+#
+# Source : N. Wirth / P. Reed, "Project Oberon (2013) for OberonStation".
+# url    http://www.projectoberon.net/zip/OStationVerilog.zip
+# zip256 400e56391c2faf056c30f29919e22a1aabb404492d50d71893fabec42b2b9a25
+#
+# Per-file pins below double as the `sha256sum -c` gate (paths repo-root-relative):
+75529e017b9d3111bb5d8cd7b21d23bc6a525ef0949f89bdad780626b32b314b  test/_po/verilog/src/FPAdder.v
+66eda46ed646a0022d9d181568b93fbe7a35f721962ddcd4e33bfc655be73d4a  test/_po/verilog/src/FPMultiplier.v
+8875453835ca18cf7510ebb9195607283a2ed29087918d4cb842ea6570dc868a  test/_po/verilog/src/FPDivider.v
+531f85304c0e4ca12b975d78b80263f2b319c495082d42a11717029a2f2b831e  test/_po/verilog/src/SPI.v
+3f085cd128b749ee6d8bc93c2ee9334c590122bf6a8aa1baab172af4d99dd049  test/_po/verilog/src/RS232T.v
+40ce5a070b24738ec6c397eecdde888c0156c4ede842d1acf4b412d291754824  test/_po/verilog/src/RS232R.v
+7d52a211cd92f9f6c8cf80f7350ff207a984fd1d9b53806aa54356a12c7539d3  test/_po/verilog/src/PS2.v
+f70697625d82689d4cd5f18f9f35acc8ec28e9262b3f40f1a2f1029c65025083  test/_po/verilog/src/VID60.v
+4904436add61d6dfcb72ed2d89aa350faec856b627675b0ac55893a0ba715cf8  test/_po/verilog/src/MousePM.v
+# The CPU core + its submodules — for the boot-stream RTL co-sim (test/cosim/run-core.sh).
+# Registers.v infers the RAM16X1D primitive; test/cosim/ram16x1d.v supplies its behaviour.
+105cfa1279073aa76c0f6891e00f3e820cdcd6459e3f56df17b840832eea64c8  test/_po/verilog/src/RISC5.v
+3ec0d48c236121c4e385677ae44b5b13ff4424cc3425ecb959293265f0c31a27  test/_po/verilog/src/Registers.v
+4181e68f309a3527d6aa580ad0322734e224f1265282ddb7bc43fe38f0a77870  test/_po/verilog/src/Multiplier.v
+ed6d9faacedce99d7f8ce353a33dff714e9661c2936d6ef893ab1f908cc2bc8c  test/_po/verilog/src/Divider.v
+f56609050314566a10cc3398992787dbfeda1ab5b83658d96eca9a7bb7b42d74  test/_po/verilog/src/LeftShifter.v
+6485bde13d7d2581b1bdcbcdd094eb7d4ec00fc37c621bdbcfc6ab976e9f532e  test/_po/verilog/src/RightShifter.v

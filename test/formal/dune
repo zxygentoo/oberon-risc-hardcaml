@@ -27,8 +27,8 @@
  (alias formal)
  (deps
   run.sh
-  ../cosim/fetch-rtl.sh
-  ../cosim/rtl-sources.txt
+  ../fetch-rtl.sh
+  ../rtl-sources.txt
   registers_spec.v
   core_stubs.v
   mouse_shim.v

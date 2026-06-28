@@ -67,14 +67,10 @@ let () =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
     | None ->
-      let dir =
-        match Sys.getenv_opt "CLAUDE_JOB_DIR" with
-        | Some d -> Filename.concat d "tmp"
-        | None -> "/tmp/oberon-cosim"
-      in
-      (try Unix.mkdir dir 0o755 with
-       | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-       | _ -> ());
+      (* Self-contained in-repo default (git-ignored test/_work), matching run-core.sh;
+         the normal entry points pass an explicit CORE_TRACE into test/_work anyway. *)
+      let dir = "test/_work/cosim/core" in
+      ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
   in
   let cap =
@@ -158,15 +154,20 @@ let () =
     (Filename.basename disk_image)
     trace_path;
   (* drive [rst_n]: 0 for the first edge (reset → StartAdr), 1 thereafter. The recorded
-     rst_n is the value applied for that cycle's edge; the replay harness owns its own
-     clean reset (it loads IR from record[0]'s StartAdr fetch), so the single reset-cycle
-     phase is handled there. *)
+     [rst_n] is the value applied for this state's edge; the replay drives it verbatim. *)
   while (not !stop) && !cyc < cap do
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
     inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
-    Cyclesim.cycle sim;
-    (* post-cycle reads: the settled combinational cloud over the now-current state *)
+    (* Record PRE-edge: settle the combinational cloud over the CURRENT state (registers
+       not yet updated), so each record is (inputs this state consumes, outputs this state
+       drives) and the edge below transitions to the next state. Pre-edge is what keeps
+       the trace self-consistent across the rst 0→1 reset boundary: the codebus consumed
+       at the first rst=1 edge (the branch-TARGET instruction) is captured here; a
+       post-edge read would record the fetch AFTER it instead and lose it, desyncing the
+       replay by one instruction whenever the boot's first instruction is a taken branch
+       (which it is). *)
+    Cyclesim.cycle_before_clock_edge sim;
     let irq = Cyclesim.Node.to_int irq_node
     and stallx = Cyclesim.Node.to_int stallx_node
     and codebus = b1 outp.codebus
@@ -215,6 +216,10 @@ let () =
         Printf.printf " R%d=0x%X" r (Cyclesim.Memory.to_int regfile ~address:r)
       done;
       Printf.printf "\n%!");
+    (* this state's I/O is recorded — now take the edge (consuming the recorded
+       codebus/inbus under the recorded rst) and re-settle for the post-edge reads below *)
+    Cyclesim.cycle_at_clock_edge sim;
+    Cyclesim.cycle_after_clock_edge sim;
     (* drive the SD bridge (post-cycle, like the visual golden) *)
     let ctrl_v = Cyclesim.Reg.to_int spi_ctrl in
     Sd_bridge.step

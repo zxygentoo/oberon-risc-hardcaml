@@ -258,14 +258,10 @@ let registers () =
 
 (* ── Runner ── *)
 
-let work_dir =
-  (match Stdlib.Sys.getenv_opt "CLAUDE_JOB_DIR" with
-   | Some d -> d
-   | None -> "/tmp")
-  ^ "/oberon-formal"
-;;
-
-let rtl_dir = "_po/verilog/src" (* Wirth's originals, fetched on demand *)
+(* Scratch root: in-repo + self-contained (git-ignored test/_work; run.sh runs from the
+   repo root, so this relative path resolves there). *)
+let work_dir = "test/_work/formal"
+let rtl_dir = "test/_po/verilog/src" (* Wirth's originals, fetched on demand *)
 let spec_dir = "test/formal" (* our checked-in behavioural specs, e.g. registers_spec.v *)
 
 let run_combinational (name, ours, v, top_module) =

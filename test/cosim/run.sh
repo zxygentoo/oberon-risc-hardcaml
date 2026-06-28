@@ -12,8 +12,8 @@ cd "$(git rev-parse --show-toplevel)" # repo root (works standalone and from the
 eval "$(opam env --switch 5.2.0+ox --set-switch)"
 
 vec=vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt
-rtl_dir=_po/verilog/src
-work_root="${CLAUDE_JOB_DIR:-/tmp}/oberon-cosim"
+rtl_dir=test/_po/verilog/src
+work_root="test/_work/cosim"
 
 # The co-sim units, one row each — collapses the old per-unit functions to data:
 #   name           reference .v     top-module     harness .cpp        dumper        [extra .v]
@@ -107,7 +107,7 @@ command -v verilator >/dev/null || {
   exit 2
 }
 
-bash test/cosim/fetch-rtl.sh
+bash test/fetch-rtl.sh
 
 unit="${1:-all}"
 if [ "$unit" = all ]; then
