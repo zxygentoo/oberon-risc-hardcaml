@@ -23,7 +23,7 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
+    { clock : 'a (** clock; the core's state registers update on each rising edge *)
     ; rst_n : 'a
     (** reset ([RISC5.v]'s [rst]), active LOW — pulls [PC] to [StartAdr] while held at 0.
         The [_n] spelling is also load-bearing: a port named exactly [rst]/[reset]/[clear]

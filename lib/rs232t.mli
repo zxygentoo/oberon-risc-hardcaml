@@ -12,20 +12,20 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; rst_n :
-        'a (* active-low, synchronous (woven into next-state, like [RS232T.v]'s [~rst]) *)
-    ; start : 'a (* one-cycle pulse: latch [data] and begin a frame *)
-    ; fsel : 'a (* baud select: 0 = 19200, 1 = 115200 *)
-    ; data : 'a (* the byte to transmit *)
+    { clock : 'a (** system clock *)
+    ; rst_n : 'a
+    (** active-low, synchronous (woven into next-state, like [RS232T.v]'s [~rst]) *)
+    ; start : 'a (** one-cycle pulse: latch [data] and begin a frame *)
+    ; fsel : 'a (** baud select: 0 = 19200, 1 = 115200 (at 25 MHz) *)
+    ; data : 'a (** the byte to transmit (valid at [start]) *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { rdy : 'a (* 1 = idle/ready, 0 = frame in flight *)
-    ; txd : 'a (* the serial line; idles high *)
+    { rdy : 'a (** 1 = idle/ready, 0 = frame in flight *)
+    ; txd : 'a (** the serial line; idles high *)
     }
   [@@deriving hardcaml]
 end

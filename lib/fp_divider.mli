@@ -30,7 +30,7 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
+    { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [FDV] decoded — enable + synchronous clear for the counter *)
     ; x : 'a (** 32-bit dividend (operand [B]) *)
     ; y : 'a (** 32-bit divisor (operand [C1]) *)

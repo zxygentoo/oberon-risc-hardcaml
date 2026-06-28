@@ -43,6 +43,7 @@ open Hardcaml
 module I : sig
   type 'a t =
     { clock : 'a
+    (** clock; the [State] counter and pipeline advance on each rising edge *)
     ; run : 'a (** op decoded — enable + synchronous clear for the [State] counter *)
     ; u : 'a (** [FLT] select (integer -> float) *)
     ; v : 'a (** [FLOOR] select (float -> integer) *)

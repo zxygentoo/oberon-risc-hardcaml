@@ -25,7 +25,7 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
+    { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [DIV]/[DIV'] decoded — enable + synchronous clear for the counter *)
     ; u : 'a (** signed mode: 1 = signed (floored) division *)
     ; x : 'a (** 32-bit dividend (operand [B]) *)

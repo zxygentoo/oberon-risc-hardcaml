@@ -29,7 +29,7 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
+    { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [FML] decoded — enable + synchronous clear for the counter *)
     ; x : 'a (** 32-bit operand 1 (operand [B]) *)
     ; y : 'a (** 32-bit operand 2 (operand [C1]) *)

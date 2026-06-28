@@ -20,21 +20,22 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; rst_n : 'a (* active-low reset (the RTL [rst]) *)
-    ; msclk : 'a (* resolved PS/2 clock line, sampled by the module *)
-    ; msdat : 'a (* resolved PS/2 data line *)
+    { clock : 'a (** system clock *)
+    ; rst_n : 'a (** active-low reset (the RTL [rst]) *)
+    ; msclk : 'a (** resolved PS/2 clock line, sampled by the module *)
+    ; msdat : 'a (** resolved PS/2 data line *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { msclk_oe :
-        'a (* open-drain: 1 = host pulls msclk low (request-to-send [req]); 0 = hi-Z *)
-    ; msdat_oe :
-        'a (* open-drain: 1 = host pulls msdat low (command bit [~tx[0]]); 0 = hi-Z *)
-    ; out : 'a (* {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]} — mouse state at MMIO 6 *)
+    { msclk_oe : 'a
+    (** open-drain: 1 = host pulls [msclk] low (request-to-send [req]); 0 = hi-Z *)
+    ; msdat_oe : 'a
+    (** open-drain: 1 = host pulls [msdat] low (command bit [~tx[0]]); 0 = hi-Z *)
+    ; out : 'a
+    (** [{run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}] — mouse state read at MMIO word 6 *)
     }
   [@@deriving hardcaml]
 end

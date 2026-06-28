@@ -14,11 +14,12 @@
 open Hardcaml
 
 module I : sig
-  type 'a t = { adr : 'a } [@@deriving hardcaml]
+  type 'a t = { adr : 'a (** 9-bit word address (one of the 512 ROM words) *) }
+  [@@deriving hardcaml]
 end
 
 module O : sig
-  type 'a t = { data : 'a } [@@deriving hardcaml]
+  type 'a t = { data : 'a (** the 32-bit ROM word at [adr] *) } [@@deriving hardcaml]
 end
 
 (** [create ~contents i] builds the ROM: [data] = [contents].([i.adr]), an asynchronous

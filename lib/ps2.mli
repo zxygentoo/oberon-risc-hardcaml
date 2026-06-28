@@ -12,22 +12,22 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; rst_n :
-        'a (* active-low, synchronous (woven into next-state, like [PS2.v]'s [~rst]) *)
+    { clock : 'a (** system clock *)
+    ; rst_n : 'a
+    (** active-low, synchronous (woven into next-state, like [PS2.v]'s [~rst]) *)
     ; done_ : 'a
-        (* one-cycle pulse: "byte has been read", pops the FIFO ([done] is a keyword) *)
-    ; ps2c : 'a (* PS/2 clock from the keyboard (asynchronous) *)
-    ; ps2d : 'a (* PS/2 data from the keyboard *)
+    (** one-cycle pulse: "byte has been read", pops the FIFO ([done] is a keyword) *)
+    ; ps2c : 'a (** PS/2 clock from the keyboard (asynchronous) *)
+    ; ps2d : 'a (** PS/2 data from the keyboard *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { rdy : 'a (* 1 = a byte is available in [data] (FIFO non-empty) *)
-    ; shift : 'a (* the recovered bit strobe (ps2c falling edge); unused at the SoC *)
-    ; data : 'a (* the FIFO head byte (valid while [rdy]) *)
+    { rdy : 'a (** 1 = a byte is available in [data] (FIFO non-empty) *)
+    ; shift : 'a (** the recovered bit strobe ([ps2c] falling edge); unused at the SoC *)
+    ; data : 'a (** the FIFO head byte (valid while [rdy]) *)
     }
   [@@deriving hardcaml]
 end

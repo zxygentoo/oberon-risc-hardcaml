@@ -29,7 +29,7 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
+    { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [MUL]/[MUL'] decoded — enable + synchronous clear for the counter *)
     ; u : 'a (** signed mode: 1 = subtract the partial product on the last step *)
     ; x : 'a (** 32-bit multiplier (operand [B]) *)

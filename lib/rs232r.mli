@@ -12,21 +12,21 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; rst_n :
-        'a (* active-low, synchronous (woven into next-state, like [RS232R.v]'s [~rst]) *)
-    ; rxd : 'a (* the asynchronous serial input line; idles high *)
-    ; fsel : 'a (* baud select: 0 = 19200, 1 = 115200 *)
-    ; done_ :
-        'a (* one-cycle pulse: "byte has been read", clears [rdy] ([done] is a keyword) *)
+    { clock : 'a (** system clock *)
+    ; rst_n : 'a
+    (** active-low, synchronous (woven into next-state, like [RS232R.v]'s [~rst]) *)
+    ; rxd : 'a (** the asynchronous serial input line; idles high *)
+    ; fsel : 'a (** baud select: 0 = 19200, 1 = 115200 (at 25 MHz) *)
+    ; done_ : 'a
+    (** one-cycle pulse: "byte has been read", clears [rdy] ([done] is a keyword) *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { rdy : 'a (* 1 = a received byte is available in [data] *)
-    ; data : 'a (* the received byte (valid while [rdy]) *)
+    { rdy : 'a (** 1 = a received byte is available in [data] *)
+    ; data : 'a (** the received byte (valid while [rdy]) *)
     }
   [@@deriving hardcaml]
 end

@@ -20,17 +20,20 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; adr : 'a
-    ; wr : 'a
-    ; ben : 'a
+    { clock : 'a (** write clock *)
+    ; adr : 'a (** 20-bit byte address into the 1 MiB space (word = [adr[19:2]]) *)
+    ; wr : 'a (** write enable: when high, store at [adr] on the clock edge *)
+    ; ben : 'a (** byte enable: 0 = word (all four lanes), 1 = the [adr[1:0]] byte lane *)
     ; wdata : 'a
+    (** 32-bit store data (the core's [outbus] — byte-replicated by the core for byte
+        stores) *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
-  type 'a t = { rdata : 'a } [@@deriving hardcaml]
+  type 'a t = { rdata : 'a (** the 32-bit word at [adr] — combinational (async read) *) }
+  [@@deriving hardcaml]
 end
 
 (** [create i]: [rdata] = word at [i.adr]; on [i.wr], write [i.wdata] there (word, or the

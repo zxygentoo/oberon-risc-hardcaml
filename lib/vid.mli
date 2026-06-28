@@ -14,21 +14,21 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clk : 'a (* 25 MHz system/memory clock: the DMA handshake + [vidbuf] live here *)
-    ; pclk : 'a (* 65 MHz pixel clock (DCM/MMCM-generated; a board-shim input here) *)
-    ; inv : 'a (* invert video: white-on-black vs black-on-white *)
-    ; viddata : 'a (* main-memory read data, latched into [vidbuf] when [req] fires *)
+    { clk : 'a (** 25 MHz system/memory clock: the DMA handshake + [vidbuf] live here *)
+    ; pclk : 'a (** 65 MHz pixel clock (DCM/MMCM-generated; a board-shim input here) *)
+    ; inv : 'a (** invert video: white-on-black vs black-on-white *)
+    ; viddata : 'a (** main-memory read data, latched into [vidbuf] when [req] fires *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { req : 'a (* SRAM read request = [stallX] into the core (one [clk] cycle / 32 px) *)
-    ; vidadr : 'a (* framebuffer word address for the DMA read *)
-    ; hsync : 'a (* horizontal sync, active low *)
-    ; vsync : 'a (* vertical sync, active low *)
-    ; rgb : 'a (* the 1 bpp pixel replicated across RGBW (= 6) pins *)
+    { req : 'a (** SRAM read request = [stallX] into the core (one [clk] cycle / 32 px) *)
+    ; vidadr : 'a (** framebuffer word address for the DMA read *)
+    ; hsync : 'a (** horizontal sync, active low *)
+    ; vsync : 'a (** vertical sync, active low *)
+    ; rgb : 'a (** the 1 bpp pixel replicated across the 6 RGB pins *)
     }
   [@@deriving hardcaml]
 end

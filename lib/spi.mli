@@ -17,13 +17,13 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a
-    ; rst_n :
-        'a (* active-low, synchronous (woven into next-state, like [SPI.v]'s [~rst]) *)
-    ; start : 'a (* one-cycle pulse: latch [data_tx] and begin a transfer *)
-    ; fast : 'a (* mode: 1 = word/clk÷3, 0 = byte/clk÷64 *)
-    ; data_tx : 'a
-    ; miso : 'a
+    { clock : 'a (** system clock *)
+    ; rst_n : 'a
+    (** active-low, synchronous (woven into next-state, like [SPI.v]'s [~rst]) *)
+    ; start : 'a (** one-cycle pulse: latch [data_tx] and begin a transfer *)
+    ; fast : 'a (** mode: 1 = word/clk÷3, 0 = byte/clk÷64 *)
+    ; data_tx : 'a (** transmit data, latched on [start] (low byte only in slow mode) *)
+    ; miso : 'a (** master-in slave-out: sampled at each bit boundary *)
     }
   [@@deriving hardcaml]
 end
@@ -31,9 +31,10 @@ end
 module O : sig
   type 'a t =
     { data_rx : 'a
-    ; rdy : 'a (* 1 = idle/done, 0 = transfer in flight *)
-    ; mosi : 'a
-    ; sclk : 'a
+    (** received data: the full word in fast mode, the low byte zero-extended in slow *)
+    ; rdy : 'a (** 1 = idle/done, 0 = transfer in flight *)
+    ; mosi : 'a (** master-out slave-in (idle line = 1) *)
+    ; sclk : 'a (** serial clock (idle line = 0) *)
     }
   [@@deriving hardcaml]
 end
