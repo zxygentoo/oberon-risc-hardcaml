@@ -2,7 +2,7 @@
     summary.
 
     Shared by the opt-in RTL-fidelity runners (cosim's [cosim_run], formal's
-    [test_formal]): both fan a list of independent, subprocess-bound jobs (verilator /
+    [formal_run]): both fan a list of independent, subprocess-bound jobs (verilator /
     yosys / z3) out across a bounded pool and report one summary.
 
     Each job runs in its own forked process with stdout/stderr redirected to

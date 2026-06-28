@@ -12,7 +12,7 @@ let cd_to_repo_root () =
     else (
       let parent = Stdlib.Filename.dirname d in
       if String.equal parent d
-      then failwith "test_formal: no dune-project above cwd"
+      then failwith "formal_run: no dune-project above cwd"
       else up parent)
   in
   up (Stdlib.Sys.getcwd ())
@@ -188,7 +188,7 @@ let ps2 () =
 (* Mouse (Tier 2): MousePM.v's [MouseP] has open-drain [inout msclk, msdat]; our port
    splits each into a drive-low [*_oe] output + the resolved-value input. A Verilog shim
    ([mouse_shim.v]) recombines them back into the RTL's inout, and the shimmed gate is
-   proven ≡ MouseP (see [Yosys_equiv.check_shim]). *)
+   proven ≡ MouseP (see [run_mouse] + [proofs/mouse.ys.template]). *)
 let mouse () =
   let open Signal in
   let i =
@@ -209,7 +209,8 @@ let mouse () =
    departs from VID60.v (our toggle pulse-synchroniser vs the RTL's async-set [req1]). The
    gold side needs prep (stub the DCM, [chparam RGBW=6], expose [pclk]); the proof cuts
    [vidbuf] to a shared free input so the raster + pixel path prove bit-exact given the
-   same word, and excludes [req] (the departure). See [Yosys_equiv.check_vid] / [run_vid]. *)
+   same word, and excludes [req] (the departure). See [run_vid] +
+   [proofs/vid.ys.template]. *)
 let vid () =
   let open Signal in
   let i =
@@ -230,7 +231,7 @@ let vid () =
     ]
 ;;
 
-(* The VID fetch-CDC invariant (the part check_vid cuts): the toggle pulse synchroniser
+(* The VID fetch-CDC invariant (the part run_vid cuts): the toggle pulse synchroniser
    [Vid.pulse_sync], isolated with [req0] as an input, so the property harness
    ([vid_invariant.v]) can drive it and assert one-req-per-req0. Proven by BMC, not equiv
    (it's a protocol property, not a cycle-equivalence). *)
@@ -275,43 +276,80 @@ let registers () =
 
 (* ── Runner ── *)
 
-(* Scratch root: in-repo + self-contained (git-ignored test/_work; test_formal cd's to the
+(* Scratch root: in-repo + self-contained (git-ignored test/_work; formal_run cd's to the
    repo root at startup, so this relative path resolves there). Each check runs in its own
    subdir test/_work/formal/<name>, so the parallel pool's per-check yosys/z3 files never
    collide. *)
 let work_root = "test/_work/formal"
 let rtl_dir = "test/_po/verilog/src" (* Wirth's originals, fetched on demand *)
-let spec_dir = "test/formal" (* our checked-in behavioural specs, e.g. registers_spec.v *)
+
+let proofs_dir =
+  "test/formal/proofs" (* the .ys.template proofs + the .v specs they read *)
+;;
 
 let run_combinational ~work_dir (name, ours, v, top_module) =
-  Stdio.printf "=== %s : ours  vs  %s   [combinational · Sec/z3] ===\n%!" name v;
   match
     Formal_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
   with
   | Formal_equiv.Equivalent ->
-    Stdio.printf "  EQUIVALENT  (no input makes the outputs differ)\n%!";
+    Stdio.printf
+      "%s: EQUIVALENT — no input makes the outputs differ  (vs %s, combinational · Sec/z3)\n\
+       %!"
+      name
+      v;
     true
   | Formal_equiv.Counterexample ->
-    Stdio.printf "  NOT EQUIVALENT  (counterexample found)\n%!";
+    Stdio.printf
+      "%s: NOT EQUIVALENT — counterexample found  (vs %s, combinational · Sec/z3)\n%!"
+      name
+      v;
     false
 ;;
 
-let run_sequential ~work_dir ~dir ~kind (name, ours, v, top_module, renames) =
-  Stdio.printf "=== %s : ours  vs  %s   [%s] ===\n%!" name v kind;
-  match
-    Yosys_equiv.check
-      ~work_dir
-      ~verilog:(dir ^ "/" ^ v)
-      ~renames
-      ~top_module
-      ~ours:(ours ())
-  with
+(* Print [ok]/[bad] for a {!Yosys_equiv.result} and return passed?. *)
+let report ~ok ~bad result =
+  match (result : Yosys_equiv.result) with
   | Yosys_equiv.Equivalent ->
-    Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
+    Stdio.printf "%s\n%!" ok;
     true
   | Yosys_equiv.Not_equivalent ->
-    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
+    Stdio.printf "%s\n%!" bad;
     false
+;;
+
+(* The shared wording for the equiv_induct family — every sequential unit + the mouse. *)
+let report_seq ~name ~v ~kind =
+  report
+    ~ok:
+      (Printf.sprintf
+         "%s: EQUIVALENT — induction closed, all $equiv proven  (vs %s, %s)"
+         name
+         v
+         kind)
+    ~bad:
+      (Printf.sprintf
+         "%s: NOT EQUIVALENT — $equiv cells left unproven  (vs %s, %s)"
+         name
+         v
+         kind)
+;;
+
+(* Every clean single-clock FSM proof: [proofs/sequential.ys.template] filled per row and
+   run by [Yosys_equiv.run_proof]. [dir] is the reference .v's directory (rtl_dir for the
+   Wirth originals, proofs_dir for registers_spec.v). *)
+let run_sequential ~work_dir ~dir ~kind (name, ours, v, top_module, renames) =
+  let ours = ours () in
+  Yosys_equiv.run_proof
+    ~work_dir
+    ~ours
+    ~template:(proofs_dir ^ "/sequential.ys.template")
+    ~subst:
+      [ "rtl", dir ^ "/" ^ v
+      ; "top", top_module
+      ; "renames", Yosys_equiv.renames_block ~gate:(Circuit.name ours) ~renames
+      ]
+    ()
+  |> report_seq ~name ~v ~kind
 ;;
 
 let combinational : (string * (unit -> Circuit.t) * string * string) list =
@@ -340,48 +378,48 @@ let sequential
   ]
 ;;
 
-(* Proven against our behavioural spec in [spec_dir], not a Wirth original (see
-   [registers]). *)
+(* Proven against our behavioural spec ([proofs/registers_spec.v]), not a Wirth original
+   (see [registers]). *)
 let behavioral
   : (string * (unit -> Circuit.t) * string * string * (string * string) list) list
   =
   [ "registers", registers, "registers_spec.v", "Registers_spec", [] ]
 ;;
 
-(* The in-situ core-glue proof (its own runner — one entry, distinct yosys flow). Proves
-   our whole core's glue (decode, the inline ALU, control, flags, the 13 state registers)
-   ≡ RISC5.v with the 8 submodules black-boxed and assumed-equivalent (each proven above /
-   separately). See [Core_blackbox] (the gate) and [Yosys_equiv.check_core] (the flow:
-   equiv_make merges the units, cutpoint -blackbox cuts their outputs, equiv_induct closes
-   the glue). *)
+(* The in-situ core-glue proof (AGENT.md §6, README): our whole core's glue (decode, the
+   inline ALU, control, flags, the 13 state registers) ≡ RISC5.v with the 8 submodules
+   black-boxed and assumed-equivalent (each proven separately). [Core_blackbox] builds the
+   gate (Instantiation stubs for the units); [proofs/core.ys.template] merges the matched
+   black-box cells, cutpoint -blackbox cuts their outputs, equiv_induct closes the glue. *)
 let run_core ~work_dir =
-  Stdio.printf
-    "=== core : ours glue  vs  RISC5.v   [in-situ · 8 units black-boxed · yosys \
-     equiv_induct] ===\n\
-     %!";
-  match
-    Yosys_equiv.check_core
-      ~work_dir
-      ~verilog:(rtl_dir ^ "/RISC5.v")
-      ~stubs:(spec_dir ^ "/core_stubs.v")
-      ~renames:Core_blackbox.register_renames
-      ~top_module:"RISC5"
-      ~ours:(Core_blackbox.circuit ())
-  with
-  | Yosys_equiv.Equivalent ->
-    Stdio.printf
-      "  EQUIVALENT  (glue proven — all $equiv closed; units assumed-equiv)\n%!";
-    true
-  | Yosys_equiv.Not_equivalent ->
-    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    false
+  let ours = Core_blackbox.circuit () in
+  Yosys_equiv.run_proof
+    ~work_dir
+    ~ours
+    ~template:(proofs_dir ^ "/core.ys.template")
+    ~subst:
+      [ "rtl", rtl_dir ^ "/RISC5.v"
+      ; "stubs", proofs_dir ^ "/core_stubs.v"
+      ; "top", "RISC5"
+      ; ( "renames"
+        , Yosys_equiv.renames_block
+            ~gate:(Circuit.name ours)
+            ~renames:Core_blackbox.register_renames )
+      ]
+    ()
+  |> report
+       ~ok:
+         "core: EQUIVALENT — glue proven, all $equiv closed; units assumed-equiv  (vs \
+          RISC5.v, in-situ · 8 units black-boxed · yosys equiv_induct)"
+       ~bad:
+         "core: NOT EQUIVALENT — $equiv cells left unproven  (vs RISC5.v, in-situ · 8 \
+          units black-boxed · yosys equiv_induct)"
 ;;
 
-(* The Mouse (Tier 2): its own runner (distinct yosys flow, like run_core), since MouseP's
-   open-drain [inout] needs the two-shim recombination + tristate lowering — see
-   [mouse_shim.v] and [Yosys_equiv.check_shim]. [renames] strips the [g.] instance prefix
-   the flatten adds, pairing the wrapped FFs back to the RTL's names (which our lib
-   already matches: rx/count/filter/tx/x/y/btns/sent/req). *)
+(* The Mouse (Tier 2): MouseP's open-drain [inout] needs the two-shim recombination +
+   tristate lowering — see [proofs/mouse_shim.v] and [proofs/mouse.ys.template]. [renames]
+   strips the [g.] instance prefix the flatten adds, pairing the wrapped FFs back to the
+   RTL's names (which our lib already matches: rx/count/filter/tx/x/y/btns/sent/req). *)
 let mouse_renames =
   [ "g.rx", "rx"
   ; "g.count", "count"
@@ -395,86 +433,79 @@ let mouse_renames =
   ]
 ;;
 
+(* The Mouse proof: the open-drain split needs two rename blocks (one per shim), supplied
+   as [{gold_renames}] / [{ours_renames}]; everything else is the same shape as a
+   sequential proof. *)
 let run_mouse ~work_dir =
-  Stdio.printf
-    "=== mouse : ours (shimmed)  vs  MousePM.v   [open-drain inout · yosys equiv_induct] \
-     ===\n\
-     %!";
-  match
-    Yosys_equiv.check_shim
-      ~work_dir
-      ~verilog:(rtl_dir ^ "/MousePM.v")
-      ~shims:(spec_dir ^ "/mouse_shim.v")
-      ~gold_shim:"mouse_gold_shim"
-      ~ours_shim:"mouse_ours_shim"
-      ~renames:mouse_renames
-      ~ours:(mouse ())
-  with
-  | Yosys_equiv.Equivalent ->
-    Stdio.printf "  EQUIVALENT  (induction closed — all $equiv proven)\n%!";
-    true
-  | Yosys_equiv.Not_equivalent ->
-    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    false
+  Yosys_equiv.run_proof
+    ~work_dir
+    ~ours:(mouse ())
+    ~template:(proofs_dir ^ "/mouse.ys.template")
+    ~subst:
+      [ "rtl", rtl_dir ^ "/MousePM.v"
+      ; "shims", proofs_dir ^ "/mouse_shim.v"
+      ; "gold_shim", "mouse_gold_shim"
+      ; "ours_shim", "mouse_ours_shim"
+      ; ( "gold_renames"
+        , Yosys_equiv.renames_block ~gate:"mouse_gold_shim" ~renames:mouse_renames )
+      ; ( "ours_renames"
+        , Yosys_equiv.renames_block ~gate:"mouse_ours_shim" ~renames:mouse_renames )
+      ]
+    ()
+  |> report_seq ~name:"mouse" ~v:"MousePM.v" ~kind:"open-drain inout · yosys equiv_induct"
 ;;
 
-(* VID (Tier 2): its own runner (distinct yosys flow, like run_core/run_mouse). Two-clock,
-   and the framebuffer-fetch CDC deliberately departs from VID60.v (our toggle
-   pulse-synchroniser vs the RTL async-set [req1]), so this is a PARTIAL proof — the
-   raster
-   + pixel datapath ≡ VID60.v, with the CDC handshake cut/excluded (argued by the cosim +
-     the one-req-per-req0 invariant test in [vid.ml]). See [Yosys_equiv.check_vid]. *)
+(* VID (Tier 2): two-clock, and the framebuffer-fetch CDC deliberately departs from
+   VID60.v (our toggle pulse-synchroniser vs the RTL async-set [req1]), so this is a
+   PARTIAL proof — the raster + pixel datapath ≡ VID60.v, with the CDC handshake
+   cut/excluded (argued by the cosim + the one-req-per-req0 invariant below).
+   [proofs/vid.ys.template] drops the DCM, exposes pclk + cuts vidbuf to a shared free
+   input, and equiv_removes the [req] output. *)
 let run_vid ~work_dir =
-  Stdio.printf
-    "=== vid : ours (raster+pixels)  vs  VID60.v   [multiclock · CDC cut · yosys \
-     equiv_induct] ===\n\
-     %!";
-  match
-    Yosys_equiv.check_vid
-      ~work_dir
-      ~verilog:(rtl_dir ^ "/VID60.v")
-      ~stubs:(spec_dir ^ "/vid_stubs.v")
-      ~top_module:"VID"
-      ~ours:(vid ())
-  with
-  | Yosys_equiv.Equivalent ->
-    Stdio.printf
-      "  EQUIVALENT  (raster + pixel datapath proven; CDC fetch handshake excluded)\n%!";
-    true
-  | Yosys_equiv.Not_equivalent ->
-    Stdio.printf "  NOT EQUIVALENT  ($equiv cells left unproven)\n%!";
-    false
+  Yosys_equiv.run_proof
+    ~work_dir
+    ~ours:(vid ())
+    ~template:(proofs_dir ^ "/vid.ys.template")
+    ~subst:
+      [ "rtl", rtl_dir ^ "/VID60.v"; "stubs", proofs_dir ^ "/vid_stubs.v"; "top", "VID" ]
+    ()
+  |> report
+       ~ok:
+         "vid: EQUIVALENT — raster + pixel datapath proven, CDC fetch handshake \
+          excluded  (vs VID60.v, multiclock · CDC cut · yosys equiv_induct)"
+       ~bad:
+         "vid: NOT EQUIVALENT — $equiv cells left unproven  (vs VID60.v, multiclock · \
+          CDC cut · yosys equiv_induct)"
 ;;
 
-(* The VID fetch-CDC invariant — the property check_vid cuts. Proves [Vid.pulse_sync] is
-   no-loss + no-spurious (one req per req0) for ALL clk/pclk phase interleavings and ALL
-   reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) — unbounded, the part the
+(* The VID fetch-CDC invariant — the property the vid proof cuts. Proves [Vid.pulse_sync]
+   is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase interleavings and
+   ALL reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) — unbounded, the part the
    single-phase Cyclesim test can't reach. [k] is the induction length: threshold ~38 (k
    must span a fetch cycle so the k-step history forces a reachable state); 48 leaves
-   margin. *)
+   margin. [proofs/vid_invariant.ys.template] only emits the SMT problem; run_proof's
+   [~smtbmc] runs the k-induction. *)
 let vid_invariant_k = 48
 
 let run_vid_invariant ~work_dir =
-  Stdio.printf
-    "=== vid_invariant : pulse_sync no-loss/no-spurious   [all-phase CDC · yosys-smtbmc \
-     k-induction k=%d] ===\n\
-     %!"
-    vid_invariant_k;
-  match
-    Yosys_equiv.check_property
-      ~work_dir
-      ~monitor:(spec_dir ^ "/vid_invariant.v")
-      ~top_module:"vid_invariant"
-      ~depth:vid_invariant_k
-      ~ours:(pulse_sync ())
-  with
-  | Yosys_equiv.Equivalent ->
-    Stdio.printf
-      "  PROVEN  (one req per req0 — no loss, no spurious — all phases, all states)\n%!";
-    true
-  | Yosys_equiv.Not_equivalent ->
-    Stdio.printf "  NOT PROVEN  (induction counterexample)\n%!";
-    false
+  Yosys_equiv.run_proof
+    ~work_dir
+    ~ours:(pulse_sync ())
+    ~template:(proofs_dir ^ "/vid_invariant.ys.template")
+    ~subst:[ "monitor", proofs_dir ^ "/vid_invariant.v"; "top", "vid_invariant" ]
+    ~smtbmc:vid_invariant_k
+    ()
+  |> report
+       ~ok:
+         (Printf.sprintf
+            "vid_invariant: PROVEN — one req per req0, no loss, no spurious, all \
+             phases/states  (all-phase CDC · yosys-smtbmc k-induction k=%d)"
+            vid_invariant_k)
+       ~bad:
+         (Printf.sprintf
+            "vid_invariant: NOT PROVEN — induction counterexample  (all-phase CDC · \
+             yosys-smtbmc k-induction k=%d)"
+            vid_invariant_k)
 ;;
 
 (* All checks as one uniform list — [name, run ~work_dir -> passed?]. The combinational
@@ -499,7 +530,7 @@ let checks : (string * (work_dir:string -> bool)) list =
         , fun ~work_dir ->
             run_sequential
               ~work_dir
-              ~dir:spec_dir
+              ~dir:proofs_dir
               ~kind:"sequential · yosys equiv_induct · behavioural spec"
               row ))
     ; [ "core", run_core

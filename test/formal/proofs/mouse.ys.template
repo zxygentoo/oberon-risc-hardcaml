@@ -1,0 +1,33 @@
+# Mouse open-drain equivalence (AGENT.md §6, README Tier 2). MousePM.v's MouseP has
+# bidirectional open-drain `inout msclk, msdat`; our gate splits each into a *_oe drive + a
+# resolved-value input. mouse_shim.v wraps BOTH into one interface (a free external read +
+# the resolved line as the observable). Driven by Yosys_equiv.run_proof. Placeholders (named
+# WITHOUT braces here — substitution is blind and would splice into this comment):
+#   rtl        MousePM.v          shims  mouse_shim.v        ours/gate  our emitted gate
+#   gold_shim/ours_shim  the two wrappers
+#   gold_renames/ours_renames  per-wrapper cd/rename block stripping the g. instance prefix
+read_verilog {rtl}
+read_verilog {shims}
+read_verilog {ours}
+hierarchy -check
+proc
+flatten {gold_shim}
+flatten {ours_shim}
+# lower the open-drain inout to plain logic: convert ALL tristate (incl. the inout-port
+# drivers) to enable-gated logic, drop tribuf's "no two drivers" assertion (open-drain
+# legally has many low drivers), and tie the both-released float to 1 (the pad pull-up) —
+# together exactly `line = oe ? 0 : ext` on both sides
+tribuf -formal
+chformal -remove
+setundef -one
+# strip the g. instance prefix the flatten added, pairing the wrapped FFs to the RTL names
+{gold_renames}
+{ours_renames}
+memory
+opt
+equiv_make {gold_shim} {ours_shim} equiv
+hierarchy -top equiv
+opt -full
+equiv_simple
+equiv_induct
+equiv_status -assert

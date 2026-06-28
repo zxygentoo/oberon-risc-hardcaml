@@ -1,0 +1,17 @@
+# VID fetch-CDC invariant (AGENT.md §6, README Tier 2) — the property the vid proof cuts.
+# Proves Vid.pulse_sync is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
+# interleavings and ALL reachable states, by k-induction (yosys-smtbmc -i / z3) — unbounded.
+# This script is only the yosys PREP that emits the SMT problem; Yosys_equiv.run_proof then
+# runs `yosys-smtbmc -i -s z3 -t <depth>` on the result (the ~smtbmc step). Placeholders (named
+# WITHOUT braces here — substitution is blind): ours = our emitted gate; monitor =
+# vid_invariant.v (the wrapper adding the assumptions + assertions); top = vid_invariant;
+# smt2 = the harness-supplied output path.
+read_verilog {ours}
+read_verilog -formal {monitor}
+prep -top {top}
+# the emitted gate's FFs have no reset (the design free-runs); pin their formal init to 0 = the
+# power-on state, else the solver starts them arbitrary and reports a spurious step-0 trace
+setundef -init -zero
+# model the multiclock design as a global-clock formal problem for the solver
+clk2fflogic
+write_smt2 -wires {smt2}

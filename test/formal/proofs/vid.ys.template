@@ -1,0 +1,29 @@
+# Partial multiclock equivalence for VID (AGENT.md §6, README Tier 2). VID is two-clock (pclk
+# raster + clk DMA) and its framebuffer-fetch CDC deliberately departs from VID60.v (our toggle
+# pulse-synchroniser vs the RTL async-set req1), so a whole-VID equiv cannot close at the CDC.
+# We prove AROUND it. Driven by Yosys_equiv.run_proof; placeholders (named WITHOUT braces here
+# — substitution is blind): stubs = vid_stubs.v (DCM/BUFG port shapes); rtl = VID60.v; ours/gate
+# = our emitted gate; top = VID.
+read_verilog {stubs}
+read_verilog {rtl}
+read_verilog {ours}
+# match our pixel width
+chparam -set RGBW 6 {top}
+hierarchy -check
+proc
+# drop VID60.v's Xilinx DCM/BUFG (a Phase-7 primitive) and expose pclk as a free clock like ours
+delete {top}/c:dcm {top}/c:clkbuf
+expose -input {top}/w:pclk
+# cut the framebuffer word to a shared free input on BOTH sides (the CDC boundary), so the pixel
+# datapath proves bit-exact GIVEN the same fetched word, without comparing the departed timing
+expose -input {top}/w:vidbuf
+expose -input {gate}/w:vidbuf
+opt
+equiv_make {top} {gate} equiv
+hierarchy -top equiv
+# exclude the deliberate CDC departure: the req handshake output (our synchroniser vs RTL req2)
+equiv_remove -gate equiv/w:req %ci t:$equiv %i
+opt -full
+equiv_simple
+equiv_induct
+equiv_status -assert

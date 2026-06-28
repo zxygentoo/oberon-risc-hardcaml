@@ -1,0 +1,23 @@
+# In-situ core-glue equivalence (AGENT.md §6, README). Proves our whole core's glue (decode,
+# the inline ALU, control, flags, the 13 state registers) ≡ RISC5.v with the 8 submodules
+# black-boxed and assumed-equivalent (each proven separately). Driven by Yosys_equiv.run_proof.
+# Placeholders (named WITHOUT braces here — substitution is blind): stubs = core_stubs.v (the
+# port-only black-box module both sides reference); rtl = RISC5.v; ours/gate = our emitted
+# gate (Core_blackbox.circuit); top = RISC5; renames = align our register names to RISC5.v's.
+# equiv_make MERGES the matched black-box cells (checking their inputs via the $equiv on the
+# named nets); cutpoint -blackbox then cuts the merged units' outputs to shared free signals
+# (the assume side — sound on the leaf proofs), leaving pure glue that equiv_induct discharges.
+read_verilog {stubs}
+read_verilog {rtl}
+read_verilog {ours}
+hierarchy -check
+proc
+{renames}
+opt
+equiv_make {top} {gate} equiv
+hierarchy -top equiv
+cutpoint -blackbox
+opt -full
+equiv_simple
+equiv_induct
+equiv_status -assert

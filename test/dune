@@ -18,7 +18,7 @@
  (libraries oracle))
 
 ; Shared bounded forked-worker pool + PASS/FAIL summary, used by both opt-in RTL-fidelity
-; runners — cosim's cosim_run and formal's test_formal (see fork_pool.mli).
+; runners — cosim's cosim_run and formal's formal_run (see fork_pool.mli).
 
 (library
  (name fork_pool)
