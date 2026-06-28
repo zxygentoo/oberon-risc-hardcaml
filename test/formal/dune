@@ -3,9 +3,10 @@
 ; hardcaml_of_verilog (yosys import) + hardcaml_verify (Sec — a SAT equivalence check, z3).
 ; The exhaustive counterpart to test/cosim (which samples the same comparison via Verilator).
 ;
-; OPT-IN — needs yosys + z3 on PATH (like cosim needs verilator), so the proof runs via
-; run.sh, kept out of @runtest. The exe builds under @check so it can't rot; run the proof
-; with `dune build @formal` or `bash test/formal/run.sh`.
+; OPT-IN — needs yosys + z3 on PATH (like cosim needs verilator), so it's kept out of
+; @runtest. test_formal is the self-contained OCaml runner (cd to repo root, tool check, RTL
+; fetch, then a parallel Fork_pool over the checks). The exe builds under @check so it can't
+; rot; run the proof with `dune build @formal` or `dune exec test/formal/test_formal.exe`.
 
 (executable
  (name test_formal)
@@ -17,23 +18,24 @@
   hardcaml_of_verilog
   jane_rope
   base
-  stdio))
+  stdio
+  fork_pool))
 
-; Uniform front door, mirroring @cosim / @boot_checkpoint: `dune build @formal` proves every
-; unit. The exe is a declared dep so dune pre-builds it — run.sh then skips its own `dune
-; build`, so the action never nests a dune invocation. Re-run with `dune build @formal --force`.
+; Uniform front door, mirroring @cosim: `dune build @formal` proves every unit by running the
+; pre-built test_formal.exe directly (no wrapper script, no nested dune). For a single check or
+; a custom job count: `dune exec test/formal/test_formal.exe -- <check> [jobs]`. Re-run with
+; `dune build @formal --force`.
 
 (rule
  (alias formal)
  (deps
-  run.sh
-  ../cosim/fetch-rtl.sh
-  ../cosim/rtl-sources.txt
+  test_formal.exe
+  ../fetch-rtl.sh
+  ../rtl-sources.txt
   registers_spec.v
   core_stubs.v
   mouse_shim.v
   vid_stubs.v
-  vid_invariant.v
-  test_formal.exe)
+  vid_invariant.v)
  (action
-  (run bash run.sh)))
+  (run %{exe:test_formal.exe})))

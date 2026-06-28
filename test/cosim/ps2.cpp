@@ -1,5 +1,5 @@
-// RTL-fidelity co-sim for Ps2: replay each frame dumped by test/cosim/dump_ps2 through the
-// reference _po/verilog/src/PS2.v under Verilator, asserting cycle-by-cycle that RTL rdy ==
+// RTL-fidelity co-sim for Ps2: replay each frame dumped by test/cosim/ps2_dump through the
+// reference test/_po/verilog/src/PS2.v under Verilator, asserting cycle-by-cycle that RTL rdy ==
 // port's, plus RTL data == the recovered byte whenever rdy is high. Exit 0 iff bit- and
 // cycle-exact to PS2.v.   usage:  cosim <port_dump_path>     (lines: "data hextrace")
 //

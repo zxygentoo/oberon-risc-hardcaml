@@ -97,12 +97,18 @@ Opt-in (like the cosim) — needs **yosys** on `PATH` (both modes) and **z3** (c
 mode), plus the `hardcaml_verify` / `hardcaml_of_verilog` libraries (AGENT.md §9):
 
 ```
-dune build @formal            # prove every unit
-bash test/formal/run.sh       # same, standalone
+dune build @formal                              # prove every unit, in parallel
+dune exec test/formal/test_formal.exe -- core   # one check, live (e.g. core | vid_invariant |
+                                                #   left_shifter | multiplier | mouse | …)
+dune exec test/formal/test_formal.exe -- all 4  # all, capping parallelism at 4 jobs
 ```
 
-The reference Verilog is **not** vendored; `run.sh` fetches + checksum-verifies it on demand
-via [`../cosim/fetch-rtl.sh`](../cosim/rtl-sources.txt) (shared provenance with the cosim).
+`test_formal` is a self-contained OCaml runner (like cosim's `cosim_run`): it cd's to the repo
+root, checks `yosys`/`z3` on `PATH`, fetches + checksum-verifies the reference Verilog on demand
+(toolchain-free [`../fetch-rtl.sh`](../rtl-sources.txt), shared provenance with the cosim), then
+runs the checks through the shared parallel `Fork_pool` — each in its own
+`test/_work/formal/<check>/`, output captured to `run.log` — ending with a PASS/FAIL summary.
+yosys/z3 are RAM-heavy, so it defaults to ~half the cores; pass a job count to override.
 
 ## Adding a unit
 
@@ -119,7 +125,7 @@ In `test_formal.ml`:
   and rename here — e.g. `q0→Q0`, `spi_shreg→shreg`.
 - **Behavioural spec** (a unit whose RTL is a synthesis idiom, not behaviour — so far only the
   register file): add a checked-in `*_spec.v` here, a thunk, and a row to `behavioral` (reference
-  dir is `spec_dir = test/formal`, not the fetched `_po/`). Same `equiv_induct` path.
+  dir is `spec_dir = test/formal`, not the fetched `test/_po/`). Same `equiv_induct` path.
 
 - **In-situ core** (whole core, submodules black-boxed): see `core_blackbox.ml` (the gate, via
   `Risc5_core.create_with_units`), `core_stubs.v` (the stubs), and `run_core` /

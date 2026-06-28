@@ -1,7 +1,7 @@
 (* Boot-stream RTL co-sim — capture half (AGENT.md §6 layer 3, for the CPU core).
 
    Boot the SoC from the real disk and record the CPU core's per-cycle I/O to a trace,
-   which [test/cosim/risc5.cpp] replays through the reference [RISC5.v] under Verilator to
+   which [test/cosim/core.cpp] replays through the reference [RISC5.v] under Verilator to
    assert the core is cycle-exact to the spec across a real workload — the core's only
    cycle-level RTL check before the Phase-8 equivalence proof (the unit co-sims cover the
    peripherals and FP units; this covers the whole core over a boot).
@@ -22,9 +22,9 @@
    - bytes 9-12 / 13-16: adr / outbus (u32) — core OUTPUTS, the expected values
 
    Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Sd_bridge} SD
-   card), trimmed to the capture. Opt-in (run via [test/cosim/run-core.sh]); needs the
+   card), trimmed to the capture. Opt-in (run via the cosim runner, cosim_run); needs the
    disk image. Env: [DISK_IMG] (default the vendored .dsk), [CORE_TRACE] (output path),
-   [CAP] (hard cycle cap, default 25_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
+   [CAP] (hard cycle cap, default 2_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
    print a windowed pc/ir/flags/regs dump and [NOTRACE] skips writing the (large) trace
    file. *)
 
@@ -41,7 +41,7 @@ let () =
       else (
         let parent = Filename.dirname dir in
         if String.equal parent dir
-        then failwith "dump_core_trace: no dune-project found above cwd"
+        then failwith "core_dump: no dune-project found above cwd"
         else up parent)
     in
     up (Sys.getcwd ())
@@ -67,20 +67,21 @@ let () =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
     | None ->
-      let dir =
-        match Sys.getenv_opt "CLAUDE_JOB_DIR" with
-        | Some d -> Filename.concat d "tmp"
-        | None -> "/tmp/oberon-cosim"
-      in
-      (try Unix.mkdir dir 0o755 with
-       | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-       | _ -> ());
+      (* Self-contained in-repo default (git-ignored test/_work), matching cosim_run; the
+         normal entry points pass an explicit CORE_TRACE into test/_work anyway. *)
+      let dir = "test/_work/cosim/core" in
+      ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
   in
+  (* Cycle-fidelity is a spot-check, not a full boot (boot_checkpoint / visual_golden own
+     boot correctness): ~2M cycles covers reset + ROM init + a solid run of the SD-load
+     driver — a real instruction stream exercising
+     decode/control/stall/flags/branch/byte-mem — at a small fraction of the full-boot
+     time/trace. Raise CAP to replay deeper (handoff is ~8M, the inner core 8M+). *)
   let cap =
     match Sys.getenv_opt "CAP" with
     | Some s -> int_of_string s
-    | None -> 25_000_000
+    | None -> 2_000_000
   in
   (* ── boot + capture (SoC + the shared off-chip SD card) ─────────────────────── *)
   let tmp = copy_to_temp disk_image in
@@ -94,7 +95,7 @@ let () =
   and outp = Cyclesim.outputs sim in
   let some n = function
     | Some x -> x
-    | None -> failwith ("dump_core_trace lookup: " ^ n)
+    | None -> failwith ("core_dump lookup: " ^ n)
   in
   let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
   let node n = some n (Cyclesim.lookup_node_or_reg_by_name sim n) in
@@ -154,19 +155,24 @@ let () =
   and pc_same = ref 0
   and stop = ref false in
   Printf.printf
-    "dump_core_trace: booting %s\n  trace -> %s\n%!"
+    "core_dump: booting %s\n  trace -> %s\n%!"
     (Filename.basename disk_image)
     trace_path;
   (* drive [rst_n]: 0 for the first edge (reset → StartAdr), 1 thereafter. The recorded
-     rst_n is the value applied for that cycle's edge; the replay harness owns its own
-     clean reset (it loads IR from record[0]'s StartAdr fetch), so the single reset-cycle
-     phase is handled there. *)
+     [rst_n] is the value applied for this state's edge; the replay drives it verbatim. *)
   while (not !stop) && !cyc < cap do
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
     inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
-    Cyclesim.cycle sim;
-    (* post-cycle reads: the settled combinational cloud over the now-current state *)
+    (* Record PRE-edge: settle the combinational cloud over the CURRENT state (registers
+       not yet updated), so each record is (inputs this state consumes, outputs this state
+       drives) and the edge below transitions to the next state. Pre-edge is what keeps
+       the trace self-consistent across the rst 0→1 reset boundary: the codebus consumed
+       at the first rst=1 edge (the branch-TARGET instruction) is captured here; a
+       post-edge read would record the fetch AFTER it instead and lose it, desyncing the
+       replay by one instruction whenever the boot's first instruction is a taken branch
+       (which it is). *)
+    Cyclesim.cycle_before_clock_edge sim;
     let irq = Cyclesim.Node.to_int irq_node
     and stallx = Cyclesim.Node.to_int stallx_node
     and codebus = b1 outp.codebus
@@ -215,6 +221,10 @@ let () =
         Printf.printf " R%d=0x%X" r (Cyclesim.Memory.to_int regfile ~address:r)
       done;
       Printf.printf "\n%!");
+    (* this state's I/O is recorded — now take the edge (consuming the recorded
+       codebus/inbus under the recorded rst) and re-settle for the post-edge reads below *)
+    Cyclesim.cycle_at_clock_edge sim;
+    Cyclesim.cycle_after_clock_edge sim;
     (* drive the SD bridge (post-cycle, like the visual golden) *)
     let ctrl_v = Cyclesim.Reg.to_int spi_ctrl in
     Sd_bridge.step

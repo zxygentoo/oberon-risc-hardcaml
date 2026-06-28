@@ -3,7 +3,7 @@
    Implementation note. This is a *sequential* unit, so per AGENT.md §2 we mirror
    RISC5.v's skeleton exactly — which signals are registered and the state/stall timing
    are the spec the oracle checks cycle-by-cycle and synthesis preserves. The original RTL
-   is [_po/verilog/src/Multiplier.v] (25 lines).
+   is [test/_po/verilog/src/Multiplier.v] (25 lines).
 
    The 64-bit [P] register is dual-role: its low half is the multiplier being consumed
    (its LSB is the current bit), its high half is the running accumulator. Each step adds

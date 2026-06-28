@@ -1,5 +1,5 @@
-// RTL-fidelity co-sim for Vid: replay the per-tick trace dumped by test/cosim/dump_vid through
-// the reference _po/verilog/src/VID60.v (wrapped by vid_cosim.v) under Verilator, and assert —
+// RTL-fidelity co-sim for Vid: replay the per-tick trace dumped by test/cosim/vid_dump through
+// the reference test/_po/verilog/src/VID60.v (wrapped by vid_cosim.v) under Verilator, and assert —
 // every base tick — that RTL (vidadr, hsync, vsync, RGB) == the Hardcaml port's. Exit 0 iff the
 // port is bit- and cycle-exact to VID60.v on the raster + pixel datapath over the whole stimulus.
 //   usage:  cosim <port_dump_path>   (lines: "inv viddata req vidadr hsync vsync rgb")

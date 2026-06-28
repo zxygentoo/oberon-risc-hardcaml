@@ -3,7 +3,7 @@
 // lines exactly like the Hardcaml port. The harness drives the resolved wire value into the
 // DUT (force, overriding the DUT's own open-drain drive), and we XMR-read the DUT's pull-low
 // intent (req for msclk, ~tx[0] for msdat) out as *_oe. MousePM.v itself is byte-for-byte
-// the pinned reference (test/cosim/rtl-sources.txt).
+// the pinned reference (test/rtl-sources.txt).
 
 module mouse_cosim (
     input  wire        clk,

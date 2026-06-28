@@ -2,40 +2,43 @@
 
 Confirms a Hardcaml design is **bit-exact to Wirth's original Verilog** — in both result
 *and* timing — by driving the reference RTL through **Verilator** and comparing each
-stimulus's output `z` and its stall length against the Hardcaml port. This is the
-simulation-based preview of the Phase-8 formal-equivalence proof
-(`hardcaml_verify`), and the project's *fidelity* oracle — distinct from the OCaml emulator,
-which is the *behavioural / system-state* oracle (see AGENT.md §6).
+stimulus's output against the Hardcaml port. This is the simulation-based preview of the
+Phase-8 formal-equivalence proof (`hardcaml_verify`), and the project's *fidelity* oracle —
+distinct from the OCaml emulator, which is the *behavioural / system-state* oracle (see AGENT.md §6).
 
 It is **not** part of `dune runtest`. It needs only:
 
 - `verilator` on `PATH` (it is not in the ox/opam toolchain).
 
 The reference Verilog is **not vendored** (its licensing is unclear and we prefer not to
-redistribute it). `run.sh` fetches it on demand into `_po/` and checksum-verifies it against
-`rtl-sources.txt` (see *Reference RTL* below), so a fresh clone with `verilator` just works.
+redistribute it). The runner fetches it on demand (via `fetch-rtl.sh`) into `test/_po/` and
+checksum-verifies it against `rtl-sources.txt` (see *Reference RTL* below), so a fresh clone with
+`verilator` just works.
 
 ## Run
 
 ```sh
-dune build @cosim                       # everything (FP units + SPI + UART R/T + PS/2 kbd + video + mouse), uniform with @boot_checkpoint
-bash test/cosim/run.sh                  # everything — the same, run directly
-bash test/cosim/run.sh fp_divider       # just one (fp_adder | fp_multiplier | fp_divider | spi | rs232t | rs232r | ps2 | vid | mouse)
-bash test/cosim/run.sh spi              # just the SPI master
-bash test/cosim/run.sh rs232t           # just the RS232 transmitter
-bash test/cosim/run.sh rs232r           # just the RS232 receiver
-bash test/cosim/run.sh ps2              # just the PS/2 keyboard
-bash test/cosim/run.sh vid              # just the video controller
-bash test/cosim/run.sh mouse            # just the PS/2 mouse
-dune build @core_cosim                  # the CPU core — a different shape (boot-stream replay); see "CPU core" below
+dune build @cosim                              # all units (9 + the CPU core), parallel + a PASS/FAIL summary
+dune exec test/cosim/cosim_run.exe -- vid      # just one unit, live (fp_adder | fp_multiplier |
+                                               #   fp_divider | spi | rs232t | rs232r | ps2 |
+                                               #   vid | mouse | core)
+dune exec test/cosim/cosim_run.exe -- all 4    # all units, capping parallelism at 4 jobs
 ```
 
 `dune build @cosim` is the uniform front door (like `@boot_checkpoint`); dune caches it, so re-run
-with `--force`, or use `run.sh <unit>` for a single unit. Either way it ensures the reference RTL is
-present (fetching it on first run via `fetch-rtl.sh`), builds the OCaml dumper, then
-for each unit dumps the Hardcaml port's output over a stimulus set, verilates the reference `.v`,
-and asserts the RTL matches the port in **both result and timing** for every stimulus (expect
-`0 value-mismatch, 0 cycle-mismatch`):
+with `--force`. The runner (`cosim_run.ml`) ensures the reference RTL is present (fetching it on
+first run via `../fetch-rtl.sh`) and the dumper/capture exes are built **once** up front, then runs
+every unit **concurrently** in a forked-worker pool (default one job per core) — Verilator is ~5 s
+per stimulus unit, so their wall time is roughly *one* unit, not nine. The **CPU core** is folded in
+(see *CPU core* below) and is the heavier one — ~10 s for its first ~2 M-cycle capture, then reuses
+the cached ~33 MiB trace — so it's the long pole of a full run's wall time. Each unit's output is captured to
+`test/_work/cosim/<unit>/run.log`; the run ends with a PASS/FAIL table (plus the tail of any failing
+log) and exits nonzero iff any unit failed. A single `cosim_run.exe -- <unit>` runs **live**
+(uncaptured) for debugging.
+
+Each of the nine **stimulus units** dumps the Hardcaml port's output over a stimulus set, verilates
+the reference `.v`, and asserts the RTL matches the port in **both result and timing** for every
+stimulus (expect `0 value-mismatch, 0 cycle-mismatch`):
 
 - **FP units** — the frozen `fp_vectors` stimuli for that unit (`A`/`M`/`D` lines) **+ 20 000
   random fuzz**; asserts `RTL z == port z` **and** `RTL stall-length == port stall-length`.
@@ -77,89 +80,102 @@ and asserts the RTL matches the port in **both result and timing** for every sti
   resolve `wire = ~(own DUT oe | device low)`, so a divergence shows as an output mismatch. Asserts,
   **every cycle** over ~505 K cycles, `RTL (msclk_oe, msdat_oe, out) == port's` (`0 mismatch`).
 
-Scratch (the downloaded zip, Verilator's `obj_dir`) goes to `$CLAUDE_JOB_DIR/oberon-cosim`; the
-only tree write is the fetched `_po/verilog/src/*.v` (git-ignored).
+The tenth unit, the **CPU core**, is a boot-stream capture/replay — a different shape; see below.
+
+Scratch (the downloaded zip, Verilator's `obj_dir`s, the core boot trace) goes to `test/_work/cosim`
+(git-ignored, in-repo + self-contained); the other write is the fetched `test/_po/verilog/src/*.v`
+(also git-ignored). Both `test/_po` and `test/_work` are marked `data_only_dirs` so dune skips them.
 
 ## Reference RTL (fetch-on-demand + checksum pin)
 
-`fetch-rtl.sh` populates `_po/verilog/src/` once, on demand: if the pinned `.v` are
+`test/fetch-rtl.sh` — hoisted one level up so cosim + formal share it — populates
+`test/_po/verilog/src/` once, on demand: if the pinned `.v` are
 already cached and match, it does nothing; otherwise it downloads `OStationVerilog.zip` from the
 upstream URL, verifies the archive SHA-256, extracts `src/*.v`, and verifies each file against
 `rtl-sources.txt` before trusting it. The pins are **fidelity-critical**: a mismatch means
 upstream drifted from the exact revision the port (and AGENT.md §8's line-number citations) was
 verified against, so the co-sim refuses rather than compare against unknown RTL. Updating to a
 newer upstream revision is a deliberate edit of `rtl-sources.txt`. Offline fallback: download the
-zip yourself and unzip its `src/*.v` into `_po/verilog/src/`.
+zip yourself and unzip its `src/*.v` into `test/_po/verilog/src/`.
 
 ## How it works
 
 | file | role |
 |---|---|
-| `dump_fp.ml` | one dumper for all FP units: drive `Risc5.Fp_<unit>` (chosen by the unit-name argument) over the stimuli, dump `"x y [u v] z cycles"` lines (`cycles` = the port's stall length) — the stimulus source |
-| `dump_spi.ml` | the SPI dumper (a serial handshake unit, not stall-based): drive `Risc5.Spi` over (`fast`, `data_tx`) with a recorded per-cycle MISO, dump `"fast data_tx data_rx cycles hextrace"` (one hex digit/cycle = `miso·rdy·sclk·mosi`) |
-| `dump_rs232t.ml` | the RS232 transmitter dumper (output-only serial handshake): drive `Risc5.Rs232t` over (`fsel`, `data`), dump `"fsel data cycles hextrace"` (one hex digit/cycle = `rdy·txd`) |
-| `dump_rs232r.ml` | the RS232 receiver dumper (input-driven): play the sender — drive a frame on `rxd` (+ a `done_` ack), dump `"fsel data hextrace"` (one hex digit/cycle = `done_·rxd·rdy`); fixed-length replay, so no cycles column |
-| `dump_ps2.ml` | the PS/2 keyboard dumper (input-driven): play the keyboard — clock a frame on `ps2c`/`ps2d` (+ a `done_` pop), dump `"data hextrace"` (one hex digit/cycle = `done_·ps2c·ps2d·rdy`); fixed-length replay |
-| `dump_vid.ml` + `vid_cosim.v` | the video dumper (two-clock, autonomous): run `Risc5.Vid` under `By_input_clocks` (13:5) over ~2 scanlines, dump `"inv viddata req vidadr hsync vsync rgb"` per base tick. `vid.cpp` replays the inputs through `vid_cosim.v` — the real `VID60.v` with `DCM`/`BUFG` stubbed and `pclk` `force`d from the harness — and compares `vidadr/hsync/vsync/RGB` each tick (`req` is the deliberate CDC departure: protocol-checked by pulse count, not cycle-compared — see the Video bullet). The optional 6th `units_table` column hands `vid_cosim.v` to Verilator |
-| `dump_mouse.ml` + `mouse_cosim.v` | the mouse dumper (bidirectional, single-clock): play a PS/2 mouse against `Risc5.Mouse` through the init handshake + 4 reports, dump `"rstn dmc dmd mco mdo out"` per cycle (the device's open-drain pull-lows + the port outputs). `mouse.cpp` replays through `mouse_cosim.v` — the real `MousePM.v` with the `inout` lines split via `force` + XMR — resolving the open-drain against the RTL's own oe, and compares every cycle |
-| `cosim.h` | shared harness: universal `cosim_open` + `Unit` + `tick` + `hexval`, and two cross-check runners — `run_drain_cosim` for the stall-based FP units (open → run → drain on `stall` → compare `z`, with `parse_xy`/`parse_xyuv`), and `run_serial_cosim` for the cycle-by-cycle serial units (reset → per-line `replay` → value/wave/cycle tally → summary). Each FP/serial `.cpp` is a thin shell |
-| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells (name the `Unit`, pick the parser, call `run_drain_cosim`); the serial units (`spi`, `rs232t`, `rs232r`, `ps2`) are a `reset` + a `replay` + `run_serial_cosim`. `vid` (two-clock) and `mouse` (bidirectional `inout`, split via `force`+XMR) keep their own `main` — different shapes |
-| `fetch-rtl.sh` | provenance: fetch + checksum-verify the reference `.v` into `_po/` against `rtl-sources.txt` (toolchain-free; idempotent once cached) |
-| `run.sh` | glue: a `units_table` (one row per unit) driving build → dump → verilate → cross-check; calls `fetch-rtl.sh` first |
+| `<unit>_dump.ml` | the per-unit dumper: drives the Hardcaml port over a stimulus set, dumps a trace to stdout (the stimulus source). Two are shared and take the unit name: `fp_dump` serves the three FP units (`Risc5.Fp_<unit>`, + the `fp_vectors` path), dumping `"x y [u v] z cycles"`; `rs232_dump <rs232t\|rs232r>` covers both UART directions (shared corner/fuzz driver, per-direction frame). The rest are one-per-unit — `spi_dump`/`ps2_dump` dump a per-cycle hex trace, `vid_dump`/`mouse_dump` a two-clock / bidirectional one — and sort next to their `<unit>.cpp` |
+| `cosim_dump.ml` | shared OCaml dumper helpers (`rd`, …) the `*_dump.ml` open |
+| `cosim.h` | shared C++ harness: universal `cosim_open` + `Unit` + `tick` + `hexval`, and two cross-check runners — `run_drain_cosim` for the stall-based FP units (open → run → drain on `stall` → compare `z`), and `run_serial_cosim` for the cycle-by-cycle serial units (reset → per-line `replay` → value/wave/cycle tally → summary) |
+| `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells; the serial units (`spi`, `rs232t`, `rs232r`, `ps2`) are a `reset` + `replay` + `run_serial_cosim`; `vid` (two-clock) and `mouse` (bidirectional `inout`, split via `force`+XMR) keep their own `main` |
+| `vid_cosim.v` / `mouse_cosim.v` | extra `.v` wrappers handed to Verilator beside the reference `.v`: `vid_cosim` stubs the Xilinx `DCM`/`BUFG` and forces `VID`'s `pclk`; `mouse_cosim` splits `MousePM`'s open-drain `inout`s |
+| `core_dump.ml` + `core.cpp` | the **CPU core** unit (boot-stream capture/replay — see below). `core_dump` lives in `test/` (it needs `oracle`+`sd_bridge`) and captures the boot trace; `core.cpp` replays it through `RISC5.v` |
+| `ram16x1d.v` | the `RAM16X1D` distributed-RAM primitive `Registers.v` infers, supplied for the core replay |
+| `../fetch-rtl.sh` + `../rtl-sources.txt` | provenance: fetch + checksum-verify the reference `.v` into `test/_po/` (both at `test/`, shared with formal; toolchain-free; idempotent once cached) |
+| `cosim_run.ml` | the **parallel runner**: a typed `units` list (a `Stimulus`/`Core` variant), serialized prep (`../fetch-rtl.sh` + exe builds), then a forked-worker pool — per unit build → dump → verilate → cross-check, captured to `test/_work/cosim/<unit>/run.log` — and a PASS/FAIL summary (nonzero exit iff any failed) |
 
-The OCaml dumpers build under `dune build @check` (Verilator-free), so they can't silently rot
-even though the cross-check itself only runs via `run.sh`.
+The OCaml dumpers + `core_dump` build under `dune build @check` (Verilator-free), so they can't
+silently rot even though the cross-check itself only runs via `cosim_run`.
 
 ## CPU core (boot-stream RTL co-sim)
 
-The core gets a different *shape* of check — not a stimulus dump but a **whole-core, cycle-level
-replay of a real boot** (the core otherwise has no cycle-level RTL check before the Phase-8 proof,
-AGENT.md §6). Opt-in, like `@cosim` but its own front door:
+The core gets a different *shape* of check — not a stimulus dump but a **cycle-level replay of a
+real-boot instruction stream**: a *fidelity* spot-check (does our core match `RISC5.v`
+cycle-by-cycle?), complementary to `boot_checkpoint`/`visual_golden`, which own boot *correctness*.
+By default it replays **~2 M cycles** — reset + ROM init + a solid run of the SD-load driver, a
+representative branch/ALU/load-store-stall/byte-mem mix that exercises the core's
+decode/control/stall/flags machinery; raise `CAP` to go deeper (handoff ~8 M, inner core 8 M+).
+It's folded into the unified runner as the `core` unit:
 
 ```sh
-dune build @core_cosim          # capture the boot trace, then replay it through RISC5.v
-bash test/cosim/run-core.sh     # the same, run directly
+dune build @cosim                            # runs it alongside the other units
+dune exec test/cosim/cosim_run.exe -- core   # just the core
 ```
 
-`test/dump_core_trace.ml` boots the SoC from the real disk (the shared `Sd_bridge` SD card) and
-records the CPU core's per-cycle I/O — `rst`/`irq`/`stallX`/`codebus`/`inbus` (inputs) and
-`adr`/`rd`/`wr`/`ben`/`outbus` (outputs) — to a 17-byte-per-cycle trace (~25 M cycles, ~400 MiB,
-cached). `risc5.cpp` Verilates `RISC5.v` + its 8 submodules (`ram16x1d.v` supplies the `RAM16X1D`
-distributed-RAM primitive `Registers.v` infers, the way `vid_cosim.v` stubs the `DCM`) and replays
-the trace: it drives `RISC5.v` with the captured **inputs** and asserts its **outputs** match the
-captured ones every cycle, reporting the **first divergence**.
+`core_dump.ml` boots the SoC from the real disk (the shared `Sd_bridge` SD card) and records the
+core's per-cycle I/O — `rst`/`irq`/`stallX`/`codebus`/`inbus` (inputs) and `adr`/`rd`/`wr`/`ben`/
+`outbus` (outputs) — to a 17-byte-per-cycle trace (~2 M cycles, ~33 MiB, cached in
+`test/_work/cosim/core`). `core.cpp` Verilates `RISC5.v` + its 8 submodules (`ram16x1d.v` supplies
+the `RAM16X1D` primitive `Registers.v` infers, the way `vid_cosim.v` stubs the `DCM`) and replays
+the trace: it drives `RISC5.v` with the captured **inputs** and asserts its **outputs** match every
+cycle, reporting the **first divergence**.
 
 Why the first output mismatch pins any divergence exactly: both cores start from the same reset
 state, and as long as our outputs match the spec's, memory — hence the inputs, which are functions
 of memory — evolves identically, so the comparison stays valid right up to the first cycle our core
-does something `RISC5.v` wouldn't (there both are in identical state fed an identical instruction,
-a minimal reproducer). This is what found + verified the phase-6b ALU flag-leak. Unlike the unit
-co-sims it is *not* a `units_table` row (it replays a boot capture, not a stimulus set) — hence its
-own `run-core.sh`. `CAPTURE=1` forces a recapture; `CYC_FROM`/`CYC_TO`/`NOTRACE` on the capture
-print a windowed pc/ir/flags/regs dump for zooming in on a divergence.
+does something `RISC5.v` wouldn't (a minimal reproducer). This is what found + verified the phase-6b
+ALU flag-leak — which sat ~17.3 M cycles in, so reproducing a divergence that deep means raising
+`CAP`; `visual_golden`/`boot_checkpoint` surface such bugs at the system level, and this co-sim
+then root-causes the exact cycle.
 
-## Adding another unit (the CPU core, peripherals)
+The trace is recorded **pre-edge** (each record = the inputs a state consumes + the outputs it
+drives), which keeps it self-consistent across the `rst` 0→1 reset boundary — the codebus consumed
+at the first `rst=1` edge (the boot's first instruction is a taken branch, so this is the branch
+*target*) would be lost by a post-edge read. The replay drives `rst` per-record and compared-skips
+the **2-cycle reset transient** (our port reaches `StartAdr` in the combinational `adr` one cycle
+after `RISC5.v`'s `~rst?StartAdr` term; they re-converge at cyc 2). To recapture, delete the cached
+trace; `CYC_FROM`/`CYC_TO`/`NOTRACE`/`CAP` env knobs on `core_dump` window a pc/ir/flags/regs dump
+for zooming in on a divergence.
 
-Every unit is one row in `run.sh`'s `units_table` (`name  .v  top-module  .cpp  dumper`); the
-shared `cosim_unit` drives build → dump → verilate → cross-check off that row. Adding a unit is a
-new row plus its harness, with one fork on whether it fits the stall-based dumper:
+## Adding another unit
 
-**Stall-based units** (`run`/`stall`/`z`) reuse the shared `dump_fp` dumper — three small steps:
+Every unit is one entry in `cosim_run.ml`'s typed `units` list; the runner drives build → dump →
+verilate → cross-check off it. Adding a unit is a new entry plus its harness, with one fork on
+whether it fits the stall-based dumper:
 
-1. a `*_driver ()` in `dump_fp.ml` (build its sim, set its inputs, return `drive`'s
-   `(z, cycles)`) plus one arm in the unit-name `match` — the `run` → drain on `stall` → read
-   protocol (and its stall-cycle count) is already shared by `drive`;
+**Stall-based units** (`run`/`stall`/`z`) reuse the shared `fp_dump` dumper — three small steps:
+
+1. a `*_driver ()` in `fp_dump.ml` (build its sim, set its inputs, return `drive`'s `(z, cycles)`)
+   plus one arm in the unit-name `match` — the `run` → drain on `stall` → read protocol (and its
+   stall-cycle count) is already shared by `drive`;
 2. a ~8-line `<unit>.cpp` that names the `Unit` and passes `parse_xy` (or `parse_xyuv`, if it
    carries `u`/`v`) to `run_drain_cosim` — the replay/compare/summary loop is shared;
-3. a `units_table` row in `run.sh` with `dump_fp` in the dumper column.
+3. a `Stimulus` row in the `units` list with `fp_dump` as the dumper.
 
 The adder carries `u`/`v` modifiers and a 6-field vector line (`A`); the mul/div units don't
 (`M`/`D`, 4-field). The `driver` record's `has_uv`/`tag` fields capture exactly that difference.
 
-**Other interfaces** (handshake/serial peripherals, the SoC) don't fit `run`/`stall`/`z`, so
-they get their own dumper + harness — see `dump_spi.ml` / `spi.cpp` as the template: dump a
-per-cycle trace (MISO stimulus + the outputs to check), and have the `.cpp` drain the RTL on its
-own terminal condition (here `rdy` re-raising) while comparing every cycle. Wire it in with a
-`units_table` row naming the new dumper (`cosim_unit`'s one conditional already handles "dumper
-takes no `fp_vectors` arg"); a genuinely different dump signature is the only case that needs more
-than a row.
+**Other interfaces** (handshake/serial peripherals) don't fit `run`/`stall`/`z`, so they get their
+own `<unit>_dump.ml` + `<unit>.cpp` — see `spi_dump.ml` / `spi.cpp` as the template: dump a
+per-cycle trace (stimulus + the outputs to check), and have the `.cpp` drain the RTL on its own
+terminal condition (here `rdy` re-raising) while comparing every cycle. Wire it in with a `Stimulus`
+row naming the new dumper (the runner's one conditional already handles "dumper takes no
+`fp_vectors` arg"). The CPU core's `Core` variant shows the wholly different capture/replay shape.

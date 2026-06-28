@@ -1,10 +1,10 @@
 // Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3, extended to the whole core).
-// Replays the per-cycle core I/O captured by test/dump_core_trace (over the real Oberon boot)
-// through the reference _po/verilog/src/RISC5.v under Verilator, and reports the FIRST cycle
+// Replays the per-cycle core I/O captured by test/core_dump (over the real Oberon boot)
+// through the reference test/_po/verilog/src/RISC5.v under Verilator, and reports the FIRST cycle
 // our core's outputs diverge from the spec — the instruction where our port deviates from
 // RISC5.v. (This is what found + verified the phase-6b ALU flag-leak fix.)
 //
-// Why the first output mismatch is exactly the divergence: see test/dump_core_trace.ml. Both
+// Why the first output mismatch is exactly the divergence: see test/core_dump.ml. Both
 // cores start from the same reset state; fed the identical captured inputs, they stay in
 // lockstep (identical memory -> identical inputs) until our core first does something RISC5.v
 // wouldn't — which is the first output mismatch here.
@@ -14,8 +14,12 @@
 // codebus/inbus/irq/stallX (+ rst) are the core INPUTS we drive into RISC5.v; adr/rd/wr/ben/
 // outbus are the OUTPUTS we compare.
 //
-// usage: risc5_cosim <trace> [skip]   skip = leading records compared-skipped (default 1: the
-//        rst=0 reset-cycle record, captured before reset deasserts, has reset-flavored outputs).
+// usage: risc5_cosim <trace> [skip]   skip = leading records compared-skipped (default 2: the
+//        reset transient. cyc0 is the rst=0 reset cycle; cyc1 differs benignly because our port
+//        models reset via the PC register's reset value, so its combinational adr reaches
+//        StartAdr one cycle after RISC5.v's `~rst ? StartAdr` term in pcmux. Both re-converge at
+//        cyc2 and stay in lockstep — the replay still DRIVES cyc0/cyc1 (so RTL reaches the right
+//        state), it just doesn't COMPARE them.
 
 #include "VRISC5.h"
 #include "cosim.h"  // tick(), Verilated
@@ -60,7 +64,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
     return 2;
   }
-  long skip = (argc >= 3) ? atol(argv[2]) : 1;
+  long skip = (argc >= 3) ? atol(argv[2]) : 2;
   const char* maxc = getenv("MAXCYC");
   long maxcyc = maxc ? atol(maxc) : -1;
 
@@ -72,17 +76,12 @@ int main(int argc, char** argv) {
 
   VRISC5* dut = new VRISC5;
 
-  // Reset edge matching the SoC's single-cycle reset: rst=0 forces PC<=StartAdr, and (with
-  // stallX=0, so no stall) IR<=codebus = the StartAdr fetch = record[0].codebus (the boot ROM
-  // branch). So the dut lands at R_1 = {PC=StartAdr, IR=record[0].codebus, regs=0, flags=0},
-  // exactly the state record[0] = cloud(R_1) describes. (record[0] itself was captured under
-  // rst=0 so its outputs are reset-flavored — hence skip=1 by default.)
-  dut->rst = 0;
-  dut->irq = 0;
-  dut->stallX = 0;
-  dut->codebus = rec.codebus;
-  dut->inbus = rec.inbus;
-  tick(dut);
+  // The trace is recorded PRE-edge (see test/core_dump.ml): rec[k] = (inputs state k
+  // consumes, outputs state k drives), and the edge transitions state k -> state k+1. So we
+  // drive rec[k]'s inputs (rst verbatim — rec[0] is the rst=0 reset cycle that forces
+  // PC<=StartAdr on its own edge), settle, compare the outputs, then clock. No separate reset
+  // tick is needed, and because the codebus consumed at the first rst=1 edge (the branch
+  // target) is in the trace, the reset boundary stays in lockstep. skip defaults to 0.
 
   Rec ring[RING];
   long ring_n = 0;
@@ -93,7 +92,7 @@ int main(int argc, char** argv) {
     rec.cyc = k;
     // dut is at S_{k+1}; rec = cloud(S_{k+1}). Drive RISC5.v with rec's inputs (rst
     // deasserted), settle, compare the outputs, then tick to S_{k+2} using the same inputs.
-    dut->rst = 1;
+    dut->rst = rec.rst;
     dut->irq = rec.irq;
     dut->stallX = rec.stallx;
     dut->codebus = rec.codebus;

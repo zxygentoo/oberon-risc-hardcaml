@@ -4,7 +4,7 @@
    skeleton exactly: the registered signals (the 48-bit product [P] and the 5-bit state
    [S]) and the stall timing are the spec the oracle checks cycle-by-cycle and synthesis
    preserves; the combinational FP wrapper between the register boundaries is idiomatic
-   Hardcaml. The original RTL is [_po/verilog/src/FPMultiplier.v] (34 lines).
+   Hardcaml. The original RTL is [test/_po/verilog/src/FPMultiplier.v] (34 lines).
 
    The mantissa engine is the integer {!Multiplier} in miniature. [P] is a 48-bit
    dual-role register: its low half holds [x]'s 24-bit mantissa being consumed (LSB =

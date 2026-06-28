@@ -1,5 +1,5 @@
-// RTL-fidelity co-sim for Rs232r: replay each frame dumped by test/cosim/dump_rs232r through
-// the reference _po/verilog/src/RS232R.v under Verilator, asserting cycle-by-cycle that RTL rdy
+// RTL-fidelity co-sim for Rs232r: replay each frame dumped by `rs232_dump rs232r` through
+// the reference test/_po/verilog/src/RS232R.v under Verilator, asserting cycle-by-cycle that RTL rdy
 // == port's, plus RTL data == the recovered byte whenever rdy is high. Exit 0 iff bit- and
 // cycle-exact to RS232R.v.   usage:  cosim <port_dump_path>     (lines: "fsel data hextrace")
 //
