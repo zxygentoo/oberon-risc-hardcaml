@@ -38,12 +38,20 @@ let worker ~work_root name run =
 let run ~what ~jobs ~work_root job_list =
   let total = List.length job_list in
   Printf.printf
-    "[%s] running %d jobs, up to %d in parallel (logs: %s/<name>/run.log):\n%!"
+    "[%s] running %d jobs, up to %d in parallel; per-job logs in %s/<name>/run.log\n%!"
     what
     total
     jobs
     work_root;
   let t0 = Unix.gettimeofday () in
+  (* Live per-unit lines earn their keep only when stdout is a terminal (real-time
+     progress as jobs finish). Under `dune build` the action's stdout is captured and
+     flushed at the end, where they'd just duplicate the summary table — so gate them on a
+     TTY. *)
+  let live =
+    try Unix.isatty Unix.stdout with
+    | _ -> false
+  in
   let queue = ref job_list in
   let running : (int, string * float) Hashtbl.t = Hashtbl.create 16 in
   let results = ref [] in
@@ -74,14 +82,16 @@ let run ~what ~jobs ~work_root job_list =
       in
       let dt = Unix.gettimeofday () -. st in
       results := (name, code, dt) :: !results;
-      if code = 0
-      then Printf.printf "  [PASS] %-16s %4.0fs\n%!" name dt
-      else
-        Printf.printf
-          "  [FAIL] %-16s %4.0fs  (see %s/run.log)\n%!"
-          name
-          dt
-          (Filename.concat work_root name)
+      if live
+      then
+        if code = 0
+        then Printf.printf "  [PASS] %-16s %4.0fs\n%!" name dt
+        else
+          Printf.printf
+            "  [FAIL] %-16s %4.0fs  (see %s/run.log)\n%!"
+            name
+            dt
+            (Filename.concat work_root name)
   in
   while nonempty queue || Hashtbl.length running > 0 do
     while Hashtbl.length running < jobs && nonempty queue do
