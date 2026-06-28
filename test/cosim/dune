@@ -2,7 +2,7 @@
 ; bit- and cycle-exact to its reference Verilog: <unit>_dump.ml dumps the port's outputs over a
 ; stimulus set, and the Verilator harness <unit>.cpp (+ shared cosim.h) replays them through the
 ; reference test/_po/verilog/src/<Unit>.v, checking value AND timing. The CPU core is a boot-stream
-; capture/replay instead (test/core_dump.ml + core.cpp). cosim_run.ml is the parallel runner that
+; capture/replay instead (test/risc_core_dump.ml + core.cpp). cosim_run.ml is the parallel runner that
 ; drives them all; the dumpers build under `dune build @check` so they can't silently rot.
 
 (executable
@@ -38,7 +38,7 @@
   ps2_dump.exe
   vid_dump.exe
   mouse_dump.exe
-  ../core_dump.exe
+  ../risc_core_dump.exe
   ../fetch-rtl.sh
   ../rtl-sources.txt
   cosim.h

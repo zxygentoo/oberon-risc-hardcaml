@@ -1,10 +1,10 @@
 // Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3, extended to the whole core).
-// Replays the per-cycle core I/O captured by test/core_dump (over the real Oberon boot)
+// Replays the per-cycle core I/O captured by test/risc_core_dump (over the real Oberon boot)
 // through the reference test/_po/verilog/src/RISC5.v under Verilator, and reports the FIRST cycle
 // our core's outputs diverge from the spec — the instruction where our port deviates from
 // RISC5.v. (This is what found + verified the phase-6b ALU flag-leak fix.)
 //
-// Why the first output mismatch is exactly the divergence: see test/core_dump.ml. Both
+// Why the first output mismatch is exactly the divergence: see test/risc_core_dump.ml. Both
 // cores start from the same reset state; fed the identical captured inputs, they stay in
 // lockstep (identical memory -> identical inputs) until our core first does something RISC5.v
 // wouldn't — which is the first output mismatch here.
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
 
   VRISC5* dut = new VRISC5;
 
-  // The trace is recorded PRE-edge (see test/core_dump.ml): rec[k] = (inputs state k
+  // The trace is recorded PRE-edge (see test/risc_core_dump.ml): rec[k] = (inputs state k
   // consumes, outputs state k drives), and the edge transitions state k -> state k+1. So we
   // drive rec[k]'s inputs (rst verbatim — rec[0] is the rst=0 reset cycle that forces
   // PC<=StartAdr on its own edge), settle, compare the outputs, then clock. No separate reset

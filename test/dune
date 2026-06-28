@@ -75,6 +75,6 @@
 ; `dune exec test/cosim/cosim_run.exe -- core` (just the core).
 
 (executable
- (name core_dump)
- (modules core_dump)
+ (name risc_core_dump)
+ (modules risc_core_dump)
  (libraries risc5 oracle hardcaml unix sd_bridge))

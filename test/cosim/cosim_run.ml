@@ -12,9 +12,9 @@
      a stimulus set, verilate the reference .v + harness, cross-check (value AND timing).
      The .cpp self-asserts (exits nonzero on mismatch).
    - The CPU core: a whole-boot capture-and-replay — capture the core's per-cycle I/O over
-     a real Oberon boot (test/core_dump.exe; ~2 M cycles by default, ~10 s, cached as a
-     ~33 MiB trace) and replay it through RISC5.v + submodules, reporting the first cycle
-     our port diverges (skips the 2-cycle reset transient; see core.cpp).
+     a real Oberon boot (test/risc_core_dump.exe; ~2 M cycles by default, ~10 s, cached as
+     a ~33 MiB trace) and replay it through RISC5.v + submodules, reporting the first
+     cycle our port diverges (skips the 2-cycle reset transient; see core.cpp).
 
    OPT-IN — not part of [dune runtest]. Needs [verilator] on PATH. The reference Verilog
    is fetched + checksum-verified on demand by ../fetch-rtl.sh (toolchain-free). Front
@@ -195,7 +195,10 @@ let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
       true)
     else (
       Printf.printf "[1/3] capturing core boot I/O -> %s (~10 s) ...\n" trace;
-      sh (Printf.sprintf "CORE_TRACE=%s _build/default/test/core_dump.exe" (quote trace))
+      sh
+        (Printf.sprintf
+           "CORE_TRACE=%s _build/default/test/risc_core_dump.exe"
+           (quote trace))
       = 0)
   in
   if not cap_ok
@@ -247,9 +250,9 @@ let ensure_exes selected =
           then None
           else Some (Printf.sprintf "test/cosim/%s.exe" dumper)
         | Core _ ->
-          if Sys.file_exists "_build/default/test/core_dump.exe"
+          if Sys.file_exists "_build/default/test/risc_core_dump.exe"
           then None
-          else Some "test/core_dump.exe")
+          else Some "test/risc_core_dump.exe")
       selected
     |> List.sort_uniq String.compare
   in

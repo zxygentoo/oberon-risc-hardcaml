@@ -43,7 +43,7 @@ let project_root () =
     else (
       let parent = Filename.dirname dir in
       if String.equal parent dir
-      then failwith "core_dump: no dune-project found above cwd"
+      then failwith "risc_core_dump: no dune-project found above cwd"
       else up parent)
   in
   up (Sys.getcwd ())
@@ -133,7 +133,7 @@ type probes =
 let lookup_probes sim =
   let some n = function
     | Some x -> x
-    | None -> failwith ("core_dump lookup: " ^ n)
+    | None -> failwith ("risc_core_dump lookup: " ^ n)
   in
   let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
   let node n = some n (Cyclesim.lookup_node_or_reg_by_name sim n) in
@@ -320,7 +320,7 @@ let () =
   inp.msdat := hi;
   let oc = open_out_bin cfg.trace_path in
   Printf.printf
-    "core_dump: booting %s\n  trace -> %s\n%!"
+    "risc_core_dump: booting %s\n  trace -> %s\n%!"
     (Filename.basename cfg.disk_image)
     cfg.trace_path;
   let result = run ~cfg ~sim ~inp ~outp ~bridge ~probes ~oc in
