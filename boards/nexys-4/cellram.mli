@@ -25,6 +25,15 @@
       (write) of the 32-bit word at [adr]. [rdata] is the read word (valid the cycle [ce]
       rises for a CPU access).
 
+    Video priority is also {e preemptive over CPU reads}: a framebuffer fetch has a hard
+    real-time deadline (the raster consumes the word ~477 ns after the request), and the
+    one place it can miss is arriving just after a CPU access seized the port. So a video
+    request landing mid-CPU-{e read} aborts that read and goes immediately; the CPU is
+    frozen on [ce] and never saw it retire, so it transparently re-arbitrates and restarts
+    after (reads are idempotent — only a few cycles are wasted, re-earned long before the
+    next group's request). CPU {e writes} are never preempted: a half-written word would
+    corrupt RAM. This is what keeps the framebuffer fetch inside its deadline under load.
+
     A transaction is two 16-bit halfword phases (low half = even halfword address, high
     half = odd); each phase drives the async pins for a parameterized number of cycles
     ([read_cycles]/[write_cycles], sized for 70 ns at 25 MHz). 1 MB window:

@@ -93,6 +93,20 @@ let create ?(read_cycles = 4) ?(write_cycles = 4) (i : _ I.t) : _ O.t =
   (* arbiter: video wins the port; a CPU access starts only if it actually needs PSRAM *)
   let start_vid = ~:busy_v &: vid_pending_v in
   let start_cpu = ~:busy_v &: ~:vid_pending_v &: i.mem_pend &: ~:(i.cpu_internal) in
+  (* Preemptible CPU reads. A framebuffer fetch has a hard ~477 ns raster deadline
+     ([Vid]'s [req0]→[xfer]); the worst case is it arriving just after a CPU access
+     grabbed the port and having to wait the whole access out. So if a video request lands
+     while a CPU READ is mid-flight (and not already completing this cycle), abort the
+     read and let video go at once — the core is frozen on [ce] and never saw it retire,
+     so it just re-arbitrates and restarts after. Reads are idempotent, so aborting costs
+     only the few wasted cycles (re-earned before the next group's request, ~12 clk away).
+     WRITES are never preempted — a half-written word would corrupt RAM. This removes the
+     arbiter-wait term from the video deadline; the residual flicker / contention crashes
+     live there (PHASE7 §9.2). *)
+  let cpu_read_inflight = busy_v &: ~:op_vid_v &: ~:op_wr_v in
+  let preempt =
+    (cpu_read_inflight &: vid_pending_v &: ~:(cnt_zero &: half1)) -- "preempt"
+  in
   let half_cnt_init is_wr =
     mux2 is_wr (cval (write_cycles - 1)) (cval (read_cycles - 1))
   in
@@ -102,15 +116,20 @@ let create ?(read_cycles = 4) ?(write_cycles = 4) (i : _ I.t) : _ O.t =
       [ if_
           busy_v
           [ if_
-              cnt_zero
+              preempt
+              (* a video request arrived mid-CPU-read → abort; Idle picks video next cycle *)
+              [ busy <--. 0 ]
               [ if_
-                  ~:half1
-                  (* low half done → capture it, advance to the high half *)
-                  [ lo <-- i.mem_dq_i; half <--. 1; cnt <-- half_cnt_init is_write ]
-                  (* high half done → transaction complete *)
-                  [ busy <--. 0; when_ op_vid_v [ viddata_reg <-- new_word ] ]
+                  cnt_zero
+                  [ if_
+                      ~:half1
+                      (* low half done → capture it, advance to the high half *)
+                      [ lo <-- i.mem_dq_i; half <--. 1; cnt <-- half_cnt_init is_write ]
+                      (* high half done → transaction complete *)
+                      [ busy <--. 0; when_ op_vid_v [ viddata_reg <-- new_word ] ]
+                  ]
+                  [ decr cnt ]
               ]
-              [ decr cnt ]
           ]
           [ (* Idle: video first, else a PSRAM-bound CPU access *)
             if_
@@ -454,4 +473,81 @@ let%expect_test "cellram — video DMA read returns the framebuffer word, ce fro
     !ce_high_during_video;
   [%expect
     {| viddata = 0x12345678 (framebuffer word)   CPU advanced before video done: false |}]
+;;
+
+let%expect_test "cellram — a video request preempts an in-flight CPU read" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* read_cycles 4 so the CPU read spans several cycles — room to interject mid-flight *)
+  let sim = Sim.create (Tb.create ~read_cycles:4 ~write_cycles:4) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  inp.cpu_internal := b1 false;
+  (* seed the video word (byte 0x100 = word 0x40) and the CPU-read word (byte 0x200) *)
+  ignore
+    (cpu_access
+       sim
+       inp
+       outp
+       ~internal:false
+       ~adr:0x100
+       ~wr:true
+       ~ben:false
+       ~wdata:0x1111_2222
+     : int);
+  ignore
+    (cpu_access
+       sim
+       inp
+       outp
+       ~internal:false
+       ~adr:0x200
+       ~wr:true
+       ~ben:false
+       ~wdata:0xAAAA_BBBB
+     : int);
+  (* start a CPU read of byte 0x200 and let it reach mid-flight — do NOT complete it *)
+  inp.mem_pend := b1 true;
+  inp.wr := b1 false;
+  inp.ben := b1 false;
+  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+  Cyclesim.cycle sim (* read starts: busy, low halfword phase *);
+  Cyclesim.cycle sim (* still mid low-half (read_cycles = 4) *);
+  (* a video request now arrives mid-read → it must preempt the read *)
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0x40;
+  inp.vidreq := b1 true;
+  Cyclesim.cycle sim;
+  inp.vidreq := b1 false;
+  (* run to vid_ack; the CPU must NOT advance ([ce] low) while video holds the bus *)
+  let vid_word = ref (-1)
+  and ce_before_vid = ref false
+  and k = ref 0 in
+  while !vid_word < 0 && !k < 60 do
+    Cyclesim.cycle sim;
+    if Bits.to_int_trunc !(outp.vid_ack) = 1
+    then vid_word := Bits.to_unsigned_int !(outp.viddata)
+    else if Bits.to_int_trunc !(outp.ce) = 1
+    then ce_before_vid := true;
+    Int.incr k
+  done;
+  (* the preempted CPU read now restarts on its own and completes with the right data *)
+  let cpu_word = ref (-1)
+  and k2 = ref 0 in
+  while !cpu_word < 0 && !k2 < 60 do
+    Cyclesim.cycle sim;
+    if Bits.to_int_trunc !(outp.ce) = 1
+    then cpu_word := Bits.to_unsigned_int !(outp.rdata);
+    Int.incr k2
+  done;
+  inp.mem_pend := b1 false;
+  Cyclesim.cycle sim;
+  Stdlib.Printf.printf
+    "video word = 0x%X   CPU advanced before video done: %b   CPU read after = 0x%X\n"
+    !vid_word
+    !ce_before_vid
+    !cpu_word;
+  [%expect
+    {| video word = 0x11112222   CPU advanced before video done: false   CPU read after = 0xAAAABBBB |}]
 ;;
