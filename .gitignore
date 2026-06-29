@@ -22,6 +22,12 @@ _opam/
 /boards/_generated/
 /boards/_build/
 
+# Vivado batch-run scratch dropped in the repo root by the build/program scripts
+/.Xil/
+/clockInfo.txt
+/vivado*.jou
+/vivado*.log
+
 # Editor / OS cruft
 *~
 *.swp
