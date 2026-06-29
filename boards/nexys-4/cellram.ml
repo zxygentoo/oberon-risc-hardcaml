@@ -35,6 +35,7 @@ module O = struct
     ; rdata : 'a [@bits 32]
     ; viddata : 'a [@bits 32]
     ; vid_ack : 'a [@bits 1]
+    ; vidpar : 'a [@bits 1]
     ; mem_adr : 'a [@bits 23]
     ; mem_dq_o : 'a [@bits 16]
     ; mem_dq_t : 'a [@bits 1]
@@ -182,6 +183,10 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) (i : _ I.t) : _ O.t =
       new_word (* {high = mem_dq_i, low = lo}; meaningful when [ce] for a PSRAM read *)
   ; viddata = mux2 vid_complete new_word viddata_reg_v
   ; vid_ack = vid_complete
+  ; (* parity (column LSB) of the video word being returned — the latched fetch address,
+       meaningful when [vid_ack]. [Vid] uses it to pick the ping-pong buffer, so a slow
+       (contended) completion lands in the right one regardless of the live raster phase. *)
+    vidpar = lsb req_word_v
   ; mem_adr
   ; mem_dq_o
   ; mem_dq_t

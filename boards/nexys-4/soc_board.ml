@@ -81,9 +81,11 @@ let create ~contents ?(clocks_per_ms = 25000) ?read_cycles ?write_cycles (i : _ 
      does). *)
   let viddata = wire 32 in
   let vid_ack = wire 1 in
+  let vidpar = wire 1 in
   let vid =
     Vid.create
       ~viddata_valid:vid_ack
+      ~viddata_par:vidpar
       { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
   let vidreq = vid.req -- "vidreq" in
@@ -138,6 +140,7 @@ let create ~contents ?(clocks_per_ms = 25000) ?read_cycles ?write_cycles (i : _ 
   assign core_ce (cellram.ce -- "core_ce");
   assign viddata cellram.viddata;
   assign vid_ack cellram.vid_ack;
+  assign vidpar cellram.vidpar;
   let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
   (* ── SPI master (words 4/5) ── *)
   let spi_ctrl = Always.Variable.reg spec ~width:4 in

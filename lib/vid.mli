@@ -14,12 +14,13 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { clk : 'a (** 25 MHz system/memory clock: the DMA handshake + [vidbuf] live here *)
+    { clk : 'a
+    (** 25 MHz system/memory clock: the DMA handshake + prefetch buffers live here *)
     ; pclk : 'a (** 65 MHz pixel clock (DCM/MMCM-generated; a board-shim input here) *)
     ; inv : 'a (** invert video: white-on-black vs black-on-white *)
     ; viddata : 'a
-    (** main-memory read data, latched into [vidbuf] when the fetch word is valid (see
-        [create]'s [?viddata_valid]) *)
+    (** main-memory read data, latched into a prefetch buffer when the fetch word is valid
+        (see [create]'s [?viddata_valid]) *)
     }
   [@@deriving hardcaml]
 end
@@ -47,18 +48,36 @@ val pulse_sync
   -> pulse:Signal.t
   -> Signal.t
 
-(** [create i] builds the controller, cycle-faithful to [VID60.v] on the raster/pixel
-    datapath. The one departure is the framebuffer-fetch CDC: the RTL's async-set capture
-    flop [req1] (RTL [always @(posedge req0, posedge clk)]) is unrepresentable in
-    Cyclesim, so [req0] crosses [pclk]→[clk] through a TOGGLE PULSE SYNCHRONISER
-    ([req_toggle] → [sync0]/[sync1]/[sync2] → edge-detect [req]) — the textbook
-    metastability-safe crossing. It emits exactly one [clk] [req] per [req0] and is robust
-    on real silicon (the [sync0]/ [sync1] flops want an ASYNC_REG / CDC constraint in the
-    board [.xdc]). The pixel/sync datapath is a direct transliteration; the Verilator
-    co-sim checks output-equivalence to [VID60.v].
+(** [create i] builds the controller, cycle-faithful to [VID60.v] on the pixel/sync
+    datapath, with two deliberate departures from the RTL:
+
+    - {b Framebuffer-fetch CDC.} The RTL's async-set capture flop [req1] (RTL
+      [always @(posedge req0, posedge clk)]) is unrepresentable in Cyclesim, so [req0]
+      crosses [pclk]→[clk] through a TOGGLE PULSE SYNCHRONISER ([req_toggle] →
+      [sync0]/[sync1]/[sync2] → edge-detect [req]) — the textbook metastability-safe
+      crossing. It emits exactly one [clk] [req] per [req0] and is robust on real silicon
+      (the [sync0]/[sync1] flops want an ASYNC_REG / CDC constraint in the board [.xdc]).
+
+    - {b Two-group prefetch.} [VID60.v] requests the word for a 32-px group at the group's
+      start and consumes it 31 px later (~480 ns) into a single [vidbuf] — too tight
+      against PSRAM contention on the board (horizontal flicker). Here the request is
+      issued ONE GROUP EARLY ([vidadr] targets the next consumed group, wrapping at column
+      31 / row 767) into a PING-PONG double-buffer ([buf0]/[buf1], selected by column
+      parity), so each fetch has ~2 group-times (~970 ns) to land. The displayed pixel
+      stream is identical; only the fetch timing/structure differs. The Verilator co-sim
+      against [VID60.v] no longer matches on [vidadr]/the fetch path by design.
 
     [?viddata_valid] is the board memory seam (default = [req]): single-cycle memory (the
-    sim [Soc]) has [viddata] valid the cycle [req] fires, but the board's [Cellram]
-    returns it some cycles later, so it supplies its [vid_ack] here to latch [vidbuf] at
-    the right time. Identity when omitted. *)
-val create : ?viddata_valid:Signal.t -> Signal.t I.t -> Signal.t O.t
+    sim [Soc] cycle-steal) has [viddata] valid the cycle [req] fires, but the board's
+    [Cellram] returns it some cycles later on its [vid_ack].
+
+    [?viddata_par] selects which ping-pong buffer captures [viddata] (default =
+    [lsb next_col], the live request parity, exact for the single-cycle path). The board's
+    [Cellram] passes the parity of the fetch it is COMPLETING ([Cellram.vidpar]) so a
+    slow, contended completion lands in the correct buffer regardless of the current
+    raster phase. *)
+val create
+  :  ?viddata_valid:Signal.t
+  -> ?viddata_par:Signal.t
+  -> Signal.t I.t
+  -> Signal.t O.t
