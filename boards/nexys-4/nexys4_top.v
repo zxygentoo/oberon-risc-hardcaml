@@ -91,13 +91,19 @@ module nexys4_top (
   BUFG bufg_65 (.I(clk65_raw), .O(clk65));
 
   // ── Power-on / button reset (active-low rst_n to the SoC) ────────────────────────
-  // Held low until the MMCM locks and a counter elapses (covers PSRAM power-up), and
-  // whenever the reset button is pressed (btnCpuReset is active-low).
-  reg  [15:0] por_cnt = 16'hFFFF;
-  wire        por_done = (por_cnt == 16'd0);
+  // Held low until the MMCM locks and a counter elapses, and whenever the reset button is
+  // pressed (btnCpuReset is active-low). The counter is sized ~2.7 s (26 bits at 25 MHz)
+  // so the whole SoC — the mouse included — stays in reset until the board's USB-HID PIC
+  // has booted and enumerated the USB mouse. The Mouse sends its PS/2 init handshake once
+  // and latches `run`; if it fires before the PIC is ready, streaming never starts and the
+  // cursor stays dead until a manual reset. Delaying that single init past PIC-ready avoids
+  // it — automating the post-config btnCpuReset the bring-up needed. Dwarfed by Oberon's
+  // ~20 s boot; trim/raise if a slower mouse needs it.
+  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~2.7 s at 25 MHz (was 16 bits / ~2.6 ms)
+  wire        por_done = (por_cnt == 26'd0);
   always @(posedge clk25) begin
-    if (!mmcm_locked)   por_cnt <= 16'hFFFF;
-    else if (!por_done) por_cnt <= por_cnt - 16'd1;
+    if (!mmcm_locked)   por_cnt <= 26'h3FFFFFF;
+    else if (!por_done) por_cnt <= por_cnt - 26'd1;
   end
   wire rst_n = mmcm_locked & por_done & btnCpuReset;
 
