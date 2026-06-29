@@ -1,0 +1,13 @@
+; The Nexys 4 board layer (Phase 7) — library nexys4_board. The synthesizable PSRAM
+; controller + CPU/video arbiter (cellram) and the board SoC (soc_board), plus cellram_model:
+; a behavioural double of the external PSRAM chip, instantiated only by the co-located tests
+; (it never reaches synthesis). Depends on risc5 one-way, so lib/ stays board-independent
+; (AGENT.md §3). Inline tests co-locate as in lib/ (§6), so their tooling (hardcaml_waveterm,
+; qcheck-core) sits in (libraries).
+
+(library
+ (name nexys4_board)
+ (libraries risc5 hardcaml hardcaml_waveterm qcheck-core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_hardcaml ppx_expect)))

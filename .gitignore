@@ -16,6 +16,12 @@ _opam/
 # intermediates. Generated on demand by the opt-in cosim/formal runners; safe to delete.
 /test/_work/
 
+# Board (Phase 7) generated/build artifacts: the emitted soc_board.v and the Vivado runs +
+# bitstream, keyed by board under these two trees (regenerate via gen_verilog.sh / build.tcl).
+# One entry each covers all boards; everything else under boards/ is tracked source.
+/boards/_generated/
+/boards/_build/
+
 # Editor / OS cruft
 *~
 *.swp

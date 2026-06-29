@@ -436,8 +436,9 @@ oberon-risc-hardcaml/
                             each boards/<target>/ stays 100% tracked source.
     nexys-4/              ← Nexys 4 target = library `nexys4_board` (depends on `risc5`,
                             never the reverse → lib/ stays board-independent):
-      cellram.{ml,mli}      PSRAM controller + CPU/video arbiter (synthesizable, vendor-free)
-      soc_board.{ml,mli}    board SoC — core(`ce`) + Cellram + peripherals + video
+      cellram.{ml,mli}        PSRAM controller + CPU/video arbiter (synthesizable, vendor-free)
+      cellram_model.{ml,mli}  sim double of the external PSRAM chip (test-only; never synthesized)
+      soc_board.{ml,mli}      board SoC — core(`ce`) + Cellram + peripherals + video
       nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code
       nexys4.xdc            pin constraints (derived from the Digilent master XDC)
       *.tcl, gen_verilog.sh Vivado emit → synth → program flow
@@ -462,14 +463,15 @@ oberon-risc-hardcaml/
 ```
 
 **Board layer layout (Phase 7, locked).** Each target is `boards/<target>/` — a
-synthesizable, vendor-primitive-free Hardcaml library (`nexys4_board`) that depends on `risc5`
+vendor-primitive-free Hardcaml library (`nexys4_board`: the synthesizable board design
+`cellram`/`soc_board`, plus `cellram_model`, the sim chip-double) that depends on `risc5`
 *one-way*, so the compiler (not convention) keeps `lib/` board-independent (§3). The lone
 vendor primitives (MMCM/IOBUF/POR) live in the hand-written `nexys4_top.v`. Generated/build
 artifacts hoist to `boards/_generated/<target>/` + `boards/_build/<target>/` — two all-boards
 `.gitignore` entries (`/boards/_generated/`, `/boards/_build/`) — so every `boards/<target>/`
-stays pure tracked source. Tests follow §6: `cellram`'s unit checks co-locate inline
-(`let%expect_test`, no oracle); the board boot checkpoint and its sim fixtures (`cellram_model`,
-the faithful SD model) stay oracle-side in `test/`.
+stays pure tracked source. Tests follow §6: `cellram`'s unit checks co-locate inline against
+`cellram_model` (both in the board lib, no oracle); only the oracle-coupled board boot
+checkpoint + the faithful SD model live in `test/`.
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
 `vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
