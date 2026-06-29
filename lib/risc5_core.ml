@@ -40,6 +40,8 @@ module O = struct
     ; wr : 'a [@bits 1]
     ; ben : 'a [@bits 1] (* byte enable *)
     ; outbus : 'a [@bits 32] (* data write bus — store data *)
+    ; mem_pend : 'a [@bits 1]
+    (* board seam: core needs the bus this cycle (fetch / data) — see [create_with_units] *)
     }
   [@@deriving hardcaml]
 end
@@ -117,8 +119,8 @@ let decode ir : decoded =
    units assumed-equivalent — sound because each is proven separately (§6). These are
    exactly the modules RISC5.v instantiates (the ALU's [aluRes] is inline there, so it
    stays inline here too — and gets proven as part of the glue). [create] uses
-   [Units.default] (the real units, inlined as before), so sim / lockstep / boot are
-   byte-for-byte unchanged. *)
+   [Units.with_ce] (= [Units.default] at the default [ce = vdd], the real units inlined),
+   so sim / lockstep / boot are byte-for-byte unchanged. *)
 module Units = struct
   type t =
     { left_shifter : Signal.t Left_shifter.I.t -> Signal.t Left_shifter.O.t
@@ -131,17 +133,24 @@ module Units = struct
     ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
     }
 
-  let default =
+  (* Phase 7: [with_ce ce] binds the board clock-enable into the five iterative units, so
+     they freeze with the ce-gated core during a PSRAM wait. The shifters are
+     combinational and the register file's write is ce-gated in the glue, so neither takes
+     [ce]. [default] is the [ce = vdd] case — [~enable:vdd] no-ops, so it is
+     byte-identical to the bare units. *)
+  let with_ce ce =
     { left_shifter = Left_shifter.create
     ; right_shifter = Right_shifter.create
-    ; multiplier = Multiplier.create
-    ; divider = Divider.create
-    ; fp_adder = Fp_adder.create
-    ; fp_multiplier = Fp_multiplier.create
-    ; fp_divider = Fp_divider.create
+    ; multiplier = Multiplier.create ~ce
+    ; divider = Divider.create ~ce
+    ; fp_adder = Fp_adder.create ~ce
+    ; fp_multiplier = Fp_multiplier.create ~ce
+    ; fp_divider = Fp_divider.create ~ce
     ; registers = Registers.create
     }
   ;;
+
+  let default = with_ce vdd
 end
 
 (* [execute]'s results (unique field names — Hardcaml interfaces collide on
@@ -288,7 +297,7 @@ let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
   }
 ;;
 
-let create_with_units ~(units : Units.t) (i : _ I.t) : _ O.t =
+let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* ── State registers ── the loop's carried state: PC, IR, the stallL1 flop, the
      condition flags N/Z/C/OV, the aux register H (MUL high word / DIV remainder), and the
@@ -296,21 +305,21 @@ let create_with_units ~(units : Units.t) (i : _ I.t) : _ O.t =
      reaches the datapath as ordinary logic (the [pcmux] below), as the RTL does it.
      [pc]/[ir]/[stall]/[regmux], the flags and [h] are named (--) so the waveform and
      lockstep tests can watch and poke them. *)
-  let pc = Always.Variable.reg spec ~width:22 in
-  let ir = Always.Variable.reg spec ~width:32 in
-  let stall_l1 = Always.Variable.reg spec ~width:1 in
-  let n = Always.Variable.reg spec ~width:1 in
-  let z = Always.Variable.reg spec ~width:1 in
-  let c = Always.Variable.reg spec ~width:1 in
-  let ov = Always.Variable.reg spec ~width:1 in
-  let h = Always.Variable.reg spec ~width:32 in
+  let pc = Always.Variable.reg spec ~enable:ce ~width:22 in
+  let ir = Always.Variable.reg spec ~enable:ce ~width:32 in
+  let stall_l1 = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let n = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let z = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let c = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let ov = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let h = Always.Variable.reg spec ~enable:ce ~width:32 in
   (* The interrupt state: the IRQ edge-detect flop, the enable / pending / in-handler
      flags, and SPC = [{saved flags, saved PC}] (4 + 22 = 26 bits). *)
-  let irq1 = Always.Variable.reg spec ~width:1 in
-  let int_enb = Always.Variable.reg spec ~width:1 in
-  let int_pnd = Always.Variable.reg spec ~width:1 in
-  let int_md = Always.Variable.reg spec ~width:1 in
-  let spc = Always.Variable.reg spec ~width:26 in
+  let irq1 = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let int_enb = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let int_pnd = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let int_md = Always.Variable.reg spec ~enable:ce ~width:1 in
+  let spc = Always.Variable.reg spec ~enable:ce ~width:26 in
   let pc_v = pc.value -- "pc" in
   let ir_v = ir.value -- "ir" in
   let stall_l1_v = stall_l1.value -- "stall_l1" in
@@ -410,8 +419,9 @@ let create_with_units ~(units : Units.t) (i : _ I.t) : _ O.t =
     |: (dec.br &: cond &: dec.v &: ~:(i.stall_x))
     |: (dec.ldr &: ~:(i.stall_x) &: ~:stall_l1_v)
   in
-  (* fires for a register op (not stalled), a taken linking branch, or a load *)
-  assign regwr_w regwr;
+  (* fires for a register op (not stalled), a taken linking branch, or a load — and only
+     when [ce] is high, so a memory wait can't let the write commit (the board freeze). *)
+  assign regwr_w (regwr &: ce);
   (* N/Z from the written value, C/OV from the ALU — except RTI restores all four from SPC *)
   let nn = mux2 dec.rti (select spc_v ~high:25 ~low:25) (mux2 regwr (msb regmux) n_v) in
   let zz =
@@ -465,11 +475,26 @@ let create_with_units ~(units : Units.t) (i : _ I.t) : _ O.t =
   (* ── Memory bus out ── [adr] is the data address while stalling for a load/store, else
      the fetch address. *)
   let adr = mux2 mem.stall_l0 mem.data_adr (pcmux @: zero 2) in
-  { O.adr; rd = mem.read; wr = mem.write; ben = mem.byte_en; outbus = mem.store_data }
+  (* [mem_pend]: the core drives a real bus access this cycle — a fetch ([~stall]) or a
+     load/store data access ([stall_l0]); low ⟺ a pure compute stall (an iterative unit
+     grinding, needing no memory). The board's PSRAM arbiter reads it to time its accesses
+     and hold [ce] low until the word is ready (the sim SoC ignores it). *)
+  let mem_pend = mem.stall_l0 |: ~:stall in
+  { O.adr
+  ; rd = mem.read
+  ; wr = mem.write
+  ; ben = mem.byte_en
+  ; outbus = mem.store_data
+  ; mem_pend
+  }
 ;;
 
-(* The synthesizable core: the real units, inlined exactly as before. *)
-let create i = create_with_units ~units:Units.default i
+(* The synthesizable core: the real units, inlined exactly as before. [?ce] (default
+   [vdd]) is the board clock-enable — driven low it freezes every state register, the
+   register-file write and all five iterative units together for a multi-cycle PSRAM wait,
+   so the slow memory looks single-cycle to the core (AGENT.md §3). [vdd] ⇒ byte-identical
+   to the bare RTL port. *)
+let create ?(ce = vdd) i = create_with_units ~ce ~units:(Units.with_ce ce) i
 
 (* ── Tests (co-located; AGENT.md §6) ── behaviour waveforms; the architectural lockstep
    against the oracle lives in test/. First the fetch/stall spine: reset loads StartAdr,

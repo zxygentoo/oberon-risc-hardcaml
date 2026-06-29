@@ -52,8 +52,14 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
+let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
+  (* Phase 7: ce-gate every register — the S counter [reg_fb] and the [R]/[Q] regs [reg] —
+     so the unit freezes with the ce-gated core during a multi-cycle PSRAM wait (else S
+     overruns the fetch-wait and the op restarts — see [Divider]). [ce = vdd] (the
+     default) ⇒ byte-identical. *)
+  let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
+  let reg spec d = Signal.reg spec ~enable:ce d in
   (* S : 5-bit state counter; [run] is both enable and synchronous clear (no reset). *)
   (* Registers named to match the RTL ([S]/[R]/[Q]) so the Phase-8 formal harness can pair
      the flip-flops with FPDivider.v's (yosys [equiv_make] matches FFs by name —

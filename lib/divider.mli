@@ -44,5 +44,8 @@ module O : sig
 end
 
 (** [create] is the [DIV] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
-    simulation. *)
-val create : Signal.t I.t -> Signal.t O.t
+    simulation. [?ce] is the board clock-enable (default [vdd]): driven low it freezes the
+    unit's state in lockstep with the ce-gated core through a multi-cycle PSRAM wait, so
+    the 33-cycle counter can't overrun the fetch-wait and restart the divide. The default
+    leaves the unit byte-identical to the bare RTL port (Phase 7; AGENT.md §3). *)
+val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t

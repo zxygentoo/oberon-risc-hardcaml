@@ -17,7 +17,9 @@ module I : sig
     { clk : 'a (** 25 MHz system/memory clock: the DMA handshake + [vidbuf] live here *)
     ; pclk : 'a (** 65 MHz pixel clock (DCM/MMCM-generated; a board-shim input here) *)
     ; inv : 'a (** invert video: white-on-black vs black-on-white *)
-    ; viddata : 'a (** main-memory read data, latched into [vidbuf] when [req] fires *)
+    ; viddata : 'a
+    (** main-memory read data, latched into [vidbuf] when the fetch word is valid (see
+        [create]'s [?viddata_valid]) *)
     }
   [@@deriving hardcaml]
 end
@@ -53,5 +55,10 @@ val pulse_sync
     metastability-safe crossing. It emits exactly one [clk] [req] per [req0] and is robust
     on real silicon (the [sync0]/ [sync1] flops want an ASYNC_REG / CDC constraint in the
     board [.xdc]). The pixel/sync datapath is a direct transliteration; the Verilator
-    co-sim checks output-equivalence to [VID60.v]. *)
-val create : Signal.t I.t -> Signal.t O.t
+    co-sim checks output-equivalence to [VID60.v].
+
+    [?viddata_valid] is the board memory seam (default = [req]): single-cycle memory (the
+    sim [Soc]) has [viddata] valid the cycle [req] fires, but the board's [Cellram]
+    returns it some cycles later, so it supplies its [vid_ack] here to latch [vidbuf] at
+    the right time. Identity when omitted. *)
+val create : ?viddata_valid:Signal.t -> Signal.t I.t -> Signal.t O.t

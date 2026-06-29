@@ -46,14 +46,25 @@ module O : sig
     ; wr : 'a (** write strobe (store cycle) *)
     ; ben : 'a (** byte enable — byte vs word access *)
     ; outbus : 'a (** data write bus — store data *)
+    ; mem_pend : 'a
+    (** board seam: high when the core needs the bus this cycle (a fetch, or a load/store
+        data access); low ⟺ a pure compute stall (an iterative unit grinding). The board's
+        PSRAM arbiter reads it to time its accesses and the [ce] freeze; the sim SoC
+        ignores it. *)
     }
   [@@deriving hardcaml]
 end
 
 (** [create] builds the CPU core: the state registers updated in one synchronous block,
     and the combinational decode / datapath / control logic that feeds them. The real
-    synthesizable core, with the submodules ([Units.default]) inlined. *)
-val create : Signal.t I.t -> Signal.t O.t
+    synthesizable core, with the submodules inlined.
+
+    [?ce] is the board clock-enable (default [vdd]). Driven low it freezes every state
+    register, the register-file write and all five iterative units together, so a
+    multi-cycle PSRAM access looks single-cycle to the core (the board memory seam;
+    AGENT.md §3). The default leaves the core byte-identical to the bare RTL port — the
+    sim SoC never drives it. *)
+val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 
 (** The eight submodule constructors the core wires up — the modules [RISC5.v]
     instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven
@@ -73,11 +84,14 @@ module Units : sig
     ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
     }
 
-  (** the real synthesizable units (each module's own [create]) — what [create] uses. *)
+  (** the real synthesizable units (each module's own [create]), at the default
+      [ce = vdd]. *)
   val default : t
 end
 
-(** [create_with_units ~units] is [create] parameterized over the submodules — for the
-    formal black-box assembly, which passes [Instantiation] stubs. The synthesizable core
-    is [create i = create_with_units ~units:Units.default i]. *)
-val create_with_units : units:Units.t -> Signal.t I.t -> Signal.t O.t
+(** [create_with_units ?ce ~units] is [create] parameterized over the submodules — for the
+    formal black-box assembly, which passes [Instantiation] stubs (and leaves [?ce] =
+    [vdd]). [?ce] gates the core's own state registers and the register-file write; the
+    iterative [units] passed in are expected to already carry [ce] (the synthesizable
+    {!create} threads it into both). *)
+val create_with_units : ?ce:Signal.t -> units:Units.t -> Signal.t I.t -> Signal.t O.t

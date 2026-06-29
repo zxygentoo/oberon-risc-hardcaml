@@ -104,8 +104,14 @@ let shift_count s =
   sc4 @: sc3 @: sc2 @: sc1 @: sc0
 ;;
 
-let create (i : _ I.t) : _ O.t =
+let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
+  (* Phase 7: ce-gate every register — the State counter [reg_fb] and the pipeline regs
+     [reg] — so the unit freezes with the ce-gated core during a multi-cycle PSRAM wait
+     (else State overruns the fetch-wait and the op restarts — see [Divider]). [ce = vdd]
+     (the default) ⇒ byte-identical. *)
+  let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
+  let reg spec d = Signal.reg spec ~enable:ce d in
   (* Sequential skeleton (final): 2-bit State, run-gated with no reset, stall = run &
      ~(S==3). *)
   (* The five pipeline registers are named to match the RTL ([State]/[x3]/[y3]/[Sum]/[t3])
