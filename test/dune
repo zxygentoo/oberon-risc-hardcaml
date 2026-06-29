@@ -25,6 +25,15 @@
  (modules fork_pool)
  (libraries unix))
 
+; Shared SoC-independent half of the boot-handoff checkpoints (disk, oracle boot, §8-aware
+; compare, the run driver), used by both test_boot_checkpoint (BRAM) and
+; test_boot_checkpoint_board (PSRAM); see boot_checkpoint_common.mli.
+
+(library
+ (name boot_checkpoint_common)
+ (modules boot_checkpoint_common)
+ (libraries oracle))
+
 (tests
  (names test_fp_adder test_fp_multiplier test_fp_divider test_cpu_lockstep)
  (modules
@@ -45,13 +54,37 @@
 (executable
  (name test_boot_checkpoint)
  (modules test_boot_checkpoint)
- (libraries risc5 oracle hardcaml sd_bridge))
+ (libraries risc5 oracle hardcaml sd_bridge boot_checkpoint_common))
 
 (rule
  (alias boot_checkpoint)
  (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
  (action
   (run ./test_boot_checkpoint.exe)))
+
+; Phase 7: board boot-handoff checkpoint (AGENT.md §6) — the same boot proven through the
+; PSRAM board SoC (Soc_board + Cellram + cellram_model). Built by @check so it can't rot;
+; run on demand: dune build @boot_checkpoint_board
+
+(executable
+ (name test_boot_checkpoint_board)
+ (modules test_boot_checkpoint_board)
+ (libraries
+  risc5
+  nexys4_board
+  oracle
+  hardcaml
+  sd_bridge
+  boot_checkpoint_common)
+ ; the Tb wrapper (Soc_board + cellram_model) derives its own interfaces
+ (preprocess
+  (pps ppx_hardcaml)))
+
+(rule
+ (alias boot_checkpoint_board)
+ (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./test_boot_checkpoint_board.exe)))
 
 ; Phase 6b: visual golden (AGENT.md §6). Continue the boot past the OS handoff and diff the
 ; framebuffer (a RAM region) against the oracle, rendered for eyeballing. Opt-in (boots the

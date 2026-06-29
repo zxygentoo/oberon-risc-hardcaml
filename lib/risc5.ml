@@ -20,4 +20,5 @@ module Rs232r = Rs232r
 module Ps2 = Ps2
 module Vid = Vid
 module Mouse = Mouse
+module Prom = Prom
 module Soc = Soc

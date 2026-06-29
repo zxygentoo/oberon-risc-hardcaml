@@ -78,7 +78,7 @@ let pulse_sync ~src_spec ~dst_spec ~pulse =
   (sync1 ^: sync2) -- "req"
 ;;
 
-let create (i : _ I.t) : _ O.t =
+let create ?viddata_valid (i : _ I.t) : _ O.t =
   let pspec = Reg_spec.create () ~clock:i.pclk in
   let cspec = Reg_spec.create () ~clock:i.clk in
   (* ── pclk domain: raster counters ─────────────────────────────────────────── *)
@@ -104,7 +104,13 @@ let create (i : _ I.t) : _ O.t =
      silicon — horizontal pixel tearing). Proven no-loss/no-spurious for all phases in
      test/formal. *)
   let req = pulse_sync ~src_spec:pspec ~dst_spec:cspec ~pulse:req0 in
-  let vidbuf = reg ~enable:req cspec i.viddata -- "vidbuf" in
+  (* [vidbuf] grabs the fetched word: with single-cycle memory (sim [Soc]) it is valid the
+     cycle [req] fires — the default; the board's [Cellram] returns it some cycles later
+     and supplies [~viddata_valid] (its [vid_ack]) to latch it then. Identity when
+     omitted. *)
+  let vidbuf =
+    reg ~enable:(Option.value viddata_valid ~default:req) cspec i.viddata -- "vidbuf"
+  in
   (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
   let pixbuf =
     reg_fb pspec ~width:32 ~f:(fun p ->
