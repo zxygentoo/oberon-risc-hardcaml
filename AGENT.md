@@ -133,7 +133,10 @@ Boot ROM image: `test/_po/verilog/prom.mem` (hex) + `test/_po/verilog/prom.bmm`.
 ## 3. Architecture: portable core + thin board shim
 
 ~90% of the design is **board-independent synthesizable RTL**; only a thin top-level shim
-touches vendor primitives. Keep this separation strict.
+touches vendor primitives. Keep this separation strict. **Layout (§9):** the portable design
+is `lib/` (library `risc5`); the Phase-7 board layer is `boards/<target>/` — its own library
+(`nexys4_board`) depending on `risc5` one-way — and only that target's `nexys4_top.v`
+instantiates vendor primitives.
 
 **Board-independent (simulated *and* lockstep-verified):** RISC5 core, ALU, barrel
 shifters, iterative MUL/DIV, the three FP units, the register file (as a normal 3R/1W
@@ -425,9 +428,22 @@ against the RTL itself they can't arise.*
 ```
 oberon-risc-hardcaml/
   AGENT.md / CLAUDE.md    ← this file (CLAUDE.md is a symlink to AGENT.md)
-  dune-project, dune      ← root build config (dune restricted to: lib test vendor)
+  dune-project, dune      ← root build config (dune restricted to: lib boards test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
                             real modules — shifters, ALU, CPU core… — from Phase 1)
+  boards/                 ← board-specific layer (Phase 7); one dir per target. The
+                            git-ignored generated/build trees are hoisted out (below) so
+                            each boards/<target>/ stays 100% tracked source.
+    nexys-4/              ← Nexys 4 target = library `nexys4_board` (depends on `risc5`,
+                            never the reverse → lib/ stays board-independent):
+      cellram.{ml,mli}      PSRAM controller + CPU/video arbiter (synthesizable, vendor-free)
+      soc_board.{ml,mli}    board SoC — core(`ce`) + Cellram + peripherals + video
+      nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code
+      nexys4.xdc            pin constraints (derived from the Digilent master XDC)
+      *.tcl, gen_verilog.sh Vivado emit → synth → program flow
+      README.md             Phase-7 design log + resume notes
+    _generated/<target>/  ← git-ignored: soc_board.v emitted from Hardcaml
+    _build/<target>/      ← git-ignored: Vivado runs + the bitstream
   test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
                             `test_boot_checkpoint` = Phase-5 boot checkpoint
                             (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
@@ -444,6 +460,16 @@ oberon-risc-hardcaml/
     oracle/               ← compiles the submodule's lib/ into library `oracle`
                             (Oracle.Risc, Oracle.Fp, Oracle.Boot_rom, …)
 ```
+
+**Board layer layout (Phase 7, locked).** Each target is `boards/<target>/` — a
+synthesizable, vendor-primitive-free Hardcaml library (`nexys4_board`) that depends on `risc5`
+*one-way*, so the compiler (not convention) keeps `lib/` board-independent (§3). The lone
+vendor primitives (MMCM/IOBUF/POR) live in the hand-written `nexys4_top.v`. Generated/build
+artifacts hoist to `boards/_generated/<target>/` + `boards/_build/<target>/` — two all-boards
+`.gitignore` entries (`/boards/_generated/`, `/boards/_build/`) — so every `boards/<target>/`
+stays pure tracked source. Tests follow §6: `cellram`'s unit checks co-locate inline
+(`let%expect_test`, no oracle); the board boot checkpoint and its sim fixtures (`cellram_model`,
+the faithful SD model) stay oracle-side in `test/`.
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
 `vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
