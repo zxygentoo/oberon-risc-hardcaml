@@ -52,6 +52,10 @@ module O : sig
     ; rgb : 'a (** 1 bpp pixel replicated across the RGB pins *)
     ; msclk_oe : 'a (** mouse msclk open-drain: 1 = host pulls low *)
     ; msdat_oe : 'a (** mouse msdat open-drain: 1 = host pulls low *)
+    ; mouse_dbg : 'a
+    (** the mouse state word [{run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}] (=
+        [mouse.out], the same value the CPU reads at MMIO word 6) routed out for the
+        board's bring-up LEDs. Pure instrumentation — not part of the functional path. *)
     ; mem_adr : 'a (** PSRAM address [MemAdr[22:0]] *)
     ; mem_dq_o : 'a (** PSRAM write data [16] *)
     ; mem_dq_t : 'a (** PSRAM data tristate: 1 = hi-Z (read), 0 = drive (write) *)

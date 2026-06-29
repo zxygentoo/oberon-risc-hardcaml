@@ -44,6 +44,7 @@ module O = struct
     ; rgb : 'a [@bits 6]
     ; msclk_oe : 'a [@bits 1]
     ; msdat_oe : 'a [@bits 1]
+    ; mouse_dbg : 'a [@bits 28]
     ; mem_adr : 'a [@bits 23]
     ; mem_dq_o : 'a [@bits 16]
     ; mem_dq_t : 'a [@bits 1]
@@ -281,6 +282,7 @@ let create
   ; rgb = vid.rgb
   ; msclk_oe = mouse.msclk_oe
   ; msdat_oe = mouse.msdat_oe
+  ; mouse_dbg = mouse_out
   ; mem_adr = cellram.mem_adr
   ; mem_dq_o = cellram.mem_dq_o
   ; mem_dq_t = cellram.mem_dq_t
