@@ -38,8 +38,15 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
+let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
+  (* Phase 7 (board memory): ce-gates the unit's state so MUL/DIV/FP freeze in lockstep
+     with the ce-gated core through a multi-cycle PSRAM wait. Without it, during the
+     fetch-wait right after the op completes [S] runs past its terminal count, [stall]
+     re-asserts and the divide restarts forever (the first-boot hang, root-caused in sim).
+     [ce = vdd] (the default) ⇒ [~enable:vdd] is a no-op ⇒ byte-identical to the bare
+     port. *)
+  let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
   (* S : 6-bit counter; run is enable + synchronous clear (no reset) — twin of Multiplier. *)
   (* Registers named to match the RTL ([S]/[RQ]) so the Phase-8 formal harness can pair
      the flip-flops with Divider.v's (yosys [equiv_make] matches FFs by name —

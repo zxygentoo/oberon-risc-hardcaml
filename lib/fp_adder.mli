@@ -62,5 +62,6 @@ module O : sig
 end
 
 (** [create] is the FP add/convert unit as a Hardcaml [I]-to-[O] interface, for
-    instantiation and simulation. *)
-val create : Signal.t I.t -> Signal.t O.t
+    instantiation and simulation. [?ce] is the board clock-enable (default [vdd]); see
+    {!Divider.create}. *)
+val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
