@@ -111,3 +111,13 @@
  (name risc_core_dump)
  (modules risc_core_dump)
  (libraries risc5 oracle hardcaml unix sd_bridge))
+
+; Phase 7: emit the board SoC (Nexys4_board.Soc_board) as Verilog with the boot ROM baked in
+; — boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v, which
+; the hand-written nexys4_top.v wraps with the vendor primitives. Built by @check so it can't
+; rot.
+
+(executable
+ (name emit_board_verilog)
+ (modules emit_board_verilog)
+ (libraries hardcaml nexys4_board oracle))

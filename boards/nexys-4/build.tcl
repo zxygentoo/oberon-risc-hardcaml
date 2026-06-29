@@ -1,0 +1,40 @@
+# Vivado non-project batch build for the Oberon RISC5 Nexys 4 board top.
+# Usage (from anywhere):   vivado -mode batch -source boards/nexys-4/build.tcl
+# Reads boards/_generated/nexys-4/soc_board.v (run gen_verilog.sh first) + the hand-written
+# nexys4_top.v / nexys4.xdc; outputs to boards/_build/nexys-4/ : oberon.bit + reports.
+
+set here  [file normalize [file dirname [info script]]]   ;# boards/nexys-4
+set gen   [file normalize $here/../_generated/nexys-4]
+set build [file normalize $here/../_build/nexys-4]
+set part  xc7a100tcsg324-1
+set top   nexys4_top
+file mkdir $build
+
+# ── Read sources ────────────────────────────────────────────────────────────────────
+read_verilog $gen/soc_board.v
+read_verilog $here/nexys4_top.v
+read_xdc     $here/nexys4.xdc
+
+# ── Synthesis ───────────────────────────────────────────────────────────────────────
+synth_design -top $top -part $part
+write_checkpoint -force $build/post_synth.dcp
+report_utilization -file $build/util_synth.rpt
+
+# ── Implementation ──────────────────────────────────────────────────────────────────
+opt_design
+place_design
+phys_opt_design
+route_design
+
+write_checkpoint -force $build/post_route.dcp
+report_timing_summary -file $build/timing.rpt -warn_on_violation
+report_utilization    -file $build/util.rpt
+report_drc            -file $build/drc.rpt
+
+# ── Bitstream ───────────────────────────────────────────────────────────────────────
+write_bitstream -force $build/oberon.bit
+puts "=== wrote $build/oberon.bit ==="
+
+# Surface the worst-case slack so a headless run reports closure at a glance.
+set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+puts "=== setup WNS = $wns ns (>= 0 means timing met) ==="
