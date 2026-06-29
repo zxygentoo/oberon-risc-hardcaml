@@ -47,7 +47,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(read_cycles = 4) ?(write_cycles = 4) (i : _ I.t) : _ O.t =
+let create ?(read_cycles = 2) ?(write_cycles = 2) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   let cval n = of_unsigned_int ~width:cnt_width n in
   (* ── State ── a transaction in progress ([busy]), whether it is a video read ([op_vid])
@@ -230,6 +230,12 @@ module Tb = struct
       ; rdata : 'a [@bits 32]
       ; viddata : 'a [@bits 32]
       ; vid_ack : 'a [@bits 1]
+      ; (* chip-side pins surfaced for the byte-lane contract test (P3) *)
+        we_n : 'a [@bits 1]
+      ; ub_n : 'a [@bits 1]
+      ; lb_n : 'a [@bits 1]
+      ; mem_adr : 'a [@bits 23]
+      ; mem_dq_o : 'a [@bits 16]
       }
     [@@deriving hardcaml]
   end
@@ -264,7 +270,16 @@ module Tb = struct
         }
     in
     assign dq_i m.mem_dq_i;
-    { O.ce = c.ce; rdata = c.rdata; viddata = c.viddata; vid_ack = c.vid_ack }
+    { O.ce = c.ce
+    ; rdata = c.rdata
+    ; viddata = c.viddata
+    ; vid_ack = c.vid_ack
+    ; we_n = c.we_n
+    ; ub_n = c.ub_n
+    ; lb_n = c.lb_n
+    ; mem_adr = c.mem_adr
+    ; mem_dq_o = c.mem_dq_o
+    }
   ;;
 end
 
@@ -550,4 +565,309 @@ let%expect_test "cellram — a video request preempts an in-flight CPU read" =
     !cpu_word;
   [%expect
     {| video word = 0x11112222   CPU advanced before video done: false   CPU read after = 0xAAAABBBB |}]
+;;
+
+(* ── P2: the wait-state latency itself ────────────────────────────────────────── The
+   functional round-trips above prove the data is right but never assert *how long* an
+   access takes — yet faithful wait-state insertion is the whole point of the controller
+   (the .mli contract; the board's video-flicker margin rides on it). [measure_latency]
+   counts the clocks from a request to the [ce] that retires it. *)
+
+let measure_latency ?(read_cycles = 2) ?(write_cycles = 2) ~wr () =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let sim = Sim.create (Tb.create ~read_cycles ~write_cycles) in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  inp.cpu_internal := b1 false;
+  inp.ben := b1 false;
+  inp.wdata := Bits.of_unsigned_int ~width:32 0xDEAD_BEEF;
+  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+  inp.wr := b1 wr;
+  inp.mem_pend := b1 true;
+  let k = ref 0
+  and retired = ref (-1) in
+  while !retired < 0 && !k < 200 do
+    Cyclesim.cycle sim;
+    Int.incr k;
+    if Bits.to_int_trunc !(outp.ce) = 1 then retired := !k
+  done;
+  if !retired < 0 then failwith "cellram: ce never asserted (access hung)";
+  !retired
+;;
+
+let%expect_test "cellram — wait-state latency scales with read/write cycles, \
+                 independently (incl. asymmetric)"
+  =
+  let row (rc, wc) =
+    Stdlib.Printf.printf
+      "read_cycles=%d write_cycles=%d -> read retires in %d clk, write in %d clk\n"
+      rc
+      wc
+      (measure_latency ~read_cycles:rc ~write_cycles:wc ~wr:false ())
+      (measure_latency ~read_cycles:rc ~write_cycles:wc ~wr:true ())
+  in
+  List.iter ~f:row [ 2, 2; 4, 4; 4, 3; 5, 2 ];
+  (* a read's latency is set by read_cycles only, a write's by write_cycles only — the two
+     halfword phases of a read both count [read_cycles], of a write both [write_cycles]. *)
+  let lat ~rc ~wc ~wr = measure_latency ~read_cycles:rc ~write_cycles:wc ~wr () in
+  Stdlib.Printf.printf
+    "read latency ignores write_cycles: %b\nwrite latency ignores read_cycles: %b\n"
+    (lat ~rc:4 ~wc:3 ~wr:false = lat ~rc:4 ~wc:9 ~wr:false)
+    (lat ~rc:9 ~wc:3 ~wr:true = lat ~rc:4 ~wc:3 ~wr:true);
+  [%expect
+    {|
+    read_cycles=2 write_cycles=2 -> read retires in 4 clk, write in 4 clk
+    read_cycles=4 write_cycles=4 -> read retires in 8 clk, write in 8 clk
+    read_cycles=4 write_cycles=3 -> read retires in 8 clk, write in 6 clk
+    read_cycles=5 write_cycles=2 -> read retires in 10 clk, write in 4 clk
+    read latency ignores write_cycles: true
+    write latency ignores read_cycles: true
+    |}]
+;;
+
+let%expect_test "cellram — 32-bit round-trip with asymmetric read/write cycles [qcheck]" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let win = 16 in
+  (* one sim per config (hoisted out of the property — rebuilding the model per case is
+     the dominant cost), then the same word+byte-store round-trip the symmetric test runs. *)
+  let run_config (rc, wc) =
+    let sim = Sim.create (Tb.create ~read_cycles:rc ~write_cycles:wc) in
+    let inp = Cyclesim.inputs sim
+    and outp = Cyclesim.outputs sim in
+    inp.vidreq := Bits.of_unsigned_int ~width:1 0;
+    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+    let store ~adr ~ben ~wdata =
+      ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben ~wdata : int)
+    in
+    let load_word w =
+      cpu_access sim inp outp ~internal:false ~adr:(w * 4) ~wr:false ~ben:false ~wdata:0
+    in
+    let check_seq ops =
+      for w = 0 to win - 1 do
+        store ~adr:(w * 4) ~ben:false ~wdata:0
+      done;
+      let model = Array.create ~len:win 0 in
+      List.for_all ops ~f:(fun (ben, adr, wdata) ->
+        store ~adr ~ben ~wdata;
+        let w = adr lsr 2 in
+        let l = adr land 3 in
+        if ben
+        then (
+          let byte = (wdata lsr (8 * l)) land 0xFF in
+          model.(w) <- model.(w) land lnot (0xFF lsl (8 * l)) lor (byte lsl (8 * l)))
+        else model.(w) <- wdata;
+        load_word w = model.(w))
+    in
+    QCheck.Test.check_exn
+      (QCheck.Test.make
+         ~count:80
+         ~name:(Stdlib.Printf.sprintf "cellram-roundtrip-%d-%d" rc wc)
+         QCheck.(
+           list_size
+             (Gen.int_range 1 16)
+             (triple bool (int_range 0 ((win * 4) - 1)) (int_bound 0xFFFF_FFFF)))
+         check_seq)
+  in
+  List.iter ~f:run_config [ 4, 3; 5, 2 ];
+  [%expect {| |}]
+;;
+
+(* ── P3: documented invariants & the chip-pin contract ──────────────────────────── *)
+
+let%expect_test "cellram — a video request does NOT preempt an in-flight CPU write" =
+  (* The mirror of the preempt-read test: writes are never preempted (a half-written word
+     would corrupt RAM, .mli / [cpu_read_inflight] excludes [op_wr]). A video request
+     arriving mid-write must wait until the write retires, then go. *)
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let sim = Sim.create (Tb.create ~read_cycles:4 ~write_cycles:4) in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  inp.cpu_internal := b1 false;
+  (* seed the video word (byte 0x100 = word 0x40) *)
+  ignore
+    (cpu_access
+       sim
+       inp
+       outp
+       ~internal:false
+       ~adr:0x100
+       ~wr:true
+       ~ben:false
+       ~wdata:0x1357_9BDF
+     : int);
+  (* start a CPU write of byte 0x200 and let it reach mid-flight — do NOT complete it *)
+  inp.mem_pend := b1 true;
+  inp.wr := b1 true;
+  inp.ben := b1 false;
+  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+  inp.wdata := Bits.of_unsigned_int ~width:32 0xCAFE_F00D;
+  Cyclesim.cycle sim (* write starts: busy, low halfword phase *);
+  Cyclesim.cycle sim (* still mid-write (write_cycles = 4) *);
+  (* a video request now arrives mid-write → it must NOT preempt *)
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0x40;
+  inp.vidreq := b1 true;
+  Cyclesim.cycle sim;
+  inp.vidreq := b1 false;
+  (* record the order: the write's retiring [ce] vs [vid_ack] *)
+  let write_ce = ref (-1)
+  and vidack = ref (-1)
+  and k = ref 0 in
+  while (!write_ce < 0 || !vidack < 0) && !k < 80 do
+    Cyclesim.cycle sim;
+    Int.incr k;
+    if !write_ce < 0 && Bits.to_int_trunc !(outp.ce) = 1 then write_ce := !k;
+    if !vidack < 0 && Bits.to_int_trunc !(outp.vid_ack) = 1 then vidack := !k
+  done;
+  inp.mem_pend := b1 false;
+  Cyclesim.cycle sim;
+  (* read back byte 0x200: the write must have landed intact *)
+  let back =
+    cpu_access sim inp outp ~internal:false ~adr:0x200 ~wr:false ~ben:false ~wdata:0
+  in
+  Stdlib.Printf.printf
+    "write retired at clk %d, vid_ack at clk %d (write first: %b)   read-back = 0x%X   \
+     video word = 0x%X\n"
+    !write_ce
+    !vidack
+    (!write_ce < !vidack)
+    back
+    (Bits.to_unsigned_int !(outp.viddata));
+  [%expect
+    {| write retired at clk 5, vid_ack at clk 14 (write first: true)   read-back = 0xCAFEF00D   video word = 0x13579BDF |}]
+;;
+
+let%expect_test "cellram — preempt-guard boundary: a video request near a read's end \
+                 does not abort it once it is retiring"
+  =
+  (* preempt is gated by [~:(cnt_zero &: half1)]: a video request that only becomes
+     pending once the read has reached its final cycle cannot abort it — the read retires
+     on time; an earlier one preempts (the read aborts and restarts much later). We sweep
+     the clk at which a one-cycle [vidreq] pulse arrives and tabulate when the read still
+     makes its original deadline. The read returns the right data either way — an aborted
+     read just restarts, reads being idempotent — so this is purely about the timing
+     guard. *)
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let rc = 4
+  and wc = 4 in
+  let c = measure_latency ~read_cycles:rc ~write_cycles:wc ~wr:false () in
+  let run ~vidreq_clk =
+    let sim = Sim.create (Tb.create ~read_cycles:rc ~write_cycles:wc) in
+    let inp = Cyclesim.inputs sim
+    and outp = Cyclesim.outputs sim in
+    let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+    inp.vidreq := b1 false;
+    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+    inp.cpu_internal := b1 false;
+    inp.ben := b1 false;
+    (* seed the CPU-read word (byte 0x200) *)
+    ignore
+      (cpu_access
+         sim
+         inp
+         outp
+         ~internal:false
+         ~adr:0x200
+         ~wr:true
+         ~ben:false
+         ~wdata:0x5A5A_6B6B
+       : int);
+    (* start the read; hold [vidreq] high for exactly the clk numbered [vidreq_clk] *)
+    inp.mem_pend := b1 true;
+    inp.wr := b1 false;
+    inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+    let read_ce = ref (-1)
+    and rdata = ref (-1)
+    and k = ref 0 in
+    while !read_ce < 0 && !k < 80 do
+      inp.vidreq := b1 (!k = vidreq_clk - 1);
+      Cyclesim.cycle sim;
+      Int.incr k;
+      if Bits.to_int_trunc !(outp.ce) = 1
+      then (
+        read_ce := !k;
+        rdata := Bits.to_unsigned_int !(outp.rdata))
+    done;
+    !read_ce, !rdata
+  in
+  Stdlib.Printf.printf "an unobstructed read retires at clk %d\n" c;
+  List.iter
+    [ c + 1; c; c - 1; c - 2; c - 3 ]
+    ~f:(fun vc ->
+      let read_ce, d = run ~vidreq_clk:vc in
+      Stdlib.Printf.printf
+        "vidreq on clk %d: read retires at clk %d (on time: %b, data ok: %b)\n"
+        vc
+        read_ce
+        (read_ce = c)
+        (d = 0x5A5A_6B6B));
+  [%expect
+    {|
+    an unobstructed read retires at clk 8
+    vidreq on clk 9: read retires at clk 8 (on time: true, data ok: true)
+    vidreq on clk 8: read retires at clk 8 (on time: true, data ok: true)
+    vidreq on clk 7: read retires at clk 25 (on time: false, data ok: true)
+    vidreq on clk 6: read retires at clk 24 (on time: false, data ok: true)
+    vidreq on clk 5: read retires at clk 23 (on time: false, data ok: true)
+    |}]
+;;
+
+let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n, per lane)"
+  =
+  (* The byte-lane contract straight at the chip pins (not just transitively through the
+     model round-trip): a byte store to byte address b drives its write strobe in halfword
+     phase b[1] (mem_adr[0]), enabling the LB lane when b[0]=0 and the UB lane when
+     b[0]=1. The other phase enables neither (no spurious write). *)
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  inp.cpu_internal := b1 false;
+  inp.wdata := Bits.of_unsigned_int ~width:32 0x6B6B_6B6B;
+  (* probe one byte store: report which (phase, lane) carries the write strobe *)
+  let probe ~adr =
+    inp.mem_pend := b1 true;
+    inp.wr := b1 true;
+    inp.ben := b1 true;
+    inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    let result = ref "(no write strobe seen)"
+    and k = ref 0
+    and retired = ref false in
+    while (not !retired) && !k < 40 do
+      Cyclesim.cycle sim;
+      Int.incr k;
+      let we_n = Bits.to_int_trunc !(outp.we_n) in
+      let ub_n = Bits.to_int_trunc !(outp.ub_n) in
+      let lb_n = Bits.to_int_trunc !(outp.lb_n) in
+      let half = Bits.to_unsigned_int !(outp.mem_adr) land 1 in
+      if we_n = 0 && (ub_n = 0 || lb_n = 0)
+      then
+        result
+        := Stdlib.Printf.sprintf
+             "phase %d, %s"
+             half
+             (if lb_n = 0 then "LB lane (byte[7:0])" else "UB lane (byte[15:8])");
+      if Bits.to_int_trunc !(outp.ce) = 1 then retired := true
+    done;
+    inp.mem_pend := b1 false;
+    Cyclesim.cycle sim;
+    !result
+  in
+  List.iter [ 0; 1; 2; 3 ] ~f:(fun a ->
+    Stdlib.Printf.printf "byte addr %d -> %s\n" a (probe ~adr:a));
+  [%expect
+    {|
+    byte addr 0 -> phase 0, LB lane (byte[7:0])
+    byte addr 1 -> phase 0, UB lane (byte[15:8])
+    byte addr 2 -> phase 1, LB lane (byte[7:0])
+    byte addr 3 -> phase 1, UB lane (byte[15:8])
+    |}]
 ;;
