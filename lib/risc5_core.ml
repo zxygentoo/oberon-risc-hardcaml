@@ -494,7 +494,16 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
    register-file write and all five iterative units together for a multi-cycle PSRAM wait,
    so the slow memory looks single-cycle to the core (AGENT.md §3). [vdd] ⇒ byte-identical
    to the bare RTL port. *)
-let create ?(ce = vdd) i = create_with_units ~ce ~units:(Units.with_ce ce) i
+let create ?(ce = vdd) ?(fast_mul = false) i =
+  (* [fast_mul] (Phase 9, AGENT.md §5) swaps just the iterative 33-cycle multiplier for
+     the combinational DSP one ([Multiplier.create_opt], proven bit-identical) through the
+     units seam — everything else, and the default [create], stays the faithful port. *)
+  let units = Units.with_ce ce in
+  let units =
+    if fast_mul then { units with multiplier = Multiplier.create_opt ~ce } else units
+  in
+  create_with_units ~ce ~units i
+;;
 
 (* ── Tests (co-located; AGENT.md §6) ── behaviour waveforms; the architectural lockstep
    against the oracle lives in test/. First the fetch/stall spine: reset loads StartAdr,

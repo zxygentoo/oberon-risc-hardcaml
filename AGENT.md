@@ -215,6 +215,23 @@ checked in 8): optimizations there are judged against the **ISA/oracle** — doe
 lockstep at the instruction level — not against `RISC5.v` timing. Work from a tagged faithful baseline
 (e.g. a `feat/fast-mul` spike), so the proven port is never lost.
 
+*Phase 9 — landed: DSP multiplier (`?fast_mul`).* The iterative 33-cycle `Multiplier` is swappable
+for a **combinational DSP-backed** `Multiplier.create_opt` — the same 32×32→64 multiply as one signed
+33×33 `*+` (the §8 sign handling preserved: `y` always signed, `x` signed iff `u`), which Vivado lowers
+onto **4 DSP48E1** slices. It rides the existing `Risc5_core.Units` seam, selected by `?fast_mul`
+(default `false`) threaded `Risc5_core.create` → `Soc_board.create`/`Soc.create` →
+`emit_board_verilog` (only the board emit opts in). Proven **bit-identical** to the faithful `create`
+by a co-located **differential qcheck** (20k cases, full 64-bit `z`) that rides `create`'s Phase-8
+proof transitively — *not* re-formalised. Per-MUL cost 34→2 core cycles (`@bench`). Validated top to
+bottom: synth infers the 4 DSP48E1 and **50 MHz closes** (WNS +1.521 ns — the combinational MUL is now
+the critical path, `regfile → 2×DSP48E1 cascade → result`; a DSP48E1 `MREG`/`PREG` pipeline stage is
+the free fix if the clock ever passes ~54 MHz); the board boot checkpoint + visual golden pass *with*
+`fast_mul`; and on **real hardware** it boots Oberon to the desktop and **rebuilds the entire Extended
+Oberon system with no traps**. The default core stays byte-identical — all Phase 0–8 gates
+(`runtest`/`@cosim`/`@formal`/`@boot_checkpoint{,_board}`/`@visual_golden`) green with the seam inert
+at `fast_mul=false`. DIV stays iterative (Newton-Raphson deferred); the FP units (`*+` for
+`FPMultiplier`, bit-exact-preservable) are the next DSP candidates.
+
 ---
 
 ## 6. Verification strategy (the pyramid)

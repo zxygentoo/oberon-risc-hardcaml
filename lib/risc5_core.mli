@@ -63,8 +63,13 @@ end
     register, the register-file write and all five iterative units together, so a
     multi-cycle PSRAM access looks single-cycle to the core (the board memory seam;
     AGENT.md §3). The default leaves the core byte-identical to the bare RTL port — the
-    sim SoC never drives it. *)
-val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
+    sim SoC never drives it.
+
+    [?fast_mul] (default [false], Phase 9 — AGENT.md §5) swaps the iterative 33-cycle
+    multiplier for the combinational DSP {!Multiplier.create_opt} (proven bit-identical
+    via the differential qcheck) through the {!Units} seam; the default keeps the
+    faithful, Phase-8-proven unit. Everything else is unchanged. *)
+val create : ?ce:Signal.t -> ?fast_mul:bool -> Signal.t I.t -> Signal.t O.t
 
 (** The eight submodule constructors the core wires up — the modules [RISC5.v]
     instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven

@@ -34,7 +34,12 @@ let () =
            (* SPI slow divider clk÷128 (vs the faithful ÷64): keeps the SD-init clock at
               390.6 kHz (≤ the 400 kHz ceiling) now that the system clock is 50 MHz. FAST
               stays clk÷3 = 16.7 MHz, under the 25 MHz SD limit. (PHASE9 §SPI.) *)
-         ~spi_slow_div_log2:7)
+         ~spi_slow_div_log2:7
+           (* Phase-9 DSP multiplier: swap the iterative 33-cycle MUL for the
+              combinational DSP48-backed one (Multiplier.create_opt, proven
+              bit-identical). This is the one optimization actually baked into the board
+              netlist — synth confirms the DSP48 inference and 50 MHz timing closure. *)
+         ~fast_mul:true)
   in
   Rtl.print Verilog circuit
 ;;
