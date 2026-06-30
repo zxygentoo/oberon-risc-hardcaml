@@ -23,6 +23,15 @@ set_clock_groups -asynchronous \
 set_property ASYNC_REG true \
   [get_cells -hierarchical -filter {NAME =~ "*sync0*" || NAME =~ "*sync1*" || NAME =~ "*sync2*"}]
 
+## NB: a `set_max_delay -datapath_only` to bound the req_toggle->sync0 first hop would be
+## INERT here — set_clock_groups (above) outranks set_max_delay in Vivado, so it cuts the
+## path first and the max_delay binds zero endpoints (verified: the routed path reports
+## Slack: inf). ASYNC_REG keeps the placer packing sync0/1/2 tight (the routed first hop is
+## ~0.95 ns, far under any clock period), so the hop is robust without it. If clk25 is ever
+## pushed hard enough to want an explicit bound, drop the clk25<->clk65 pair from the
+## clock_groups above and constrain *every* crossing (both directions) with per-path
+## set_max_delay -datapath_only instead — only then does max_delay actually apply.
+
 ## ── Reset button (active-low) ────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN C12 IOSTANDARD LVCMOS33} [get_ports btnCpuReset]
 
