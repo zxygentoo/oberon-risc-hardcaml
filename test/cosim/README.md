@@ -59,19 +59,32 @@ stimulus (expect `0 value-mismatch, 0 cycle-mismatch`):
 - **Video controller** — two-clock (`clk` 25 MHz, `pclk` 65 MHz, the 13:5 ratio). A wrapper
   (`vid_cosim.v`) stubs the Xilinx `DCM`/`BUFG` and `force`s `VID`'s internal `pclk` from the
   harness; the harness drives both clocks at the same cadence as the Hardcaml dumper's
-  `By_input_clocks`. Replays **~2 scanlines** with one stable `viddata` word per 32-px fetch group
-  (a faithful memory model — real SRAM holds the fetched word; sampled once per fetch) + an `inv`
-  toggle, and asserts, **every base tick**, `RTL (vidadr, hsync, vsync, RGB) == port's`
-  (`0 mismatch`): visible pixels, the 32-word/line DMA, `vidadr`, `hblank` + the `hsync` pulse, the
-  `hcnt` wrap + `vcnt` advance. **`req` is excluded from the cycle-exact compare** — it's the one
-  deliberate CDC departure (our toggle pulse-synchroniser fires the fetch request ~2 clk later than
-  `VID60.v`'s async-set `req1`, a metastability-safe substitute), so instead the cosim checks its
-  *protocol*: both sides emit the same number of `req` pulses (±1 for the in-flight fetch at the run
-  boundary). The exact-timing equivalence is impossible by design; `req`'s correctness is proven by
-  `test/formal`'s `vid_invariant` (one req per req0, no loss, all phases) and the per-group-stable
-  word is what keeps the *pixel* path cycle-exact despite the `req` sampling shift. `vblank`/`vsync`
-  (`vcnt>=768`) need a whole frame to reach (the Phase-6 visual golden) and are the same
-  comparator-free / SR-latch idiom as their `h` counterparts.
+  `By_input_clocks`. Replays **~3 scanlines** + an `inv` toggle, and asserts, **every base tick**,
+  `RTL (hsync, vsync, RGB) == port's` (`0 mismatch`): visible pixels, the 32-word/line DMA, `hblank`
+  + the `hsync` pulse, the `hcnt` wrap + `vcnt` advance. **Two outputs are excluded from the
+  cycle-exact compare — the two deliberate departures from `VID60.v`** (see `lib/vid.ml`):
+  - **`req`** (the CDC) — our toggle pulse-synchroniser fires the fetch request ~2 clk later than
+    `VID60.v`'s async-set `req1` (a metastability-safe substitute). Instead the cosim checks its
+    *protocol*: both sides emit the same number of `req` pulses (±1 for the in-flight fetch at the
+    run boundary). Exact-timing equivalence is impossible by design; correctness is proven by
+    `test/formal`'s `vid_invariant` (one req per req0, no loss, all phases).
+  - **`vidadr`** (the 2-group prefetch) — our look-ahead issues the read one group early, so our
+    `vidadr` leads `VID60.v`'s by one column every tick. Not compared (the formal equiv excludes it
+    too); that the look-ahead *delivers* the right word is the co-located `lib/vid.ml` prefetch test.
+
+  **Identity-echo framebuffer.** Because the prefetch makes the two addresses differ every tick, a
+  single replayed `viddata` stream can't be correct for both sides. Instead **both sides read an
+  identity framebuffer** (`mem[a] = a`): the dumper drives our `viddata` = our `vidadr`, and the
+  harness drives `VID60.v`'s `viddata` = `VID60.v`'s own `vidadr`. `vidadr` is stable across a 32-px
+  group, so each side samples its own correctly-addressed word regardless of the `req` CDC phase *or*
+  the prefetch lead — both render the same pixels (col's word in group col+1), keeping `RGB`
+  comparable cycle-exact. (This is the sim analogue of the formal equiv *cutting* `vidbuf` to a
+  shared free input and comparing the pixel datapath given the same word.) `RGB` is compared from the
+  **second scanline on**: the prefetch sources col 0 of the first frame from the (nonexistent)
+  previous frame, a one-group frame-top gap that self-heals after a line (the same alignment
+  `lib/vid.ml`'s prefetch test makes with `vcnt>=2`). `vblank`/`vsync` (`vcnt>=768`) need a whole
+  frame to reach (the Phase-6 visual golden) and are the same comparator-free / SR-latch idiom as
+  their `h` counterparts.
 - **PS/2 mouse** — bidirectional open-drain `msclk`/`msdat` (RTL `inout`, `line = drive ? 0 : z`).
   A wrapper (`mouse_cosim.v`) splits each line like the Hardcaml port: `force`s the harness-driven
   resolved value into the DUT and XMR-exports the DUT's pull-low (`req`, `~tx[0]`) as `*_oe`. The
