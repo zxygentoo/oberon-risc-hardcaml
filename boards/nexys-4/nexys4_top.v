@@ -55,8 +55,12 @@ module nexys4_top (
   output wire        RamCLK
 );
 
-  // ── Clocking: one MMCM, 100 MHz -> 25 MHz (system) + 65 MHz (pixel) ──────────────
-  // VCO = 100 * 6.5 = 650 MHz; 650/26 = 25 MHz, 650/10 = 65 MHz (1024x768@60 pixel clk).
+  // ── Clocking: one MMCM, 100 MHz -> 50 MHz (system) + 65 MHz (pixel) ──────────────
+  // VCO = 100 * 6.5 = 650 MHz; 650/13 = 50 MHz, 650/10 = 65 MHz (1024x768@60 pixel clk).
+  // Phase-9 scratch: system clock raised 25->50 MHz (CLKOUT0_DIVIDE_F 26->13). The
+  // clk25/bufg_25 net & instance names are KEPT (they now carry 50 MHz) to avoid rippling
+  // through soc_board's `clock` port and the .xdc bufg_25/O selectors. PSRAM wait-states +
+  // ms prescaler are retuned to match in test/emit_board_verilog.ml (4 cycles, 50000).
   wire clk25, clk65, clkfb, clkfb_bufg, mmcm_locked;
   wire clk25_raw, clk65_raw;
 
@@ -64,7 +68,7 @@ module nexys4_top (
     .CLKIN1_PERIOD   (10.000),   // 100 MHz
     .DIVCLK_DIVIDE   (1),
     .CLKFBOUT_MULT_F (6.500),    // VCO 650 MHz
-    .CLKOUT0_DIVIDE_F(26.000),   // 25 MHz
+    .CLKOUT0_DIVIDE_F(13.000),   // 50 MHz (Phase-9 scratch; was 26.000 = 25 MHz)
     .CLKOUT1_DIVIDE  (10),       // 65 MHz
     .STARTUP_WAIT    ("FALSE")
   ) mmcm (

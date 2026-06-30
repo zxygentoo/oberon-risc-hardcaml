@@ -112,6 +112,9 @@
  (modules risc_core_dump)
  (libraries risc5 oracle hardcaml unix sd_bridge))
 
+; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
+; their own dune — driven by `dune build @bench` / `@profile_boot`.
+
 ; Phase 7: emit the board SoC (Nexys4_board.Soc_board) as Verilog with the boot ROM baked in
 ; — boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v, which
 ; the hand-written nexys4_top.v wraps with the vendor primitives. Built by @check so it can't

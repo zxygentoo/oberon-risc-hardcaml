@@ -44,6 +44,34 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+(* The combinational FP wrapper, shared verbatim by both impls: given the 48-bit mantissa
+   product [p] and the held operands, pack [{sign, exponent, mantissa}] exactly as the RTL
+   — sign XOR, exponent add/debias, round (+1) from bit 47 or 46, repack with the zero /
+   overflow→inf / underflow→0 cases. It never cares *how* [p] was formed, so [create] (the
+   iterative shift-add) and [create_opt] (one DSP multiply) differ only in producing [p];
+   bit-exactness reduces to "same [p]", which the co-located differential qcheck checks. *)
+let pack ~p (i : _ I.t) =
+  let sign = msb i.x ^: msb i.y in
+  let xe = select i.x ~high:30 ~low:23 in
+  let ye = select i.y ~high:30 ~low:23 in
+  let e0 = uresize xe ~width:9 +: uresize ye ~width:9 in
+  (* remove one exponent bias; bump by one when the product reached bit 47 (>= 2.0) *)
+  let e1 = e0 -:. 127 +: uresize (msb p) ~width:9 in
+  (* round (+1) and normalize, from bit 47 or 46 depending on that carry *)
+  let z0 =
+    mux2 (msb p) (select p ~high:47 ~low:23 +:. 1) (select p ~high:46 ~low:22 +:. 1)
+  in
+  let mant = select z0 ~high:23 ~low:1 in
+  let normal = sign @: select e1 ~high:7 ~low:0 @: mant in
+  let inf = sign @: ones 8 @: mant in
+  (* a zero operand -> 0; exponent in range -> normal; overflow -> inf; underflow -> 0
+     (the borrow/sign bits of e1 distinguish the three exponent cases) *)
+  mux2
+    (xe ==:. 0 |: (ye ==:. 0))
+    (zero 32)
+    (mux2 ~:(msb e1) normal (mux2 ~:(select e1 ~high:7 ~low:7) inf (zero 32)))
+;;
+
 let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* Phase 7: ce-gate the unit's state so it freezes with the ce-gated core during a
@@ -70,29 +98,23 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
         (w1 @: select p ~high:23 ~low:1))
     -- "P"
   in
-  (* ---- combinational FP wrapper off the held inputs + P ---- *)
-  let sign = msb i.x ^: msb i.y in
-  let xe = select i.x ~high:30 ~low:23 in
-  let ye = select i.y ~high:30 ~low:23 in
-  let e0 = uresize xe ~width:9 +: uresize ye ~width:9 in
-  (* remove one exponent bias; bump by one when the product reached bit 47 (>= 2.0) *)
-  let e1 = e0 -:. 127 +: uresize (msb p) ~width:9 in
-  (* round (+1) and normalize, from bit 47 or 46 depending on that carry *)
-  let z0 =
-    mux2 (msb p) (select p ~high:47 ~low:23 +:. 1) (select p ~high:46 ~low:22 +:. 1)
-  in
-  let mant = select z0 ~high:23 ~low:1 in
-  let normal = sign @: select e1 ~high:7 ~low:0 @: mant in
-  let inf = sign @: ones 8 @: mant in
-  (* a zero operand -> 0; exponent in range -> normal; overflow -> inf; underflow -> 0
-     (the borrow/sign bits of e1 distinguish the three exponent cases) *)
-  let z =
-    mux2
-      (xe ==:. 0 |: (ye ==:. 0))
-      (zero 32)
-      (mux2 ~:(msb e1) normal (mux2 ~:(select e1 ~high:7 ~low:7) inf (zero 32)))
-  in
-  { O.stall = i.run &: ~:(s ==:. 25); z }
+  { O.stall = i.run &: ~:(s ==:. 25); z = pack ~p i }
+;;
+
+(* Phase-9 optimised variant (AGENT.md §5) — the FP analogue of {!Multiplier.create_opt}.
+   [create]'s 24-iteration [P] loop is just multiplying the two 24-bit mantissas (each
+   with its restored hidden bit), so say that directly: one unsigned 24×24 [*:] that
+   Vivado lowers onto the board's DSP48 slices, giving the same full 48-bit [P].
+   Combinational, so FML retires in ONE cycle ([stall] tied low) instead of 25. The shared
+   {!pack} wrapper is reused verbatim, so it stays bit-identical to [create] — verified by
+   the co-located differential qcheck against the formally-proven iterative unit, not
+   re-formalised. [ce] is irrelevant to a stateless unit — accepted only to match
+   [create]'s signature. *)
+let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
+  ignore (ce : Signal.t);
+  let xm = vdd @: select i.x ~high:22 ~low:0 in
+  let ym = vdd @: select i.y ~high:22 ~low:0 in
+  { O.stall = gnd; z = pack ~p:(xm *: ym) i }
 ;;
 
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
@@ -103,6 +125,50 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
    2.0 * 2.0 = 4.0 (0x40800000). Like {!Multiplier}, the 25-cycle run is too long for one
    window, so two tight windows — the head (run -> stall asserts) and the tail (stall
    drops, run releases) — bracket the uniform stall=1 middle. *)
+
+let%expect_test "FML create_opt ≡ create (differential qcheck, 32-bit z, 20000 cases)" =
+  (* The Phase-9 fast variant rides [create]'s Phase-8 proof: show the combinational DSP
+     mantissa multiply is bit-identical to the formally-proven iterative unit over random
+     (x, y) IEEE bit patterns, comparing the full 32-bit result. No steering — both impls
+     form the same 48-bit [P] and share [pack], so they agree on every input (including
+     the RTL's non-IEEE corners). *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let ref_sim = Sim.create create
+  and opt_sim = Sim.create create_opt in
+  let ri = Cyclesim.inputs ref_sim
+  and ro = Cyclesim.outputs ref_sim
+  and oi = Cyclesim.inputs opt_sim
+  and oo = Cyclesim.outputs opt_sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  (* iterative: run to retirement, then a run=0 cycle to clear S for the next case *)
+  let z_ref ~x ~y =
+    set ri.x x 32;
+    set ri.y y 32;
+    set ri.run 1 1;
+    Cyclesim.cycle ref_sim;
+    while Bits.to_int_trunc !(ro.stall) = 1 do
+      Cyclesim.cycle ref_sim
+    done;
+    let z = Bits.to_unsigned_int !(ro.z) in
+    set ri.run 0 1;
+    Cyclesim.cycle ref_sim;
+    z
+  in
+  (* combinational: set inputs, one eval, read z *)
+  let z_opt ~x ~y =
+    set oi.x x 32;
+    set oi.y y 32;
+    Cyclesim.cycle opt_sim;
+    Bits.to_unsigned_int !(oo.z)
+  in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:20_000
+       ~name:"fp_create_opt=create"
+       QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       (fun (x, y) -> Int.equal (z_ref ~x ~y) (z_opt ~x ~y)));
+  [%expect {| |}]
+;;
 
 let%expect_test "FPMultiplier timing — stall envelope (S 0->25) + FML 2.0 * 2.0 = 4.0" =
   let module Sim = Cyclesim.With_interface (I) (O) in

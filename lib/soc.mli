@@ -97,4 +97,9 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-val create : contents:int array -> ?clocks_per_ms:int -> Signal.t I.t -> Signal.t O.t
+val create
+  :  contents:int array
+  -> ?clocks_per_ms:int
+  -> ?fast_mul:bool
+  -> Signal.t I.t
+  -> Signal.t O.t

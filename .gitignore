@@ -22,11 +22,13 @@ _opam/
 /boards/_generated/
 /boards/_build/
 
-# Vivado batch-run scratch dropped in the repo root by the build/program scripts
-/.Xil/
-/clockInfo.txt
-/vivado*.jou
-/vivado*.log
+# Vivado batch-run scratch, dropped in whatever directory vivado is launched from (the repo
+# root, or boards/<target>/ when build/program/flash are run from there) — un-anchored so it
+# is ignored at any depth, keeping boards/<target>/ pure tracked source either way.
+.Xil/
+clockInfo.txt
+vivado*.jou
+vivado*.log
 
 # Editor / OS cruft
 *~

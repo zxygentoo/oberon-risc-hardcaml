@@ -48,3 +48,13 @@ end
 (** [create] is the [FML] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
     simulation. [?ce] is the board clock-enable (default [vdd]); see {!Divider.create}. *)
 val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+(** [create_opt] — the Phase-9 optimised drop-in for {!create} (AGENT.md §5), the FP
+    analogue of {!Multiplier.create_opt}: the 24-iteration mantissa loop is expressed as a
+    single unsigned 24×24 multiply, which Vivado lowers onto the board's DSP48 slices. The
+    exponent/round wrapper is shared verbatim with {!create}, so the result is
+    bit-identical for every input. {b Combinational} — it retires in one cycle ([stall]
+    tied low) instead of {!create}'s 25. Proven equal to {!create} by the co-located
+    differential qcheck against the formally-proven iterative unit, rather than
+    re-formalised. [?ce] is accepted for signature compatibility but ignored (no state). *)
+val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t

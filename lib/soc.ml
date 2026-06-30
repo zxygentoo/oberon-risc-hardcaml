@@ -61,7 +61,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
+let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   (* Millisecond timer — free-running (no reset), like RISC5Top's. A [clocks_per_ms]
      prescaler [cnt0] raises [limit] once per ms; [limit] both pulses the core's [irq] and
@@ -97,6 +97,7 @@ let create ~contents ?(clocks_per_ms = 25000) (i : _ I.t) : _ O.t =
      [vidadr]. *)
   let core =
     Risc5_core.create
+      ~fast_mul
       { Risc5_core.I.clock = i.clock
       ; rst_n = i.rst_n
       ; irq = limit

@@ -65,6 +65,24 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = i.run &: ~:(s ==:. 33); z = p }
 ;;
 
+(* Phase-9 optimised variant (AGENT.md §5). The structural 33-cycle shift-add above is
+   just computing one product; here we say that directly — a single signed 33×33 multiply
+   ([*+]) that Vivado lowers onto the board's idle DSP48 slices. Combinational, so the op
+   retires in ONE cycle ([stall] tied low) instead of 33. It reproduces [Multiplier.v]'s
+   §8 sign handling exactly so it stays bit-identical to [create]: [y] is sign-extended
+   unconditionally, [x] only when signed ([u]) — so unsigned [MUL'] still yields
+   [x_unsigned × y_signed] (the low 32 bits, R.a, always agree; only [H] carries the
+   quirk). The whole structural multiplier collapses to operand-prep + one [*+]. Verified
+   by the co-located differential qcheck against the formally-proven [create] (not
+   re-formalised). [ce] is irrelevant to a stateless unit — accepted only to match
+   [create]'s signature. *)
+let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
+  ignore (ce : Signal.t);
+  let x' = mux2 i.u (sresize i.x ~width:33) (uresize i.x ~width:33) in
+  let y' = sresize i.y ~width:33 in
+  { O.stall = gnd; z = sel_bottom (x' *+ y') ~width:64 }
+;;
+
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Correctness: qcheck the full multiply against a pure-OCaml Int64 reference (3a's oracle
    — no fp_vectors, no emulator). The reference encodes the *hardware* semantics: [y] is
@@ -114,6 +132,53 @@ let%expect_test "MUL = x*y reference (signed & unsigned) [qcheck, 2000 cases]" =
        ~name:"mul"
        QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
        (fun (u, x, y) -> Int64.equal (mul ~u ~x ~y) (reference ~u ~x ~y)));
+  [%expect {| |}]
+;;
+
+let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 20000 \
+                 cases)"
+  =
+  (* The Phase-9 fast variant rides [create]'s Phase-8 proof: show the combinational DSP
+     multiply is bit-identical to the formally-proven iterative unit over random (u, x,
+     y), comparing the full 64-bit product. The §8 unsigned-MUL' quirk is covered for free
+     — half the cases have y[31]=1, where the H words must still agree. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let ref_sim = Sim.create create
+  and opt_sim = Sim.create create_opt in
+  let ri = Cyclesim.inputs ref_sim
+  and ro = Cyclesim.outputs ref_sim
+  and oi = Cyclesim.inputs opt_sim
+  and oo = Cyclesim.outputs opt_sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  (* iterative: run to retirement, then a run=0 cycle to clear S for the next case *)
+  let z_ref ~u ~x ~y =
+    set ri.u u 1;
+    set ri.x x 32;
+    set ri.y y 32;
+    set ri.run 1 1;
+    Cyclesim.cycle ref_sim;
+    while Bits.to_int_trunc !(ro.stall) = 1 do
+      Cyclesim.cycle ref_sim
+    done;
+    let z = Bits.to_signed_int64 !(ro.z) in
+    set ri.run 0 1;
+    Cyclesim.cycle ref_sim;
+    z
+  in
+  (* combinational: set inputs, one eval, read z *)
+  let z_opt ~u ~x ~y =
+    set oi.u u 1;
+    set oi.x x 32;
+    set oi.y y 32;
+    Cyclesim.cycle opt_sim;
+    Bits.to_signed_int64 !(oo.z)
+  in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:20_000
+       ~name:"create_opt=create"
+       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       (fun (u, x, y) -> Int64.equal (z_ref ~u ~x ~y) (z_opt ~u ~x ~y)));
   [%expect {| |}]
 ;;
 

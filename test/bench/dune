@@ -1,0 +1,26 @@
+; Phase-9 benchmarks & profilers (AGENT.md §5) — the measure-before/after-you-optimise
+; gauges for the DSP-multiplier experiment. Kept out of the always-on `dune runtest`
+; (they print reports, not pass/fail assertions); drive them by alias:
+;   dune build @bench           core cycles/op, iterative vs DSP multiplier
+;   dune build @profile_boot    dynamic MUL/DIV count over a boot (Amdahl context)
+
+(executable
+ (name bench_core)
+ (modules bench_core)
+ (libraries risc5 hardcaml))
+
+(rule
+ (alias bench)
+ (action
+  (run ./bench_core.exe)))
+
+(executable
+ (name profile_boot)
+ (modules profile_boot)
+ (libraries oracle boot_checkpoint_common))
+
+(rule
+ (alias profile_boot)
+ (deps ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./profile_boot.exe)))

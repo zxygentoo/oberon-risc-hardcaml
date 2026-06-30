@@ -1,10 +1,10 @@
 (** Motorola SPI master — a faithful port of [SPI.v].
 
     One 32-bit shift register serves two modes, selected by [fast]:
-    - {b slow} (clk÷64, ~400 kHz at 25 MHz): 8-bit bytes, MSbit first — the rate SD-card
-      initialisation requires;
-    - {b fast} (clk÷3, ~8.33 MHz): 32-bit words, LSByte first (each byte still MSbit
-      first).
+    - {b slow} (clk÷2[{^[slow_div_log2]}], default ÷64 ≈ 390.6 kHz at 25 MHz): 8-bit
+      bytes, MSbit first — the rate SD-card initialisation requires (must be ≤400 kHz);
+    - {b fast} (clk÷3, ~8.33 MHz at 25 MHz): 32-bit words, LSByte first (each byte still
+      MSbit first).
 
     A write of [data_tx] with [start] high begins a transfer; [rdy] drops to 0 for the
     duration and returns to 1 when the byte/word has shifted through, at which point
@@ -39,7 +39,12 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the SPI master, cycle-accurate to [SPI.v]: the clock-divider [tick],
-    the bit counter [bitcnt], the [rdy] handshake, and the byte-interleaved shift
-    permutation that realises fast/LSByte-first word order. *)
-val create : Signal.t I.t -> Signal.t O.t
+(** [create ?slow_div_log2 i] builds the SPI master, cycle-accurate to [SPI.v]: the
+    clock-divider [tick], the bit counter [bitcnt], the [rdy] handshake, and the
+    byte-interleaved shift permutation that realises fast/LSByte-first word order.
+
+    [slow_div_log2] (default 6) is the slow-divider depth: the slow [sclk] is clk÷2[{^n}].
+    6 reproduces [SPI.v] bit-for-bit (the @formal / cosim baseline); the Nexys-4 board
+    overrides it to 7 (clk÷128) to hold the SD-init clock ≤400 kHz at a 50 MHz system
+    clock. FAST is fixed at clk÷3 regardless. *)
+val create : ?slow_div_log2:int -> Signal.t I.t -> Signal.t O.t
