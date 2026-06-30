@@ -126,6 +126,20 @@
  (action
   (run ./bench_core.exe)))
 
+; Phase-9 boot profiler (AGENT.md §5): dynamic MUL/DIV count over reset -> idle desktop,
+; the Amdahl context for the DSP-multiplier experiment. Run: dune build @profile_boot
+
+(executable
+ (name profile_boot)
+ (modules profile_boot)
+ (libraries oracle boot_checkpoint_common))
+
+(rule
+ (alias profile_boot)
+ (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./profile_boot.exe)))
+
 ; Phase 7: emit the board SoC (Nexys4_board.Soc_board) as Verilog with the boot ROM baked in
 ; — boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v, which
 ; the hand-written nexys4_top.v wraps with the vendor primitives. Built by @check so it can't
