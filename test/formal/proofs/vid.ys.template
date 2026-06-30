@@ -14,15 +14,29 @@ proc
 # drop VID60.v's Xilinx DCM/BUFG (a Phase-7 primitive) and expose pclk as a free clock like ours
 delete {top}/c:dcm {top}/c:clkbuf
 expose -input {top}/w:pclk
-# cut the framebuffer word to a shared free input on BOTH sides (the CDC boundary), so the pixel
-# datapath proves bit-exact GIVEN the same fetched word, without comparing the departed timing
+# cut the framebuffer word to a shared free input on BOTH sides, so the pixel datapath proves
+# bit-exact GIVEN the same fetched word, without comparing the (departed) fetch timing/address.
+# Gold: VID60.v's vidbuf register. Ours: the ping-pong read mux, NAMED vidbuf for this pairing
+# (lib/vid.ml) — same role (the word pixbuf loads); the prefetch banks buf0/buf1 feed only it,
+# so cutting it makes the whole prefetch front-end (banks, parity, look-ahead) irrelevant here.
 expose -input {top}/w:vidbuf
 expose -input {gate}/w:vidbuf
 opt
 equiv_make {top} {gate} equiv
 hierarchy -top equiv
-# exclude the deliberate CDC departure: the req handshake output (our synchroniser vs RTL req2)
+# exclude the TWO deliberate departures from VID60.v, both fed only by their now-excluded output:
+#  - req:    our toggle pulse-synchroniser vs the RTL async-set req2 (the CDC; closed formally by
+#            the vid_invariant property proof).
+#  - vidadr: our 2-group prefetch look-ahead vs the RTL's current-group address. That the
+#            look-ahead DELIVERS the correct word (Org + ~vcnt:col, the RTL's own address) into
+#            pixbuf is verified by the co-located sim test "vid — prefetch look-ahead: each column
+#            displays its own framebuffer word" (lib/vid.ml). A formal all-phases version was
+#            prototyped and is true but does not converge tractably (col 0 is cross-line, the frame
+#            top cross-frame — beyond any k-induction window) — see test/formal/README "VID prefetch".
+# What remains proven ≡ VID60.v here: the raster (hcnt/vcnt/hs/vs/blank → hsync/vsync) + pixel
+# datapath (pixbuf → RGB), GIVEN the same fetched word.
 equiv_remove -gate equiv/w:req %ci t:$equiv %i
+equiv_remove -gate equiv/w:vidadr %ci t:$equiv %i
 opt -full
 equiv_simple
 equiv_induct

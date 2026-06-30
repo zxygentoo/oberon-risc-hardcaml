@@ -205,12 +205,17 @@ let mouse () =
     [ output "msclk_oe" msclk_oe; output "msdat_oe" msdat_oe; output "out" out ]
 ;;
 
-(* VID (Tier 2): two clock domains (pclk raster + clk DMA), and a CDC that deliberately
-   departs from VID60.v (our toggle pulse-synchroniser vs the RTL's async-set [req1]). The
-   gold side needs prep (stub the DCM, [chparam RGBW=6], expose [pclk]); the proof cuts
-   [vidbuf] to a shared free input so the raster + pixel path prove bit-exact given the
-   same word, and excludes [req] (the departure). See [run_vid] +
-   [proofs/vid.ys.template]. *)
+(* VID (Tier 2): two clock domains (pclk raster + clk DMA), and TWO deliberate departures
+   from VID60.v: (1) the framebuffer-fetch CDC (our toggle pulse-synchroniser vs the RTL's
+   async-set [req1]), and (2) the 2-group fetch PREFETCH (our look-ahead [vidadr] +
+   ping-pong banks vs the RTL's single [vidbuf] / current-group address — the board's
+   flicker fix). The gold side needs prep (stub the DCM, [chparam RGBW=6], expose [pclk]);
+   the proof cuts [vidbuf] (our ping-pong read mux, named to pair with the RTL) to a
+   shared free input so the raster + pixel path prove bit-exact GIVEN the same word, and
+   excludes BOTH departed outputs ([req], [vidadr]). The [req] departure is closed by
+   [vid_invariant]; the [vidadr] delivery is checked by a co-located sim test (a formal
+   all-phases version was prototyped but does not converge tractably — col 0 is
+   cross-line; see README "VID prefetch"). See [run_vid] + [proofs/vid.ys.template]. *)
 let vid () =
   let open Signal in
   let i =
@@ -455,12 +460,17 @@ let run_mouse ~work_dir =
   |> report_seq ~name:"mouse" ~v:"MousePM.v" ~kind:"open-drain inout · yosys equiv_induct"
 ;;
 
-(* VID (Tier 2): two-clock, and the framebuffer-fetch CDC deliberately departs from
-   VID60.v (our toggle pulse-synchroniser vs the RTL async-set [req1]), so this is a
-   PARTIAL proof — the raster + pixel datapath ≡ VID60.v, with the CDC handshake
-   cut/excluded (argued by the cosim + the one-req-per-req0 invariant below).
-   [proofs/vid.ys.template] drops the DCM, exposes pclk + cuts vidbuf to a shared free
-   input, and equiv_removes the [req] output. *)
+(* VID (Tier 2): two-clock, with TWO deliberate departures from VID60.v — the framebuffer
+   fetch CDC (toggle synchroniser vs async-set [req1]) and the 2-group prefetch
+   (look-ahead [vidadr] + ping-pong banks vs single [vidbuf]). So this is a PARTIAL proof:
+   the raster + pixel datapath ≡ VID60.v GIVEN the same fetched word, with BOTH departed
+   outputs cut/ excluded. [proofs/vid.ys.template] drops the DCM, exposes pclk, cuts
+   [vidbuf] (our read mux, named to pair with the RTL) to a shared free input, and
+   equiv_removes [req] and [vidadr]. The [req] departure is closed by [vid_invariant]; the
+   [vidadr] delivery (the look-ahead reaches pixbuf with the right word) is checked by the
+   co-located sim test "each column displays its own framebuffer word"; a formal
+   all-phases version was prototyped but does not converge tractably (README "VID
+   prefetch"). *)
 let run_vid ~work_dir =
   Yosys_equiv.run_proof
     ~work_dir
@@ -471,11 +481,11 @@ let run_vid ~work_dir =
     ()
   |> report
        ~ok:
-         "vid: EQUIVALENT — raster + pixel datapath proven, CDC fetch handshake \
-          excluded  (vs VID60.v, multiclock · CDC cut · yosys equiv_induct)"
+         "vid: EQUIVALENT — raster + pixel datapath proven, CDC + prefetch look-ahead \
+          excluded  (vs VID60.v, multiclock · CDC+prefetch cut · yosys equiv_induct)"
        ~bad:
          "vid: NOT EQUIVALENT — $equiv cells left unproven  (vs VID60.v, multiclock · \
-          CDC cut · yosys equiv_induct)"
+          CDC+prefetch cut · yosys equiv_induct)"
 ;;
 
 (* The VID fetch-CDC invariant — the property the vid proof cuts. Proves [Vid.pulse_sync]

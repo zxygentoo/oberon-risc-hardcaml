@@ -139,13 +139,15 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   let buf0 = reg ~enable:(valid &: ~:wpar) cspec i.viddata -- "buf0" in
   let buf1 = reg ~enable:(valid &: wpar) cspec i.viddata -- "buf1" in
   (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
-  (* the group consumed at this [xfer] is read from [buf0]/[buf1] by its parity =
-     [hcnt[5]] (the native raster group-parity at [xfer]); it matches the parity the fetch
-     wrote *)
-  let cur_word = mux2 (bit hcnt ~pos:5) buf1 buf0 in
+  (* the word feeding [pixbuf] this group: the ping-pong bank selected by parity [hcnt[5]]
+     (the native raster group-parity at [xfer], matching the parity the fetch wrote).
+     Named [vidbuf] — it plays the exact role of VID60.v's [vidbuf] (the word [pixbuf]
+     loads), so the Phase-8 equiv pairs it as the shared cut point (see
+     test/formal/proofs/vid.ys.template). *)
+  let vidbuf = mux2 (bit hcnt ~pos:5) buf1 buf0 -- "vidbuf" in
   let pixbuf =
     reg_fb pspec ~width:32 ~f:(fun p ->
-      mux2 xfer cur_word (concat_msb [ gnd; select p ~high:31 ~low:1 ]))
+      mux2 xfer vidbuf (concat_msb [ gnd; select p ~high:31 ~low:1 ]))
     -- "pixbuf"
   in
   let hs =

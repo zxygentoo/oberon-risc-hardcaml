@@ -214,14 +214,49 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
 - [x] `VID` ≡ `VID60.v` — **done, partial by design** (`run_vid` + `proofs/vid.ys.template`,
   `proofs/vid_stubs.v`). Two clock domains (`pclk` raster + `clk` DMA) ⇒ **multiclock** equiv. Gold prep:
   `VID60.v` makes `pclk` with a Xilinx DCM (a Phase-7 primitive), so we stub + drop the DCM/BUFG and
-  `expose -input pclk` to match our gate; `chparam RGBW=6`. The framebuffer-fetch CDC *deliberately*
-  departs from the RTL (our toggle pulse-synchroniser vs `VID60.v`'s async-set `req1`), so a whole-VID
-  equiv can't close there — we prove **around** it: **cut** `vidbuf` (the fetched word) to a shared
-  free input (so `pixbuf`/`RGB` prove bit-exact *given the same word*) and **exclude** the `req`
-  output via `equiv_remove -gate` (the gold's async-set `$adff` then feeds only the excluded `req`, so
-  it's never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `vidadr/hsync/vsync`) + the
-  pixel datapath ≡ `VID60.v` (79 cells; mutation-checked on raster *and* pixel paths). The fetch CDC
-  itself — the cut part — is closed by a **separate property proof** (`vid_invariant`, below).
+  `expose -input pclk` to match our gate; `chparam RGBW=6`. **Two** parts of our port *deliberately*
+  depart from the RTL, so a whole-VID equiv can't close — we prove **around** both: (1) the
+  framebuffer-fetch **CDC** (our toggle pulse-synchroniser vs `VID60.v`'s async-set `req1`), and (2) the
+  2-group **prefetch** (our look-ahead `vidadr` + ping-pong banks `buf0`/`buf1` vs the RTL's single
+  `vidbuf` / current-group address — the Nexys-4 flicker fix). We **cut** `vidbuf` (the word `pixbuf`
+  loads — on our side the ping-pong read mux, *named* `vidbuf` to pair with the RTL register) to a
+  shared free input, so `pixbuf`/`RGB` prove bit-exact *given the same word*; and **exclude** BOTH
+  departed outputs `req` and `vidadr` via `equiv_remove -gate` (each gold cone then feeds only its
+  excluded output, never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `hsync/vsync`) + the
+  pixel datapath (`pixbuf` → `RGB`) ≡ `VID60.v`, given the same fetched word (mutation-checked on raster
+  *and* pixel paths). The two cut parts are closed separately: the CDC by the `vid_invariant` property
+  proof (below); the prefetch *delivery* as noted next.
+
+- **VID prefetch delivery** — *investigated, left to the sim test by design* (the `vidadr` cut above).
+  The equiv proves the display is correct *given the right word*; a delivery proof would close the cut by
+  showing the 2-group prefetch *delivers* the right word — the word reaching `pixbuf` equals
+  `Org+{~vcnt,col}` (what `VID60.v` fetches for that screen position). It **is verified** by the
+  co-located sim test "vid — prefetch look-ahead: each column displays its own framebuffer word"
+  (`lib/vid.ml`): an address-echoing memory (`viddata = vidadr`) so each displayed word reconstructs to
+  the address it came from, asserted equal to `Org+{~vcnt,col}` — exhaustive over columns, *single*
+  clk/pclk phase.
+
+  A full **formal** all-phases version was prototyped (echo DUT + a `vid_invariant`-style monitor:
+  `expose` the named `hcnt`/`vcnt`/`vidbuf`/`next_col`, ghost `bank*_valid` primed-guard, clock fairness,
+  `yosys-smtbmc -i` k-induction). It elaborates and runs, and inspection of the counterexamples confirms
+  the **property is true** — every CEX is an unreachable inductive-start state (a "valid" bank holding a
+  garbage word whose fill is outside the window). But k-induction does **not converge in tractable time**,
+  for two structural reasons, so it is not wired into `@formal`:
+  1. **Column 0 is cross-line; the frame's first col-0 is cross-frame.** A column's word is fetched at
+     `req0(col-1)`; for col 0 that is the *previous line's* last group (the look-ahead wrap), and for
+     `vcnt=0`/col 0 it is the *previous frame's*. The fill→read span is then hundreds (a line) to ~38
+     lines (a frame) of pixels — distances no k-induction window can bridge. (The CEXs land exactly here:
+     `vcnt=0,col=0`.) This is intrinsic to the prefetch — it deliberately fetches col 0 a line early.
+  2. **Even within-line (cols 1..31, ~63 px / 2-group fill→read), `k` is impractical.** `clk2fflogic`'s
+     multiclock granularity needs `k > 256` (z3 minutes-to-tens-of-minutes per run) to span the fill —
+     far heavier than `vid_invariant`'s k=48, for a slower, marginal check.
+
+  And the marginal value is modest: `vid_invariant` already proves the *phase*-sensitive part (the CDC,
+  all phases), the equiv proves the datapath, and the sim test covers the addressing *states*. So delivery
+  stays sim-covered. A future attempt that wanted it formal would likely fix the clk:pclk ratio (a
+  single-phase model, relying on `vid_invariant` for phases) to shrink `k` for cols 1..31 — but col 0 /
+  frame-top would remain beyond k-induction and need a (CDC-entangled, hence awkward) characterising
+  invariant.
 - [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` +
   `proofs/vid_invariant.ys.template`, `proofs/vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
   synchroniser vs the async-set `req1`), so equiv can't touch it — but the *protocol* is provable:
