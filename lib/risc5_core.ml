@@ -495,12 +495,20 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
    so the slow memory looks single-cycle to the core (AGENT.md §3). [vdd] ⇒ byte-identical
    to the bare RTL port. *)
 let create ?(ce = vdd) ?(fast_mul = false) i =
-  (* [fast_mul] (Phase 9, AGENT.md §5) swaps just the iterative 33-cycle multiplier for
-     the combinational DSP one ([Multiplier.create_opt], proven bit-identical) through the
-     units seam — everything else, and the default [create], stays the faithful port. *)
+  (* [fast_mul] (Phase 9, AGENT.md §5) swaps the two iterative shift-add multipliers — the
+     integer [Multiplier] (33 cycles) and the FP [Fp_multiplier] mantissa engine (25) —
+     for their combinational DSP variants ([create_opt], each proven bit-identical)
+     through the units seam. Everything else, and the default [create], stays the faithful
+     port. *)
   let units = Units.with_ce ce in
   let units =
-    if fast_mul then { units with multiplier = Multiplier.create_opt ~ce } else units
+    if fast_mul
+    then
+      { units with
+        multiplier = Multiplier.create_opt ~ce
+      ; fp_multiplier = Fp_multiplier.create_opt ~ce
+      }
+    else units
   in
   create_with_units ~ce ~units i
 ;;

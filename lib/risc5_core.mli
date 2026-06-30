@@ -65,10 +65,11 @@ end
     AGENT.md §3). The default leaves the core byte-identical to the bare RTL port — the
     sim SoC never drives it.
 
-    [?fast_mul] (default [false], Phase 9 — AGENT.md §5) swaps the iterative 33-cycle
-    multiplier for the combinational DSP {!Multiplier.create_opt} (proven bit-identical
-    via the differential qcheck) through the {!Units} seam; the default keeps the
-    faithful, Phase-8-proven unit. Everything else is unchanged. *)
+    [?fast_mul] (default [false], Phase 9 — AGENT.md §5) swaps both shift-add multipliers
+    — the integer {!Multiplier} and the FP {!Fp_multiplier} mantissa engine — for their
+    combinational DSP variants ({!Multiplier.create_opt} / {!Fp_multiplier.create_opt},
+    each proven bit-identical via its differential qcheck) through the {!Units} seam; the
+    default keeps the faithful, Phase-8-proven units. Everything else is unchanged. *)
 val create : ?ce:Signal.t -> ?fast_mul:bool -> Signal.t I.t -> Signal.t O.t
 
 (** The eight submodule constructors the core wires up — the modules [RISC5.v]

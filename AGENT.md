@@ -229,8 +229,18 @@ the free fix if the clock ever passes ~54 MHz); the board boot checkpoint + visu
 `fast_mul`; and on **real hardware** it boots Oberon to the desktop and **rebuilds the entire Extended
 Oberon system with no traps**. The default core stays byte-identical — all Phase 0–8 gates
 (`runtest`/`@cosim`/`@formal`/`@boot_checkpoint{,_board}`/`@visual_golden`) green with the seam inert
-at `fast_mul=false`. DIV stays iterative (Newton-Raphson deferred); the FP units (`*+` for
-`FPMultiplier`, bit-exact-preservable) are the next DSP candidates.
+at `fast_mul=false`.
+
+The same `?fast_mul` flag now also swaps the **FP multiplier**: `Fp_multiplier.create_opt` expresses
+`FPMultiplier.v`'s 24-iteration mantissa loop as one unsigned 24×24 `*:` (→ DSP48), reusing the
+exponent/round wrapper (factored into a shared `pack`) verbatim — so bit-exactness again reduces to
+"same `P`", proven by its own differential qcheck (20k cases) against the formally-proven iterative
+unit. `@formal` still closes `create ≡ FPMultiplier.v` after the `pack` refactor. Synth now infers
+**6 DSP48E1** (4 integer + 2 FP) and 50 MHz still closes (WNS +0.897 ns — the FP multiply, being
+`regfile → 2×DSP48E1 → round → reg`, is now the tightest path); boots Oberon clean to desktop on
+hardware. **Remaining:** DIV and `FPDivider` stay iterative — division has no DSP primitive, so the
+real win is Newton-Raphson (reciprocal refinement *using* these DSP multipliers), a genuine algorithm
+change with delicate bit-exactness — a deferred project, not low-hanging like the two multiplies.
 
 ---
 
