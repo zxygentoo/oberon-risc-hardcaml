@@ -49,3 +49,13 @@ end
 (** [create] is the [MUL] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
     simulation. [?ce] is the board clock-enable (default [vdd]); see {!Divider.create}. *)
 val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+(** [create_opt] — the Phase-9 optimised drop-in for {!create} (AGENT.md §5): the same
+    32×32→64 multiply expressed as a single signed 33×33 multiply, which Vivado lowers
+    onto the board's DSP48 slices. {b Combinational} — it retires in one cycle ([stall]
+    tied low) instead of {!create}'s 33. Bit-identical to {!create} for every input: it
+    reproduces [Multiplier.v]'s §8 sign handling ([y] always signed, [x] signed iff [u]),
+    proven by the co-located differential qcheck against the formally-proven {!create}
+    rather than re-formalised. [?ce] is accepted for signature compatibility but ignored
+    (no state). *)
+val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
