@@ -15,7 +15,7 @@
     (the board boot checkpoint); on the board the Verilog top wires IOBUFs. The
     synthesizable design here holds no main-memory array. [contents] is the boot-ROM
     image; [clocks_per_ms] the ms-timer prescaler (25000 = 1 ms at 25 MHz);
-    [read_cycles]/[write_cycles] the PSRAM phase lengths. *)
+    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2). *)
 
 open Hardcaml
 

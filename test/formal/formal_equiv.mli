@@ -29,3 +29,10 @@ val check
   -> top_module:string
   -> ours:Circuit.t
   -> result
+
+(** [check_circuits ~ours ~spec] proves [ours] computes the identical combinational
+    function as [spec] — two in-process Hardcaml circuits, [Sec]-checked by z3 (no [.v]
+    import). For a property checked against a spec written in Hardcaml rather than a
+    reference [.v] (e.g. the VID look-ahead address ≡ a geometry spec). [ours] and [spec]
+    must share port names. *)
+val check_circuits : ours:Circuit.t -> spec:Circuit.t -> result

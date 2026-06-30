@@ -3,8 +3,8 @@
    emitted [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
    boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
 
-   Parameters baked into the netlist: 25000 clocks/ms (1 ms at 25 MHz); 3-cycle PSRAM
-   phases (120 ns > the chip's 70 ns at 25 MHz). Tune read/write cycles here if hardware
+   Parameters baked into the netlist: 25000 clocks/ms (1 ms at 25 MHz); 2-cycle PSRAM
+   phases (80 ns > the chip's 70 ns at 25 MHz). Tune read/write cycles here if hardware
    needs it. *)
 
 open Hardcaml

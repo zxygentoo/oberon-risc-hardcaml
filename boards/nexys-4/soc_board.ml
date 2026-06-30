@@ -57,12 +57,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create
-  ~contents
-  ?(clocks_per_ms = 25000)
-  ?(read_cycles = 3)
-  ?(write_cycles = 3)
-  (i : _ I.t)
+let create ~contents ?(clocks_per_ms = 25000) ?read_cycles ?write_cycles (i : _ I.t)
   : _ O.t
   =
   let spec = Reg_spec.create () ~clock:i.clock in
@@ -86,9 +81,11 @@ let create
      does). *)
   let viddata = wire 32 in
   let vid_ack = wire 1 in
+  let vidpar = wire 1 in
   let vid =
     Vid.create
       ~viddata_valid:vid_ack
+      ~viddata_par:vidpar
       { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
   let vidreq = vid.req -- "vidreq" in
@@ -126,8 +123,8 @@ let create
   (* ── PSRAM controller / CPU+video arbiter ── *)
   let cellram =
     Cellram.create
-      ~read_cycles
-      ~write_cycles
+      ?read_cycles
+      ?write_cycles
       { Cellram.I.clock = i.clock
       ; mem_pend = core.mem_pend
       ; cpu_internal
@@ -143,6 +140,7 @@ let create
   assign core_ce (cellram.ce -- "core_ce");
   assign viddata cellram.viddata;
   assign vid_ack cellram.vid_ack;
+  assign vidpar cellram.vidpar;
   let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
   (* ── SPI master (words 4/5) ── *)
   let spi_ctrl = Always.Variable.reg spec ~width:4 in
@@ -292,4 +290,222 @@ let create
   ; ram_ub_n = cellram.ub_n
   ; ram_lb_n = cellram.lb_n
   }
+;;
+
+(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
+   [Soc_board] is [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the
+   core on a clock-enable — a hand-copy of soc.ml's peripheral block that can drift from
+   it. These mirror soc.ml's own co-located integration tests (a hand-assembled boot stub
+   in the boot ROM, run on the interpreter, read back through the core's named [regfile] —
+   no oracle, so the board library stays oracle-free, §3/§6), here closed with the
+   behavioural {!Cellram_model} on the PSRAM pins. They guard the board-specific paths:
+   the Cellram memory round-trip, the free-running (non-ce-gated) timer under wait-states,
+   and the MMIO read/write path through the on-chip fast path. (The full boot through this
+   SoC is the opt-in [@boot_checkpoint_board].) *)
+
+module Sb_I = I
+
+let sb_create = create
+
+module Tb = struct
+  (* the board SoC closed with the behavioural cellular-RAM on its pins; PSRAM phases
+     small (the model answers at once — only the control flow is under test). [leds] is
+     surfaced for the MMIO test; the core's [regfile]/[cnt1]/[core_ce] are reached by name
+     via [trace_all]. *)
+  module I = struct
+    type 'a t =
+      { clock : 'a
+      ; pclk : 'a [@bits 1]
+      ; rst_n : 'a [@bits 1]
+      ; miso : 'a [@bits 1]
+      ; rxd : 'a [@bits 1]
+      ; btn : 'a [@bits 4]
+      ; sw : 'a [@bits 8]
+      ; gpio_in : 'a [@bits 8]
+      ; ps2c : 'a [@bits 1]
+      ; ps2d : 'a [@bits 1]
+      ; msclk : 'a [@bits 1]
+      ; msdat : 'a [@bits 1]
+      }
+    [@@deriving hardcaml]
+  end
+
+  module O = struct
+    type 'a t = { leds : 'a [@bits 8] } [@@deriving hardcaml]
+  end
+
+  let create ~contents ?clocks_per_ms (i : _ I.t) : _ O.t =
+    let dq = wire 16 in
+    let soc =
+      sb_create
+        ~contents
+        ?clocks_per_ms
+        ~read_cycles:2
+        ~write_cycles:2
+        { Sb_I.clock = i.clock
+        ; pclk = i.pclk
+        ; rst_n = i.rst_n
+        ; miso = i.miso
+        ; rxd = i.rxd
+        ; btn = i.btn
+        ; sw = i.sw
+        ; gpio_in = i.gpio_in
+        ; ps2c = i.ps2c
+        ; ps2d = i.ps2d
+        ; msclk = i.msclk
+        ; msdat = i.msdat
+        ; mem_dq_i = dq
+        }
+    in
+    let m =
+      Cellram_model.create
+        { Cellram_model.I.clock = i.clock
+        ; mem_adr = soc.mem_adr
+        ; mem_dq_o = soc.mem_dq_o
+        ; ce_n = soc.ram_ce_n
+        ; we_n = soc.ram_we_n
+        ; ub_n = soc.ram_ub_n
+        ; lb_n = soc.ram_lb_n
+        }
+    in
+    assign dq m.mem_dq_i;
+    { O.leds = soc.leds }
+  ;;
+end
+
+(* drive every line to its idle level; [pclk] held low (no video DMA contends — these
+   tests exercise the CPU/MMIO paths, not the raster) *)
+let drive_idle (inp : _ Tb.I.t) =
+  let lo = Bits.of_unsigned_int ~width:1 0
+  and hi = Bits.of_unsigned_int ~width:1 1 in
+  inp.pclk := lo;
+  inp.miso := hi;
+  inp.rxd := hi;
+  inp.ps2c := hi;
+  inp.ps2d := hi;
+  inp.msclk := hi;
+  inp.msdat := hi;
+  inp.btn := Bits.of_unsigned_int ~width:4 0;
+  inp.sw := Bits.of_unsigned_int ~width:8 0;
+  inp.gpio_in := Bits.of_unsigned_int ~width:8 0
+;;
+
+let%expect_test "soc_board — fetch ROM, store + load round-trip through PSRAM" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let nop = 0x40080000 (* ADD R0,R0,#0 *) in
+  let prog =
+    [| 0x41000055 (* MOV R1, #0x55 *)
+     ; 0xA1000100 (* ST R1, [R0+0x100] *)
+     ; 0x82000100 (* LD R2, [R0+0x100] *)
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (Tb.create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  drive_idle inp;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  (* PSRAM accesses are multi-cycle, so allow generously more than soc.ml's 20 *)
+  for _ = 1 to 120 do
+    Cyclesim.cycle sim
+  done;
+  let r k = Cyclesim.Memory.to_int regfile ~address:k in
+  Stdlib.Printf.printf "R1=0x%X  R2=0x%X\n" (r 1) (r 2);
+  [%expect {| R1=0x55  R2=0x55 |}]
+;;
+
+let%expect_test "soc_board — ms timer counts clocks, not ce cycles (free-running under \
+                 wait-states)"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* a tight loop of back-to-back PSRAM loads, so the core is frozen ([ce] low) most
+     cycles. The free-running ms timer must still tick on the *clock* — a ce-gated timer
+     would badly undercount. *)
+  let prog =
+    [| 0x41000100 (* MOV R1, #0x100 *)
+     ; 0x82100000 (* LD R2, [R1] : PSRAM read (multi-cycle) *)
+     ; 0xE7FFFFFE (* B -2 : loop back to the LD *)
+    |]
+  in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:prog ~clocks_per_ms:50)
+  in
+  let inp = Cyclesim.inputs sim in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  let core_ce =
+    match Cyclesim.lookup_node_or_reg_by_name sim "core_ce" with
+    | Some n -> n
+    | None -> failwith "soc_board timer test: no traced node core_ce"
+  in
+  drive_idle inp;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  let total = 1000 in
+  let ce_high = ref 0 in
+  for _ = 1 to total do
+    Cyclesim.cycle sim;
+    if Cyclesim.Node.to_int core_ce = 1 then Int.incr ce_high
+  done;
+  Stdlib.Printf.printf
+    "after %d clocks @ 50 clk/ms: cnt1 = %d   (CPU advanced on only %d ce cycles — \
+     wait-stated: %b)\n"
+    total
+    (Cyclesim.Reg.to_int cnt1)
+    !ce_high
+    (!ce_high < total);
+  [%expect
+    {| after 1000 clocks @ 50 clk/ms: cnt1 = 20   (CPU advanced on only 373 ce cycles — wait-stated: true) |}]
+;;
+
+let%expect_test "soc_board — MMIO word 1: read {btn, sw}; store latches the LEDs" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let nop = 0x40080000 in
+  let prog =
+    [| 0x640000FF (* MOV' R4, #0xFF<<16 : R4 = 0xFF0000 *)
+     ; 0x4446FFC4 (* IOR R4, R4, #0xFFC4 : R4 = 0xFFFFC4 (word 1) *)
+     ; 0x82400000 (* LD R2, [R4] : R2 = {btn, sw} *)
+     ; 0x430000AB (* MOV R3, #0xAB *)
+     ; 0xA3400000 (* ST R3, [R4] : Lreg := 0xAB *)
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+     ; nop
+    |]
+  in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all (Tb.create ~contents:prog) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  drive_idle inp;
+  inp.sw := Bits.of_unsigned_int ~width:8 0x0F;
+  inp.btn := Bits.of_unsigned_int ~width:4 0x5;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  for _ = 1 to 120 do
+    Cyclesim.cycle sim
+  done;
+  let r k = Cyclesim.Memory.to_int regfile ~address:k in
+  (* {btn=5, sw=0x0F} = (5<<8) | 0x0F = 0x50F; the store latched 0xAB onto the LEDs *)
+  Stdlib.Printf.printf
+    "R2 (switches {btn,sw}) = 0x%X   leds = 0x%X\n"
+    (r 2)
+    (Bits.to_unsigned_int !(outp.leds));
+  [%expect {| R2 (switches {btn,sw}) = 0x50F   leds = 0xAB |}]
 ;;
