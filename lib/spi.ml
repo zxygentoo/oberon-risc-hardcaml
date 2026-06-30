@@ -1,11 +1,19 @@
 (* Public API and behaviour spec live in [spi.mli].
 
    Port of [SPI.v] (1267 B). The hardware idea: one 32-bit shift register [shreg], driven
-   by a 6-bit clock divider [tick] and a 5-bit [bitcnt], serves two SD-card rates from one
-   datapath. SLOW (init): [endtick] at tick==63 (clk÷64), [endbit] at bitcnt==7, [sclk] =
-   tick[5] — a clean 50%-duty divided clock. FAST (bulk): [endtick] at tick==2 (clk÷3),
-   [endbit] at bitcnt==31, [sclk] = the [endtick] pulse. A bit advances on [endtick]; the
-   transfer ends — and [rdy] re-raises — on [endtick & endbit].
+   by a clock divider [tick] and a 5-bit [bitcnt], serves two SD-card rates from one
+   datapath. SLOW (init): [endtick] at tick==2^slow_div_log2-1 (clk÷2^slow_div_log2),
+   [endbit] at bitcnt==7, [sclk] = tick[slow_div_log2-1] — a clean 50%-duty divided clock.
+   FAST (bulk): [endtick] at tick==2 (clk÷3), [endbit] at bitcnt==31, [sclk] = the
+   [endtick] pulse. A bit advances on [endtick]; the transfer ends — and [rdy] re-raises —
+   on [endtick & endbit].
+
+   [slow_div_log2] (default 6) sets the slow-divider depth. 6 = clk÷64 = [SPI.v] exactly —
+   the value the @formal proof and the cosim pin, and 390.6 kHz at 25 MHz (just under the
+   SD 400 kHz init ceiling). The board overrides to 7 (clk÷128) so the init clock stays
+   ≤400 kHz at a 50 MHz system clock (again 390.6 kHz). FAST is untouched: clk÷3 = 16.7
+   MHz at 50 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needed retuning
+   (PHASE9 §SPI).
 
    [mosi] taps [shreg] bit 7 (bytes leave MSbit first); [miso] is sampled into the
    register on [endtick]. The shift is NOT a plain [shreg<<1]: it is four byte-lanes
@@ -45,10 +53,13 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
+let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
+  (* tick must hold the slow terminal 2^slow_div_log2-1 and the fast terminal 2, so the
+     counter is [slow_div_log2] bits wide (>= 3 in practice; 6 = SPI.v, 7 = clk÷128
+     board). *)
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
-  let tick = Always.Variable.reg spec ~width:6 in
+  let tick = Always.Variable.reg spec ~width:slow_div_log2 in
   let bitcnt = Always.Variable.reg spec ~width:5 in
   let rdy = Always.Variable.reg spec ~width:1 in
   let shreg = Always.Variable.reg spec ~width:32 in
@@ -61,11 +72,15 @@ let create (i : _ I.t) : _ O.t =
   let shreg_v = shreg.value -- "spi_shreg" in
   let bit n = select shreg_v ~high:n ~low:n in
   (* combinational: end-of-bit / end-of-word, line drivers, received data *)
-  let endtick = mux2 i.fast (tick_v ==:. 2) (tick_v ==:. 63) in
+  let slow_endtick = tick_v ==:. (1 lsl slow_div_log2) - 1 in
+  let endtick = mux2 i.fast (tick_v ==:. 2) slow_endtick in
   let endbit = mux2 i.fast (bitcnt_v ==:. 31) (bitcnt_v ==:. 7) in
   let idle = reset |: rdy_v in
   let mosi = mux2 idle vdd (bit 7) in
-  let sclk = mux2 idle gnd (mux2 i.fast endtick (select tick_v ~high:5 ~low:5)) in
+  (* slow [sclk] is the divider's top bit (50% duty at clk÷2^slow_div_log2); fast is the
+     [endtick] pulse *)
+  let slow_sclk = select tick_v ~high:(slow_div_log2 - 1) ~low:(slow_div_log2 - 1) in
+  let sclk = mux2 idle gnd (mux2 i.fast endtick slow_sclk) in
   let data_rx = mux2 i.fast shreg_v (uresize (select shreg_v ~high:7 ~low:0) ~width:32) in
   (* the four chained byte-lanes: each [{lane[6:0], next-lane-MSB}]; lane 3 takes MISO,
      and lane 0's incoming bit is shreg[15] (fast) or MISO (slow) *)
@@ -84,7 +99,7 @@ let create (i : _ I.t) : _ O.t =
   in
   Always.(
     compile
-      [ tick <-- mux2 (reset |: rdy_v |: endtick) (zero 6) (tick_v +:. 1)
+      [ tick <-- mux2 (reset |: rdy_v |: endtick) (zero slow_div_log2) (tick_v +:. 1)
       ; rdy <-- mux2 (reset |: (endtick &: endbit)) vdd (mux2 i.start gnd rdy_v)
       ; bitcnt
         <-- mux2
@@ -144,6 +159,22 @@ let%expect_test "spi — slow byte loopback: data round-trips, clk÷64 × 8 bits
   let cycles, rx = loopback_transfer sim inp outp ~fast:false ~data:0xA5 in
   Stdlib.Printf.printf "cycles=%d  data_rx=0x%X\n" cycles rx;
   [%expect {| cycles=512  data_rx=0xA5 |}]
+;;
+
+let%expect_test "spi — slow byte loopback at clk÷128 (board 50 MHz): 8 bits, 2× the \
+                 cycles"
+  =
+  (* slow_div_log2:7 = the Nexys-4 50 MHz config; halves the SD-init clock to 390.6 kHz.
+     Same data, same handshake, just 128 (not 64) clocks per bit -> 1024 cycles for 8
+     bits. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create (create ~slow_div_log2:7) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  reset_then_idle sim inp;
+  let cycles, rx = loopback_transfer sim inp outp ~fast:false ~data:0xA5 in
+  Stdlib.Printf.printf "cycles=%d  data_rx=0x%X\n" cycles rx;
+  [%expect {| cycles=1024  data_rx=0xA5 |}]
 ;;
 
 let%expect_test "spi — fast word loopback: data round-trips, clk÷3 × 32 bits" =

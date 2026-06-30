@@ -57,7 +57,13 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ~contents ?(clocks_per_ms = 25000) ?read_cycles ?write_cycles (i : _ I.t)
+let create
+  ~contents
+  ?(clocks_per_ms = 25000)
+  ?read_cycles
+  ?write_cycles
+  ?(spi_slow_div_log2 = 6)
+  (i : _ I.t)
   : _ O.t
   =
   let spec = Reg_spec.create () ~clock:i.clock in
@@ -157,6 +163,7 @@ let create ~contents ?(clocks_per_ms = 25000) ?read_cycles ?write_cycles (i : _ 
       ]);
   let spi =
     Spi.create
+      ~slow_div_log2:spi_slow_div_log2
       { Spi.I.clock = i.clock
       ; rst_n = i.rst_n
       ; start = core.wr &: ioenb &: (iowadr ==:. 4)

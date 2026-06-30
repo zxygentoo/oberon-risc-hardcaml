@@ -15,7 +15,9 @@
     (the board boot checkpoint); on the board the Verilog top wires IOBUFs. The
     synthesizable design here holds no main-memory array. [contents] is the boot-ROM
     image; [clocks_per_ms] the ms-timer prescaler (25000 = 1 ms at 25 MHz);
-    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2). *)
+    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2);
+    [spi_slow_div_log2] the SPI slow-divider depth (default 6 = clk÷64 = {!Spi}/[SPI.v];
+    the 50 MHz build passes 7 = clk÷128 to keep SD init ≤400 kHz). *)
 
 open Hardcaml
 
@@ -73,5 +75,6 @@ val create
   -> ?clocks_per_ms:int
   -> ?read_cycles:int
   -> ?write_cycles:int
+  -> ?spi_slow_div_log2:int
   -> Signal.t I.t
   -> Signal.t O.t
