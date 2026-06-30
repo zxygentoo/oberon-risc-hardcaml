@@ -112,33 +112,8 @@
  (modules risc_core_dump)
  (libraries risc5 oracle hardcaml unix sd_bridge))
 
-; Phase-9 core microbenchmark (AGENT.md §5): baseline cycles/op for the iterative MUL/DIV,
-; the A/B gauge for the DSP-multiplier experiment. Run: dune exec test/bench_core.exe
-; or all-at-once: dune build @bench
-
-(executable
- (name bench_core)
- (modules bench_core)
- (libraries risc5 hardcaml))
-
-(rule
- (alias bench)
- (action
-  (run ./bench_core.exe)))
-
-; Phase-9 boot profiler (AGENT.md §5): dynamic MUL/DIV count over reset -> idle desktop,
-; the Amdahl context for the DSP-multiplier experiment. Run: dune build @profile_boot
-
-(executable
- (name profile_boot)
- (modules profile_boot)
- (libraries oracle boot_checkpoint_common))
-
-(rule
- (alias profile_boot)
- (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
- (action
-  (run ./profile_boot.exe)))
+; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
+; their own dune — driven by `dune build @bench` / `@profile_boot`.
 
 ; Phase 7: emit the board SoC (Nexys4_board.Soc_board) as Verilog with the boot ROM baked in
 ; — boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v, which
