@@ -166,6 +166,12 @@ Each one-off is its own runner (not a list row) + its own `proofs/<name>.ys.temp
   the SMT problem: emit → `clk2fflogic` → `write_smt2`; then `yosys-smtbmc -i -s z3 -t <k>`,
   k-induction — the engine SymbiYosys wraps, no `sby` needed). An unbounded proof over all clock
   interleavings; use when there's a property to prove but no equivalence.
+- **Combinational vs a Hardcaml spec** (a unit with no reference `.v` — so far the VID look-ahead
+  address): build both the real logic and an independently-written *spec* as in-process Hardcaml
+  circuits with matching port names, and `Formal_equiv.check_circuits ~ours ~spec` SAT-checks them
+  with z3 (no `.v` import, no yosys). See `vid_addr_ours` / `vid_addr_spec` + `run_vid_addr`. Use when
+  the property is combinational but there's no Wirth original to import (the spec is the contract, like
+  `registers_spec.v` but written in Hardcaml).
 
 The datapath + core layer is closed: both shifters (combinational, z3) and all five iterative units
 (MUL/DIV + the three FP units) against their standalone `.v`; the register file against its
@@ -174,10 +180,14 @@ behavioural `registers_spec.v`; and the **whole core glue** — including the **
 and assumed-equivalent on the leaf proofs above. And the **Tier-1 peripherals** (RS232R/T, SPI,
 PS2) are proven ≡ their `.v` by the same sequential recipe — the exhaustive upgrade of their
 Phase-6a cosim — plus **Tier 2**: the **Mouse** through an open-drain `inout` shim, and **VID**'s
-raster + pixel datapath through a multiclock proof that cuts around its (deliberate) CDC departure,
-with that departure's **fetch invariant** (one `req` per `req0`, no loss, no spurious — all clk/pclk
-phases, all states) closed separately by `yosys-smtbmc` k-induction. **16 checks**, all proven;
-every one mutation-checked.
+raster + pixel datapath through a multiclock proof that cuts around its **two** deliberate departures
+(the CDC and the 2-group prefetch). Those cuts are closed separately: the CDC's **fetch invariant**
+(one `req` per `req0`, no loss, no spurious — all clk/pclk phases, all states) by `yosys-smtbmc`
+k-induction (`vid_invariant`); the prefetch's **delivery** by decomposition — the look-ahead address
+≡ a geometry spec (`vid_addr`, combinational Sec/z3, all `(hcnt,vcnt)`) + that same `vid_invariant`
+for timing + a reviewed composition lemma (a weaker tier — the one place a hand argument glues the
+mechanized pieces; see "VID prefetch delivery" below). **17 checks**, all proven; every one
+mutation-checked.
 
 ## Peripheral modules — Tier 1 + Tier 2 done (VID partial by design)
 
@@ -225,38 +235,63 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   excluded output, never SAT-solved). Proven: the raster (`hcnt/vcnt/hs/vs/blank` → `hsync/vsync`) + the
   pixel datapath (`pixbuf` → `RGB`) ≡ `VID60.v`, given the same fetched word (mutation-checked on raster
   *and* pixel paths). The two cut parts are closed separately: the CDC by the `vid_invariant` property
-  proof (below); the prefetch *delivery* as noted next.
+  proof (below); the prefetch *delivery* by decomposition (next).
 
-- **VID prefetch delivery** — *investigated, left to the sim test by design* (the `vidadr` cut above).
-  The equiv proves the display is correct *given the right word*; a delivery proof would close the cut by
-  showing the 2-group prefetch *delivers* the right word — the word reaching `pixbuf` equals
-  `Org+{~vcnt,col}` (what `VID60.v` fetches for that screen position). It **is verified** by the
-  co-located sim test "vid — prefetch look-ahead: each column displays its own framebuffer word"
-  (`lib/vid.ml`): an address-echoing memory (`viddata = vidadr`) so each displayed word reconstructs to
-  the address it came from, asserted equal to `Org+{~vcnt,col}` — exhaustive over columns, *single*
-  clk/pclk phase.
+- **VID prefetch delivery** — *formalized by decomposition* (closing the `vidadr` cut above). The equiv
+  proves the display is correct *given the right word*; **delivery** is the claim that the 2-group prefetch
+  *delivers* that word — the word loaded into `pixbuf` for the visible group at screen position `(v,c)`
+  equals `Org+{~v,c}` (what `VID60.v` fetches there). A single end-to-end k-induction of this does **not**
+  converge (it is exactly the spanning invariant **D** below), so we prove it as **three machine-checked
+  pieces + one composition lemma**:
 
-  A full **formal** all-phases version was prototyped (echo DUT + a `vid_invariant`-style monitor:
-  `expose` the named `hcnt`/`vcnt`/`vidbuf`/`next_col`, ghost `bank*_valid` primed-guard, clock fairness,
-  `yosys-smtbmc -i` k-induction). It elaborates and runs, and inspection of the counterexamples confirms
-  the **property is true** — every CEX is an unreachable inductive-start state (a "valid" bank holding a
-  garbage word whose fill is outside the window). But k-induction does **not converge in tractable time**,
-  for two structural reasons, so it is not wired into `@formal`:
-  1. **Column 0 is cross-line; the frame's first col-0 is cross-frame.** A column's word is fetched at
-     `req0(col-1)`; for col 0 that is the *previous line's* last group (the look-ahead wrap), and for
-     `vcnt=0`/col 0 it is the *previous frame's*. The fill→read span is then hundreds (a line) to ~38
-     lines (a frame) of pixels — distances no k-induction window can bridge. (The CEXs land exactly here:
-     `vcnt=0,col=0`.) This is intrinsic to the prefetch — it deliberately fetches col 0 a line early.
-  2. **Even within-line (cols 1..31, ~63 px / 2-group fill→read), `k` is impractical.** `clk2fflogic`'s
-     multiclock granularity needs `k > 256` (z3 minutes-to-tens-of-minutes per run) to span the fill —
-     far heavier than `vid_invariant`'s k=48, for a slower, marginal check.
+  1. **Addressing** — `vid_addr`, combinational Sec/z3, *all* `(hcnt,vcnt)`. The look-ahead logic
+     `Vid.lookahead` ≡ an independent geometry spec: the request that targets the consume of `(v,c)` —
+     issued at the previous group's `req0` (display-col `c-1`, or the prior line's col 31 when `c=0`) —
+     computes `vidadr = Org+{~v,c}` and write-bank `lsb next_col = c[0]`. (`run_vid_addr`; the *new* check.
+     There is no reference `.v` for the look-ahead — `VID60.v`'s address is the *current* group — so it is
+     proven against a geometry spec we write, register-file-style; the spec uses a different form
+     (5-bit-wrap col, shift/add packing) so the equivalence cross-checks rather than restates. Teeth: drop
+     the `~` on `next_vcnt` ⇒ counterexample.)
+  2. **Routing** — `vid_addr` write side + a definitional read side. Write-bank `= c[0]` (above);
+     read-bank at the consume `= hcnt[5] = c[0]` (definitional: at the `(v,c)` xfer `hcnt[9:5]=c`). Same
+     bank.
+  3. **Timely, unclobbered arrival** — `vid_invariant` + a ping-pong margin. `vid_invariant` proves each
+     `req0` yields exactly one `clk` write pulse `req` — no loss, no duplication, **all phases**. The
+     fill→consume window is ≥ one 32-px group (≈12 `clk`; for `c=0`/frame-top, ≥ a full blanking interval),
+     comfortably past the 3-FF synchroniser, so the write lands before the consume. Same-bank writes are
+     exactly two groups apart (parity alternates) while the consume is one group after its fill, so the next
+     write to `buf[c[0]]` is *after* the consume — nothing clobbers the word in the window, including across
+     the idle blanking hold (no `req0` fires there at all).
 
-  And the marginal value is modest: `vid_invariant` already proves the *phase*-sensitive part (the CDC,
-  all phases), the equiv proves the datapath, and the sim test covers the addressing *states*. So delivery
-  stays sim-covered. A future attempt that wanted it formal would likely fix the clk:pclk ratio (a
-  single-phase model, relying on `vid_invariant` for phases) to shrink `k` for cols 1..31 — but col 0 /
-  frame-top would remain beyond k-induction and need a (CDC-entangled, hence awkward) characterising
-  invariant.
+  **Composition lemma (the glue — a reviewed hand argument).** The consume of `(v,c)` reads
+  `vidbuf = buf[hcnt[5]] = buf[c[0]]` at its xfer (2). By (1) the request that fills `buf[c[0]]` for this
+  group deposited `Org+{~v,c}` (under the echo memory, `mem[Org+{~v,c}]`); by (3) that write happened
+  exactly once, before the consume, and survives unclobbered to it. Hence `vidbuf = mem[Org+{~v,c}]` at the
+  `(v,c)` xfer — delivery. ∎  Pieces (1)+(2)-write are machine-checked over all `(hcnt,vcnt)`, (2)-read is
+  the bit identity, (3)'s phase-sensitive half over all phases; what is **not** mechanized is the remaining
+  counter arithmetic in (3) (the ≥1-group window, the 2-group inter-write spacing) and the *threading* of
+  one specific `req0` to one specific consume — that is this lemma.
+
+  **Status / honesty.** This is a *weaker* tier than the core's assume-guarantee, whose side-condition (no
+  combinational path crosses a submodule boundary) is essentially mechanical; here the glue is a
+  counting/correspondence argument. The co-located sim test "vid — prefetch look-ahead: every column
+  delivers its own word, across rows" (`lib/vid.ml`) cross-validates the *assembled* property at one
+  clk/pclk phase — address-echoing memory, all 32 columns over two consecutive rows (so each row's `c=0`
+  exercises the cross-line wrap), plus a frame-top-gap test showing the one-group transient self-heals.
+  Phase is irrelevant to the pclk-domain addressing (which is why one phase suffices there, and `vid_addr`
+  carries the exhaustiveness over `(hcnt,vcnt)`).
+
+  **Why the composition stays prose — i.e. why not one proof (D).** The thread from fill to consume spans
+  the idle blanking: for `c=0` the word is fetched at the *previous line's* col 31 (≈383 px ≈ 147 `clk`),
+  and the frame's first `c=0` at the *previous frame's* — ≈38 lines. A single inductive proof would have to
+  hold the word stable across that span, i.e. carry the invariant "`buf[p]` = mem of the next parity-`p`
+  group" — and *that invariant is the monolithic delivery proof* **(D)**. It does not converge tractably: a
+  prototype (echo DUT + a `vid_invariant`-style monitor, `yosys-smtbmc -i` k-induction) is *true* on
+  inspection — every counterexample is an unreachable inductive-start state (a "valid" bank whose fill is
+  outside the window, landing exactly at `vcnt=0,col=0`) — but k-induction fails at the inductive step for
+  `k = 96..140` and runs `>6 min` without converging at `k = 256` (`clk2fflogic`'s multiclock granularity
+  makes even the within-line `~63 px` fill need `k > 256`, vs `vid_invariant`'s 48). So D is deliberately
+  not pursued; the decomposition trades that one deep proof for the three shallow checks + this lemma.
 - [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` +
   `proofs/vid_invariant.ys.template`, `proofs/vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
   synchroniser vs the async-set `req1`), so equiv can't touch it — but the *protocol* is provable:

@@ -83,6 +83,37 @@ let pulse_sync ~src_spec ~dst_spec ~pulse =
   (sync1 ^: sync2) -- "req"
 ;;
 
+(* Look-ahead framebuffer addressing — the prefetch's one ADDRESS departure from [VID60.v]
+   (whose [vidadr] is the CURRENT group, [{~vcnt, hcnt[9:5]}]). From the raster position
+   it computes the NEXT consumed 32-px group — next column, wrapping at column 31 to
+   column 0 of the next VISIBLE row, and the last visible row (767) to row 0 (skipping
+   vblank) — and packs its word address [vidadr] = [Org + {~next_vcnt, next_col}]. [wpar]
+   is the ping-pong write parity (= the bank that group's fetch lands in, [lsb next_col]).
+   Purely combinational in [hcnt]/[vcnt]; shared by [create] and the [vid_addr] formal
+   check, which proves it ≡ an independent geometry spec over ALL (hcnt, vcnt) — the
+   addressing half of prefetch delivery (test/formal/README "VID prefetch"). *)
+module Lookahead = struct
+  type 'a t =
+    { next_col : 'a
+    ; next_vcnt : 'a
+    ; vidadr : 'a
+    ; wpar : 'a
+    }
+end
+
+let lookahead ~hcnt ~vcnt =
+  let col = select hcnt ~high:9 ~low:5 -- "col" in
+  let col_last = col ==:. 31 in
+  let next_col = mux2 col_last (zero 5) (col +:. 1) -- "next_col" in
+  let next_vcnt =
+    mux2 col_last (mux2 (vcnt ==:. 767) (zero 10) (vcnt +:. 1)) vcnt -- "next_vcnt"
+  in
+  let vidadr =
+    of_unsigned_int ~width:18 org +: concat_msb [ zero 3; ~:next_vcnt; next_col ]
+  in
+  { Lookahead.next_col; next_vcnt; vidadr; wpar = lsb next_col }
+;;
+
 let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   let pspec = Reg_spec.create () ~clock:i.pclk in
   let cspec = Reg_spec.create () ~clock:i.clk in
@@ -99,17 +130,10 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   (* comparator-free blanking *)
   let vblank = (bit vcnt ~pos:8 &: bit vcnt ~pos:9) -- "vblank" in
   let hblank = bit hcnt ~pos:10 in
-  (* framebuffer column = the 32-px group within the line. The prefetch (see [vid.mli])
-     fetches one group EARLY, so the request targets the NEXT consumed group: the next
-     column, wrapping at column 31 to column 0 of the next VISIBLE row — and the last
-     visible row (767) wraps to row 0, skipping vblank. This is the one address departure
-     from [VID60.v] (whose [vidadr] is just the current [{~vcnt, hcnt[9:5]}]). *)
-  let col = select hcnt ~high:9 ~low:5 -- "col" in
-  let col_last = col ==:. 31 in
-  let next_col = mux2 col_last (zero 5) (col +:. 1) -- "next_col" in
-  let next_vcnt =
-    mux2 col_last (mux2 (vcnt ==:. 767) (zero 10) (vcnt +:. 1)) vcnt -- "next_vcnt"
-  in
+  (* look-ahead framebuffer addressing (the prefetch's address departure from [VID60.v] —
+     see [lookahead] above and [vid.mli]): the request targets the NEXT consumed group, so
+     [la.vidadr] is the look-ahead word address and [la.wpar] the ping-pong write bank. *)
+  let la = lookahead ~hcnt ~vcnt in
   (* request the next word at the start of each visible 32-px group; transfer it 31 px on *)
   let req0 = (sel_bottom hcnt ~width:5 ==:. 0 &: ~:hblank &: ~:vblank) -- "req0" in
   let xfer = sel_bottom hcnt ~width:5 ==:. 31 in
@@ -131,11 +155,11 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
      it valid the cycle [req] fires (the default); the board's [Cellram] returns it some
      cycles later on its [vid_ack]. [viddata_par] selects the write buffer: [Cellram]
      supplies the parity of the fetch it is COMPLETING (robust to a late, contended
-     completion landing in a later group); the default — the live request parity
-     [lsb next_col] — is exact for the single-cycle path, where the fetch retires in its
-     own group. *)
+     completion landing in a later group); the default — the live request parity [la.wpar]
+     (= [lsb next_col]) — is exact for the single-cycle path, where the fetch retires in
+     its own group. *)
   let valid = Option.value viddata_valid ~default:req in
-  let wpar = Option.value viddata_par ~default:(lsb next_col) in
+  let wpar = Option.value viddata_par ~default:la.wpar in
   let buf0 = reg ~enable:(valid &: ~:wpar) cspec i.viddata -- "buf0" in
   let buf1 = reg ~enable:(valid &: wpar) cspec i.viddata -- "buf1" in
   (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
@@ -161,14 +185,16 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
     reg_fb pspec ~width:1 ~f:(fun b -> mux2 xfer (vblank |: hblank) b) -- "blank"
   in
   (* ── outputs ───────────────────────────────────────────────────────────────── *)
-  (* look-ahead framebuffer word address (one group early — see [next_col]/[next_vcnt]) *)
-  let vidadr =
-    of_unsigned_int ~width:18 org +: concat_msb [ zero 3; ~:next_vcnt; next_col ]
-  in
   (* displayed pixel: framebuffer bit [pixbuf[0]] XOR [inv] ([^:] binds tighter than
      [&:]), forced dark outside the visible region *)
   let pixel = lsb pixbuf ^: i.inv &: ~:blank in
-  { O.req; vidadr; hsync = ~:hs; vsync = ~:vs; rgb = repeat pixel ~count:rgbw }
+  (* [la.vidadr]: look-ahead framebuffer word address (one group early — see [lookahead]) *)
+  { O.req
+  ; vidadr = la.vidadr
+  ; hsync = ~:hs
+  ; vsync = ~:vs
+  ; rgb = repeat pixel ~count:rgbw
+  }
 ;;
 
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────────── VID
@@ -381,34 +407,39 @@ let%expect_test "vid — pixel shift-out: word streams LSB-first; inv inverts it
 ;;
 
 (* The constant-pattern shift-out above proves the buffer→pixbuf→rgb datapath, but its
-   address-independent data can't see the prefetch's LOOK-AHEAD addressing. This drives an
-   address-keyed "memory" — echo the requested [vidadr] back as the data — so each
-   displayed 32-px group reconstructs to the framebuffer word address it came from, and we
-   assert each column still shows its OWN word ([Org + {~vcnt, col}], the original VID60.v
-   mapping) despite being fetched a group early into a ping-pong buffer. *)
-let%expect_test "vid — prefetch look-ahead: each column displays its own framebuffer word"
-  =
+   address-independent data can't see the prefetch's LOOK-AHEAD addressing. These two
+   tests drive an address-keyed "memory" — echo the requested [vidadr] back as the data —
+   so each displayed 32-px group reconstructs to the framebuffer word address it was
+   fetched from, and assert each column still shows its OWN word ([Org + {~vcnt, col}],
+   the original VID60.v mapping) despite being fetched a group early into a ping-pong
+   buffer.
+
+   This is the sim half of the prefetch-DELIVERY check (test/formal/README "VID
+   prefetch"): the [vid] equiv proof cuts [vidbuf] + excludes [vidadr], so it proves the
+   display is right GIVEN the right word; these tests show the look-ahead actually
+   DELIVERS that word. They sweep all 32 columns over consecutive rows — covering the
+   within-line look-ahead (cols 1..31) AND the cross-line wrap (each row's col 0 is
+   fetched from the PREVIOUS row's col 31) — at a single clk/pclk phase (phase is
+   irrelevant to the pclk-domain addressing; the all-phase robustness of the fetch
+   HANDSHAKE is the separate [vid_invariant] proof).
+
+   Shared rig: echo memory + a steady-line aligner + an LSB-first group reader. *)
+let make_echo_rig () =
   let sim = make () in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   inp.inv := bits1 false;
   let hcnt = node sim "hcnt"
   and vcnt = node sim "vcnt" in
+  (* address-echoing memory: [viddata] follows [vidadr], so each fetched word equals the
+     address it came from and a displayed group reconstructs to its framebuffer address *)
   let step () =
     inp.viddata := word (Bits.to_unsigned_int !(outp.vidadr));
     Cyclesim.cycle sim
   in
-  let aligned () =
-    let h = Cyclesim.Node.to_int hcnt in
-    h >= 32 && h land 31 = 0 && h < 1024 && Cyclesim.Node.to_int vcnt >= 2
-  in
-  let guard = ref 0 in
-  while (not (aligned ())) && !guard < 20000 do
-    step ();
-    Int.incr guard
-  done;
-  let r = Cyclesim.Node.to_int vcnt in
-  (* reconstruct 4 consecutive displayed groups, LSB-first, one pixel per pclk (5 ticks) *)
+  (* reconstruct one displayed 32-px group LSB-first, one pixel per pclk (5 base ticks).
+     [hcnt = 32] displays column 0 (pixbuf is loaded at the col-0 xfer, hcnt = 31), so the
+     32 visible columns stream out contiguously over hcnt 32..1055. *)
   let read_group () =
     let bits = ref 0 in
     for i = 0 to 31 do
@@ -419,27 +450,125 @@ let%expect_test "vid — prefetch look-ahead: each column displays its own frame
     done;
     !bits
   in
-  (* read 4 consecutive groups IN ORDER (accumulate explicitly — [List.init]'s [~f] call
-     order is unspecified in Base, which would scramble these side-effecting reads) *)
+  (* step to column 0 of the next line at or past [min_row]; return that row *)
+  let align_to_col0 ~min_row =
+    let guard = ref 0 in
+    while
+      (not (Cyclesim.Node.to_int hcnt = 32 && Cyclesim.Node.to_int vcnt >= min_row))
+      && !guard < 40000
+    do
+      step ();
+      Int.incr guard
+    done;
+    Cyclesim.Node.to_int vcnt
+  in
+  (* read all 32 columns of one freshly-aligned line (vcnt is constant across hcnt
+     32..1055) *)
+  let read_line ~min_row =
+    let r = align_to_col0 ~min_row in
+    let acc = ref [] in
+    for _ = 1 to 32 do
+      acc := read_group () :: !acc
+    done;
+    r, List.rev !acc
+  in
+  read_line
+;;
+
+(* the framebuffer word VID60.v fetches for screen position (row, col): Org + {~row, col} *)
+let vid60_word ~row ~col = org + ((lnot row land 0x3FF) lsl 5) + col
+
+let%expect_test "vid — prefetch look-ahead: every column delivers its own word, across \
+                 rows"
+  =
+  let read_line = make_echo_rig () in
+  (* two CONSECUTIVE steady lines (past the frame-top gap); [read_line]'s aligner lands on
+     the immediately following col 0, so r1 = r0 + 1 — the read itself crosses a row. *)
+  let r0, w0 = read_line ~min_row:2 in
+  let r1, w1 = read_line ~min_row:2 in
+  let matches (r, ws) =
+    List.equal Int.equal ws (List.init 32 ~f:(fun col -> vid60_word ~row:r ~col))
+  in
+  Stdlib.Printf.printf
+    "line %d cols 0..31 deliver Org+{~vcnt,col}: %b  (col0=0x%05X col31=0x%05X)\n\
+     line %d cols 0..31 deliver Org+{~vcnt,col}: %b  (col0=0x%05X col31=0x%05X)\n\
+     rows consecutive (read crossed a row boundary): %b\n"
+    r0
+    (matches (r0, w0))
+    (List.hd_exn w0)
+    (List.last_exn w0)
+    r1
+    (matches (r1, w1))
+    (List.hd_exn w1)
+    (List.last_exn w1)
+    (r1 = r0 + 1);
+  [%expect
+    {|
+    line 2 cols 0..31 deliver Org+{~vcnt,col}: true  (col0=0x3FF60 col31=0x3FF7F)
+    line 3 cols 0..31 deliver Org+{~vcnt,col}: true  (col0=0x3FF40 col31=0x3FF5F)
+    rows consecutive (read crossed a row boundary): true
+    |}]
+;;
+
+(* The two-group prefetch leaves the FIRST frame's first group unprimed: line 0 col 0 is
+   fetched at the look-ahead wrap of the PREVIOUS frame's last line (req0 at line 767, col
+
+   31) — which never ran at power-on, so it reads the cold (zero) buffer. This is the
+   frame-top gap [sample_word]/the test above skip with [min_row >= 2]. It is exactly ONE
+   group: line 0 cols 1..31 are fetched within line 0, and from line 1 on every col 0 is
+   filled by the previous line's wrap (the steady-line test above). So it self-heals after
+   the first group and is invisible (Oberon clears the screen long before it matters). *)
+let%expect_test "vid — prefetch: frame-top gap is exactly one group (line 0 col 0), then \
+                 heals"
+  =
+  let sim = make () in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  inp.inv := bits1 false;
+  let hcnt = node sim "hcnt" in
+  let step () =
+    inp.viddata := word (Bits.to_unsigned_int !(outp.vidadr));
+    Cyclesim.cycle sim
+  in
+  (* from power-on (vcnt = 0), the very first displayed group is line 0 col 0 at hcnt = 32 *)
+  let guard = ref 0 in
+  while Cyclesim.Node.to_int hcnt <> 32 && !guard < 4000 do
+    step ();
+    Int.incr guard
+  done;
+  let read_group () =
+    let bits = ref 0 in
+    for i = 0 to 31 do
+      bits := !bits lor ((Bits.to_int_trunc !(outp.rgb) land 1) lsl i);
+      for _ = 1 to 5 do
+        step ()
+      done
+    done;
+    !bits
+  in
   let words =
     let acc = ref [] in
-    for _ = 1 to 4 do
+    for _ = 1 to 32 do
       acc := read_group () :: !acc
     done;
     List.rev !acc
   in
-  (* the first aligned group ([hcnt = 32]) displays column 0; expect [Org + {~vcnt, col}]
-     — the original VID60.v address mapping — at each successive column *)
-  let expected = List.init 4 ~f:(fun col -> org + ((lnot r land 0x3FF) lsl 5) + col) in
+  let col0 = List.hd_exn words in
+  let cols_1_31_ok =
+    List.for_alli words ~f:(fun col w -> col = 0 || w = vid60_word ~row:0 ~col)
+  in
   Stdlib.Printf.printf
-    "row %d, columns 0..3 displayed words: %s\n\
-     match VID60.v Org+{~vcnt,col} mapping: %b\n"
-    r
-    (String.concat ~sep:" " (List.map words ~f:(Stdlib.Printf.sprintf "0x%05X")))
-    (List.equal Int.equal words expected);
+    "line 0 col 0: read 0x%05X, would be 0x%05X — cold (unprimed buffer): %b\n\
+     line 0 cols 1..31 all delivered correctly: %b\n\
+     ⇒ gap is exactly one group; heals from line 1 (steady-line test above)\n"
+    col0
+    (vid60_word ~row:0 ~col:0)
+    (col0 <> vid60_word ~row:0 ~col:0)
+    cols_1_31_ok;
   [%expect
     {|
-    row 2, columns 0..3 displayed words: 0x3FF60 0x3FF61 0x3FF62 0x3FF63
-    match VID60.v Org+{~vcnt,col} mapping: true
+    line 0 col 0: read 0x00000, would be 0x3FFA0 — cold (unprimed buffer): true
+    line 0 cols 1..31 all delivered correctly: true
+    ⇒ gap is exactly one group; heals from line 1 (steady-line test above)
     |}]
 ;;

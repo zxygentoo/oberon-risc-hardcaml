@@ -50,10 +50,17 @@ let import ~work_dir ~verilog ~top_module =
   |> Or_error.ok_exn
 ;;
 
-let check ~work_dir ~verilog ~top_module ~ours =
-  let reference = import ~work_dir ~verilog ~top_module in
-  let sec = Hardcaml_verify.Sec.create ours reference |> Or_error.ok_exn in
+(* Combinational equivalence of two in-process Hardcaml circuits (no .v import) — for a
+   property checked against a spec we WRITE in Hardcaml rather than a reference .v (e.g.
+   the VID look-ahead address ≡ a geometry spec). Sec builds the miter and SAT-checks it
+   with z3; it pairs by port name, so [ours] and [spec] must share input/output names. *)
+let check_circuits ~ours ~spec =
+  let sec = Hardcaml_verify.Sec.create ours spec |> Or_error.ok_exn in
   match Hardcaml_verify.Sec.circuits_equivalent sec |> Or_error.ok_exn with
   | Unsat -> Equivalent
   | Sat _ -> Counterexample
+;;
+
+let check ~work_dir ~verilog ~top_module ~ours =
+  check_circuits ~ours ~spec:(import ~work_dir ~verilog ~top_module)
 ;;

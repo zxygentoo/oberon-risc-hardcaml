@@ -254,6 +254,56 @@ let pulse_sync () =
   Circuit.create_exn ~name:"pulse_sync_ours" [ output "req" req ]
 ;;
 
+(* VID prefetch addressing (the [vidadr] departure the [vid] equiv excludes): the real
+   look-ahead logic [Vid.lookahead], with the raster counters as free inputs so it is a
+   pure combinational function of (hcnt, vcnt). Proven ≡ [vid_addr_spec] below by Sec/z3. *)
+let vid_addr_ours () =
+  let open Signal in
+  let hcnt = input "hcnt" 11 in
+  let vcnt = input "vcnt" 10 in
+  let { Risc5.Vid.Lookahead.next_col; next_vcnt; vidadr; wpar } =
+    Risc5.Vid.lookahead ~hcnt ~vcnt
+  in
+  Circuit.create_exn
+    ~name:"vid_addr_ours"
+    [ output "next_col" next_col
+    ; output "next_vcnt" next_vcnt
+    ; output "vidadr" vidadr
+    ; output "wpar" wpar
+    ]
+;;
+
+(* Independent geometry spec for the look-ahead address — written from the screen geometry
+   directly and in a deliberately DIFFERENT style from lib/vid.ml, so the equivalence is a
+   real cross-check, not a restatement:
+   - next column by natural 5-bit wrap ([col + 1] mod 32) vs vid.ml's explicit [col==31]
+     mux
+   - address by shift/add packing vs vid.ml's [concat_msb]
+   - the framebuffer base and the geometry constants (32 px/group, 768 visible rows ⇒ last
+     row 767) are restated here as the audited spec, pinning vid.ml's [org]/wrap. (The row
+     wrap 767→0 is not a power of two, so both sides need the same explicit compare —
+     there it is a value-pin/regression-guard, like the register-file spec.) *)
+let vid_addr_spec () =
+  let open Signal in
+  let hcnt = input "hcnt" 11 in
+  let vcnt = input "vcnt" 10 in
+  let org = of_unsigned_int ~width:18 0x37FC0 in
+  (* framebuffer base Org = 0xDFF00 >> 2 *)
+  let col = select hcnt ~high:9 ~low:5 in
+  (* the 32-px column, 0..31 *)
+  let ncol = col +:. 1 in
+  (* 5-bit wrap: 31 + 1 = 0 *)
+  let nrow = mux2 (col ==:. 31) (mux2 (vcnt ==:. 767) (zero 10) (vcnt +:. 1)) vcnt in
+  let vidadr = org +: uresize ncol ~width:18 +: sll (uresize ~:nrow ~width:18) ~by:5 in
+  Circuit.create_exn
+    ~name:"vid_addr_spec"
+    [ output "next_col" ncol
+    ; output "next_vcnt" nrow
+    ; output "vidadr" vidadr
+    ; output "wpar" (lsb ncol)
+    ]
+;;
+
 (* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
    (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
    defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
@@ -466,11 +516,12 @@ let run_mouse ~work_dir =
    the raster + pixel datapath ≡ VID60.v GIVEN the same fetched word, with BOTH departed
    outputs cut/ excluded. [proofs/vid.ys.template] drops the DCM, exposes pclk, cuts
    [vidbuf] (our read mux, named to pair with the RTL) to a shared free input, and
-   equiv_removes [req] and [vidadr]. The [req] departure is closed by [vid_invariant]; the
-   [vidadr] delivery (the look-ahead reaches pixbuf with the right word) is checked by the
-   co-located sim test "each column displays its own framebuffer word"; a formal
-   all-phases version was prototyped but does not converge tractably (README "VID
-   prefetch"). *)
+   equiv_removes [req] and [vidadr]. Both departures are closed by decomposition: the
+   [req] CDC by [vid_invariant]; the [vidadr] prefetch DELIVERY by [vid_addr] (the
+   look-ahead address ≡ a geometry spec, all hcnt/vcnt) + [vid_invariant] (timing) + a
+   reviewed composition lemma (README "VID prefetch"). The monolithic all-phases delivery
+   proof does not converge tractably (col 0 is cross-line), so that one glue step stays a
+   hand argument, cross-checked by the co-located sim test. *)
 let run_vid ~work_dir =
   Yosys_equiv.run_proof
     ~work_dir
@@ -518,6 +569,33 @@ let run_vid_invariant ~work_dir =
             vid_invariant_k)
 ;;
 
+(* C — the addressing half of prefetch DELIVERY (test/formal/README "VID prefetch"). The
+   [vid] equiv excludes [vidadr] (our look-ahead departs from VID60.v's current-group
+   address), so this proves — combinationally, exhaustively over ALL (hcnt, vcnt) — that
+   [Vid.lookahead] computes Org + [{~next_vcnt, next_col}] for the correct next group and
+   routes it to the [lsb next_col] bank: i.e. ≡ an independent geometry spec. Pure Sec/z3
+   on two in-process Hardcaml circuits, no .v import (there is no reference .v for the
+   look-ahead address — VID60.v's is the current group). Together with [vid_invariant]
+   (the timing/CDC half) and the ping-pong margin, this closes the prefetch by
+   decomposition (the composition lemma is in the README). [work_dir] is unused — Sec
+   manages its own z3. *)
+let run_vid_addr ~work_dir:_ =
+  Formal_equiv.check_circuits ~ours:(vid_addr_ours ()) ~spec:(vid_addr_spec ())
+  |> function
+  | Formal_equiv.Equivalent ->
+    Stdio.printf
+      "vid_addr: EQUIVALENT — look-ahead address ≡ geometry spec for all (hcnt,vcnt)  \
+       (vs geometry spec, addressing half of prefetch delivery · combinational · Sec/z3)\n\
+       %!";
+    true
+  | Formal_equiv.Counterexample ->
+    Stdio.printf
+      "vid_addr: NOT EQUIVALENT — look-ahead address differs from geometry spec  \
+       (combinational · Sec/z3)\n\
+       %!";
+    false
+;;
+
 (* All checks as one uniform list — [name, run ~work_dir -> passed?]. The combinational
    and sequential rows wrap their tuple-driven runners; core/mouse/vid/vid_invariant are
    their own one-off flows. [run] is only invoked inside a worker (or a single-check run),
@@ -547,6 +625,7 @@ let checks : (string * (work_dir:string -> bool)) list =
       ; "mouse", run_mouse
       ; "vid", run_vid
       ; "vid_invariant", run_vid_invariant
+      ; "vid_addr", run_vid_addr
       ]
     ]
 ;;

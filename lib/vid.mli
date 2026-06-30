@@ -48,6 +48,26 @@ val pulse_sync
   -> pulse:Signal.t
   -> Signal.t
 
+(** Look-ahead framebuffer-address fields returned by {!lookahead}. *)
+module Lookahead : sig
+  type 'a t =
+    { next_col : 'a (** the next 32-px column to be consumed (col+1, wrapping at 31→0) *)
+    ; next_vcnt : 'a
+    (** its row (vcnt, advanced when the column wraps; the visible top 767→0) *)
+    ; vidadr : 'a (** packed framebuffer word address [Org + {~next_vcnt, next_col}] *)
+    ; wpar : 'a
+    (** ping-pong write parity (the bank the fetch lands in) = [lsb next_col] *)
+    }
+end
+
+(** [lookahead ~hcnt ~vcnt] is the prefetch's combinational look-ahead addressing: from
+    the raster counters it computes the NEXT consumed group's column/row, its packed word
+    address, and the ping-pong bank its fetch lands in. The one address departure from
+    [VID60.v] (whose address is the CURRENT group). Shared by {!create} and the [vid_addr]
+    formal check, which proves it ≡ an independent geometry spec over all (hcnt, vcnt) —
+    the addressing half of the prefetch-delivery decomposition (test/formal/README). *)
+val lookahead : hcnt:Signal.t -> vcnt:Signal.t -> Signal.t Lookahead.t
+
 (** [create i] builds the controller, cycle-faithful to [VID60.v] on the pixel/sync
     datapath, with two deliberate departures from the RTL:
 
