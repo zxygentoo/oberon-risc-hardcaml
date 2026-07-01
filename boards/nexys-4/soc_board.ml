@@ -65,6 +65,7 @@ let create
   ?(spi_slow_div_log2 = 6)
   ?(fast_mul = false)
   ?(mul_stages = 0)
+  ?(icache = false)
   ?(uart_baud_slow = 1302)
   ?(uart_baud_fast = 217)
   (i : _ I.t)
@@ -127,18 +128,25 @@ let create
      64 B). These take {!Cellram}'s 1-cycle path — never touching the PSRAM — which also
      keeps each MMIO access one CPU-cycle long, so the write strobes below pulse exactly
      once. *)
-  let is_fetch = core.mem_pend &: ~:(core.rd) &: ~:(core.wr) in
+  let is_fetch = (core.mem_pend &: ~:(core.rd) &: ~:(core.wr)) -- "is_fetch" in
   let data_access = core.rd |: core.wr in
   let cpu_internal =
     (rom_region &: is_fetch |: (ioenb &: data_access)) -- "cpu_internal"
   in
+  (* Phase-10a: an optional direct-mapped read/I-cache in front of Cellram. On a hit we
+     drop [mem_pend] to Cellram — its [ce] is [~mem_pend | …], so it rises this cycle (a
+     0-stall hit) — and serve the word from the cache; misses and stores flow through
+     unchanged (write-through), the cache snooping stores to stay coherent ({!Icache}).
+     [cache_hit] is driven below (after Cellram, whose [ce]/[rdata] the cache needs); the
+     loop is not combinational — [hit] reads the cache array, not Cellram. *)
+  let cache_hit = wire 1 in
   (* ── PSRAM controller / CPU+video arbiter ── *)
   let cellram =
     Cellram.create
       ?read_cycles
       ?write_cycles
       { Cellram.I.clock = i.clock
-      ; mem_pend = core.mem_pend
+      ; mem_pend = core.mem_pend &: ~:cache_hit
       ; cpu_internal
       ; adr = core.adr
       ; wr = core.wr
@@ -153,6 +161,31 @@ let create
   assign viddata cellram.viddata;
   assign vid_ack cellram.vid_ack;
   assign vidpar cellram.vidpar;
+  (* Phase-10a: drive [cache_hit] and pick the CPU read word. When on, a fetch/load to
+     PSRAM (not ROM/MMIO — [cpu_internal] takes the 1-cycle path) can hit the cache; a
+     store to PSRAM snoops. When off, [cache_hit] is tied low and the word is Cellram's,
+     verbatim. *)
+  let mem_rdata =
+    if icache
+    then (
+      let cacheable_read = core.mem_pend &: ~:(core.wr) &: ~:cpu_internal in
+      let cacheable_read = cacheable_read -- "cache_read" in
+      let cache =
+        Icache.create
+          { Icache.I.clock = i.clock
+          ; adr = core.adr
+          ; cacheable_read
+          ; write = core.wr &: ~:cpu_internal
+          ; ce = cellram.ce
+          ; fill_data = cellram.rdata
+          }
+      in
+      assign cache_hit (cache.hit -- "cache_hit");
+      mux2 cache_hit cache.rdata cellram.rdata)
+    else (
+      assign cache_hit gnd;
+      cellram.rdata)
+  in
   let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
   (* ── SPI master (words 4/5) ── *)
   let spi_ctrl = Always.Variable.reg spec ~width:4 in
@@ -283,8 +316,8 @@ let create
        @ List.init 6 ~f:(fun _ -> zero 32))
   in
   (* fetch: ROM in the top 16 KiB, else PSRAM; load: MMIO in the top 64 B, else PSRAM *)
-  assign codebus (mux2 rom_region prom.data cellram.rdata);
-  assign inbus (mux2 ioenb io_data cellram.rdata);
+  assign codebus (mux2 rom_region prom.data mem_rdata);
+  assign inbus (mux2 ioenb io_data mem_rdata);
   { O.mosi = spi.mosi
   ; sclk = spi.sclk
   ; sd_cs

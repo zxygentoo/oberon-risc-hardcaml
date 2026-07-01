@@ -101,6 +101,23 @@
  (action
   (run ./test_visual_golden.exe)))
 
+; Phase-10a: board visual golden WITH the I-cache — the coherence proof. Boots the
+; PSRAM board SoC (Soc_board + cellram_model) with the cache ON past the handoff and asserts
+; the desktop framebuffer is byte-identical to the oracle. Opt-in: dune build @visual_golden_board
+
+(executable
+ (name test_visual_golden_board)
+ (modules test_visual_golden_board)
+ (libraries risc5 nexys4_board oracle hardcaml sd_bridge)
+ (preprocess
+  (pps ppx_hardcaml)))
+
+(rule
+ (alias visual_golden_board)
+ (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./test_visual_golden_board.exe)))
+
 ; Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3) — capture half: records the core's
 ; per-cycle I/O over the real boot, which test/cosim/core.cpp replays through RISC5.v under
 ; Verilator to assert cycle-exact fidelity. Built by @check so it can't rot; run via the unified

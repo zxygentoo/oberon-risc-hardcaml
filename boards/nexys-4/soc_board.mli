@@ -19,7 +19,10 @@
     [spi_slow_div_log2] the SPI slow-divider depth (default 6 = clk÷64 = {!Spi}/[SPI.v];
     the 50 MHz build passes 7 = clk÷128 to keep SD init ≤400 kHz); [fast_mul] (default
     [false], Phase 9) swaps the core's iterative multiplier for the DSP-backed
-    {!Risc5_core.create}[ ?fast_mul] one — see there. *)
+    {!Risc5_core.create}[ ?fast_mul] one — see there; [icache] (default [false],
+    Phase-10a) inserts a direct-mapped write-through read cache in front of {!Cellram}
+    ({!Icache}), serving PSRAM fetches/loads from on-chip distributed RAM (LUTRAM) on a
+    hit. *)
 
 open Hardcaml
 
@@ -80,6 +83,7 @@ val create
   -> ?spi_slow_div_log2:int
   -> ?fast_mul:bool
   -> ?mul_stages:int
+  -> ?icache:bool
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

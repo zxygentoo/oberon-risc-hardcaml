@@ -45,6 +45,11 @@ let () =
               lets the system clock go to 60 MHz. The new limiter is the FPAdder's
               normalize/round arithmetic (see the branch's synth notes). *)
          ~mul_stages:2
+           (* Phase-10a: the direct-mapped read/I-cache in front of Cellram. Async-read
+              distributed RAM (LUTRAM), so a hit is combinational — check the util report
+              infers RAM (distributed), not BRAM/FF, and that the combinational hit path
+              (regfile → tag compare → mem_rdata mux → decode) still closes 60 MHz. *)
+         ~icache:true
            (* UART baud divider scaled for 60 MHz so the wire is a standard rate: slow =
               60e6/19200 = 3125 (exact 19200, oat's default), fast = 60e6/115200 ≈ 521.
               The faithful 1302/217 constants are 25 MHz-only — at 60 MHz they'd give
