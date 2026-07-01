@@ -79,5 +79,8 @@ val create
   -> ?write_cycles:int
   -> ?spi_slow_div_log2:int
   -> ?fast_mul:bool
+  -> ?mul_stages:int
+  -> ?uart_baud_slow:int
+  -> ?uart_baud_fast:int
   -> Signal.t I.t
   -> Signal.t O.t

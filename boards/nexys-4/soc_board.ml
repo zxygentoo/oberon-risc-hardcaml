@@ -64,6 +64,9 @@ let create
   ?write_cycles
   ?(spi_slow_div_log2 = 6)
   ?(fast_mul = false)
+  ?(mul_stages = 0)
+  ?(uart_baud_slow = 1302)
+  ?(uart_baud_fast = 217)
   (i : _ I.t)
   : _ O.t
   =
@@ -107,6 +110,7 @@ let create
     Risc5_core.create
       ~ce:core_ce
       ~fast_mul
+      ~mul_stages
       { Risc5_core.I.clock = i.clock
       ; rst_n = i.rst_n
       ; irq = limit
@@ -188,6 +192,8 @@ let create
       ]);
   let uart_rx =
     Rs232r.create
+      ~baud_slow:uart_baud_slow
+      ~baud_fast:uart_baud_fast
       { Rs232r.I.clock = i.clock
       ; rst_n = i.rst_n
       ; rxd = i.rxd
@@ -197,6 +203,8 @@ let create
   in
   let uart_tx =
     Rs232t.create
+      ~baud_slow:uart_baud_slow
+      ~baud_fast:uart_baud_fast
       { Rs232t.I.clock = i.clock
       ; rst_n = i.rst_n
       ; start = core.wr &: ioenb &: (iowadr ==:. 2)

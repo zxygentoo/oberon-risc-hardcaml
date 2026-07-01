@@ -3,15 +3,17 @@
    emitted [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
    boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
 
-   Parameters baked into the netlist: 50000 clocks/ms (1 ms at 50 MHz); 4-cycle PSRAM
-   phases (80 ns > the chip's 70 ns at 50 MHz). Tune read/write cycles here if hardware
+   Parameters baked into the netlist: 60000 clocks/ms (1 ms at 60 MHz); 5-cycle PSRAM
+   phases (83 ns > the chip's 70 ns at 60 MHz). Tune read/write cycles here if hardware
    needs it.
 
-   NB (Phase-9 scratch): retuned for a 50 MHz system clock (nexys4_top.v MMCM
-   CLKOUT0_DIVIDE_F = 13.000). Phase length is held at 80 ns wall-clock (4 cycles × 20
-   ns), so every memory / video-DMA timing is identical to the 25 MHz build — only CPU
-   compute doubles. Revert to 25 MHz: clocks_per_ms 25000, read/write_cycles 2, divider
-   26.000. *)
+   NB (feat/fast-clock): retuned for a 60 MHz system clock (nexys4_top.v MMCM VCO 780,
+   CLKOUT0_DIVIDE_F = 13.000). Enabled by the pipelined DSP multiplies (mul_stages:2) that
+   move the multiply off the critical path. At 60 MHz (16.67 ns/cycle) the memory phase
+   needs 5 cycles for ≥70 ns (4 would be 66.7 ns, under spec) and the SPI slow divider
+   goes ÷256 (÷128 would be 469 kHz, over the 400 kHz SD-init ceiling). Revert to 50 MHz:
+   clocks_per_ms 50000, read/write_cycles 4, spi_slow_div_log2 7, MMCM VCO 650 (DIVCLK 1 /
+   MULT 6.5), CLKOUT1_DIVIDE 10. *)
 
 open Hardcaml
 module Soc_board = Nexys4_board.Soc_board
@@ -23,23 +25,33 @@ let () =
       ~name:"soc_board"
       (Soc_board.create
          ~contents:Oracle.Boot_rom.bootloader
-         ~clocks_per_ms:50000
-           (* 4 cycles/phase = 80 ns at 50 MHz (20 ns) > the chip's 70 ns (in spec), and
-              identical wall-clock to the old 2-cycle-at-25-MHz phase — so the worst-case
-              framebuffer fetch still fits under VID's ~477 ns xfer deadline even behind
-              one CPU access (the video-flicker margin, PHASE7 §9.2). 3 cycles = 60 ns is
-              too short at 50 MHz; raise to 5 (100 ns) if PSRAM reads turn flaky on HW. *)
-         ~read_cycles:4
-         ~write_cycles:4
-           (* SPI slow divider clk÷128 (vs the faithful ÷64): keeps the SD-init clock at
-              390.6 kHz (≤ the 400 kHz ceiling) now that the system clock is 50 MHz. FAST
-              stays clk÷3 = 16.7 MHz, under the 25 MHz SD limit. (PHASE9 §SPI.) *)
-         ~spi_slow_div_log2:7
-           (* Phase-9 DSP multiplier: swap the iterative 33-cycle MUL for the
-              combinational DSP48-backed one (Multiplier.create_opt, proven
-              bit-identical). This is the one optimization actually baked into the board
-              netlist — synth confirms the DSP48 inference and 50 MHz timing closure. *)
-         ~fast_mul:true)
+         ~clocks_per_ms:60000
+           (* 5 cycles/phase = 83 ns at 60 MHz (16.67 ns) > the chip's 70 ns (in spec). 4
+              cycles = 66.7 ns is now under spec (was fine at 50 MHz, 80 ns). The
+              worst-case framebuffer fetch still fits under VID's ~477 ns xfer deadline
+              even behind one CPU access (the video-flicker margin, PHASE7 §9.2). Raise to
+              6 (100 ns) if PSRAM reads turn flaky on HW. *)
+         ~read_cycles:5
+         ~write_cycles:5
+           (* SPI slow divider clk÷256: SD-init clock = 60 MHz / 256 = 234 kHz (≤ the 400
+              kHz ceiling). ÷128 would be 469 kHz, over the limit at 60 MHz. FAST stays
+              clk÷3 = 20 MHz, under the 25 MHz SD limit. (PHASE9 §SPI.) *)
+         ~spi_slow_div_log2:8
+           (* Phase-9 DSP multipliers: swap the iterative MUL/FML for their DSP48-backed
+              variants (proven bit-identical). *)
+         ~fast_mul:true
+           (* feat/fast-clock: 2-stage *pipelined* DSP multiplies (registers retimed into
+              the DSP48 MREG/PREG) move the multiply off the critical path, which is what
+              lets the system clock go to 60 MHz. The new limiter is the FPAdder's
+              normalize/round arithmetic (see the branch's synth notes). *)
+         ~mul_stages:2
+           (* UART baud divider scaled for 60 MHz so the wire is a standard rate: slow =
+              60e6/19200 = 3125 (exact 19200, oat's default), fast = 60e6/115200 ≈ 521.
+              The faithful 1302/217 constants are 25 MHz-only — at 60 MHz they'd give
+              46083 baud (nonstandard), which no host UART can lock to. (Found via oat
+              over the real serial link.) *)
+         ~uart_baud_slow:521
+         ~uart_baud_fast:521)
   in
   Rtl.print Verilog circuit
 ;;

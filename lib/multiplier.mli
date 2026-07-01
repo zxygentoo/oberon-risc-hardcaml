@@ -59,3 +59,13 @@ val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
     rather than re-formalised. [?ce] is accepted for signature compatibility but ignored
     (no state). *)
 val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+(** [create_opt_pipelined] — the Phase-9 {e pipelined} DSP multiply (experiment
+    [feat/fast-clock]), for pushing the system clock past ~52 MHz where {!create_opt}'s
+    combinational [regfile→DSP→result] hop is the critical path. Same single [*+], but the
+    product is registered through [stages] flops (default 2) that Vivado retimes into the
+    DSP48's MREG/PREG, so no single hop spans the multiply. Multi-cycle again — [stall]
+    holds for [stages] cycles via a run-gated counter, the core's normal protocol — but
+    still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
+    pipeline (board clock-enable, default [vdd]). *)
+val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

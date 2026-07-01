@@ -32,5 +32,10 @@ end
 
 (** [create i] builds the transmitter, cycle-accurate to [RS232T.v]: the [tick] baud
     divider, the [bitcnt] frame counter, the [run]/[rdy] handshake, and the 9-bit shift
-    register whose implicit framing emits start/data/stop. *)
-val create : Signal.t I.t -> Signal.t O.t
+    register whose implicit framing emits start/data/stop.
+
+    [?baud_slow]/[?baud_fast] are the bit-window lengths in clocks for the two [fsel]
+    rates (default [1302]/[217] = [RS232T.v]'s 19200/115200 at 25 MHz); the board passes
+    clock-matched values (60 MHz ⇒ [3125]/[521]) so the wire stays at a standard baud.
+    Must match the receiver ({!Rs232r.create}) and fit the 12-bit [tick] (< 4096). *)
+val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t

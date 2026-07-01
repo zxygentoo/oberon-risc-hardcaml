@@ -83,6 +83,34 @@ let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = gnd; z = sel_bottom (x' *+ y') ~width:64 }
 ;;
 
+(* Phase-9 experiment (feat/fast-clock) — a *pipelined* DSP multiply, for pushing the
+   system clock past ~52 MHz. {!create_opt} is combinational (regfile→DSP→result in one
+   cycle), which is the critical path at 50 MHz; here the 64-bit product is pushed through
+   [stages] output flops that Vivado retimes into the DSP48's own MREG/PREG, splitting
+   that one long hop into [stages] short ones. The op is then multi-cycle again: a small
+   counter holds [stall] for [stages] cycles — the core's ordinary multi-cycle protocol
+   (like the iterative unit, but 2 cycles instead of 33). The core freezes PC/IR across
+   the run, so [x]/[y] are held stable and the product is constant from cycle 0 — it just
+   arrives [stages] cycles later, bit-identical to {!create_opt}/{!create} (differential
+   qcheck). [stages = 0] would be the combinational case, but that is {!create_opt}; use
+   [stages >= 1] here. *)
+let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
+  let spec = Reg_spec.create () ~clock:i.clock in
+  let x' = mux2 i.u (sresize i.x ~width:33) (uresize i.x ~width:33) in
+  let y' = sresize i.y ~width:33 in
+  let prod = sel_bottom (x' *+ y') ~width:64 in
+  (* [stages] registers on the product; Vivado pulls them into the DSP (PREG/MREG/…) *)
+  let z =
+    List.fold (List.init stages ~f:Fn.id) ~init:prod ~f:(fun acc _ ->
+      Signal.reg spec ~enable:ce acc)
+  in
+  (* counter: run-gated (run=0 ⇒ S:=0, no reset); [stall] high until S reaches [stages] *)
+  let s =
+    Signal.reg_fb spec ~enable:ce ~width:4 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 4))
+  in
+  { O.stall = i.run &: ~:(s ==:. stages); z }
+;;
+
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Correctness: qcheck the full multiply against a pure-OCaml Int64 reference (3a's oracle
    — no fp_vectors, no emulator). The reference encodes the *hardware* semantics: [y] is
@@ -179,6 +207,47 @@ let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 
        ~name:"create_opt=create"
        QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
        (fun (u, x, y) -> Int64.equal (z_ref ~u ~x ~y) (z_opt ~u ~x ~y)));
+  [%expect {| |}]
+;;
+
+let%expect_test "MUL create_opt_pipelined ≡ create (differential qcheck, stages=2, 20000 \
+                 cases)"
+  =
+  (* Same differential check as above, but the fast side is the *pipelined* DSP variant:
+     drive it through the run/stall handshake exactly as the core does (it is multi-cycle
+     now), and confirm the registered product matches the iterative unit bit-for-bit. This
+     also exercises the pipeline's counter/stall timing — [stall] must hold for [stages]
+     cycles then drop with the product valid. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let ref_sim = Sim.create create
+  and opt_sim = Sim.create (create_opt_pipelined ~stages:2) in
+  let ri = Cyclesim.inputs ref_sim
+  and ro = Cyclesim.outputs ref_sim
+  and oi = Cyclesim.inputs opt_sim
+  and oo = Cyclesim.outputs opt_sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  (* run one multiply through a run/stall handshake, then a run=0 cycle to clear S *)
+  let run_mul (inp : _ I.t) (out : _ O.t) sim ~u ~x ~y =
+    set inp.u u 1;
+    set inp.x x 32;
+    set inp.y y 32;
+    set inp.run 1 1;
+    Cyclesim.cycle sim;
+    while Bits.to_int_trunc !(out.stall) = 1 do
+      Cyclesim.cycle sim
+    done;
+    let z = Bits.to_signed_int64 !(out.z) in
+    set inp.run 0 1;
+    Cyclesim.cycle sim;
+    z
+  in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:20_000
+       ~name:"create_opt_pipelined=create"
+       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       (fun (u, x, y) ->
+         Int64.equal (run_mul ri ro ref_sim ~u ~x ~y) (run_mul oi oo opt_sim ~u ~x ~y)));
   [%expect {| |}]
 ;;
 

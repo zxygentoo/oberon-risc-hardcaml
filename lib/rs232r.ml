@@ -46,7 +46,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
+let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let q0 = Always.Variable.reg spec ~width:1 in
@@ -63,9 +63,16 @@ let create (i : _ I.t) : _ O.t =
   let tick_v = tick.value -- "tick" in
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
-  (* baud divider thresholds; [midtick] (window centre) = limit/2 = {1'b0, limit[11:1]} *)
+  (* baud divider thresholds; [midtick] (window centre) = limit/2 =
+     {1 'b0, limit[11:1]}
+     . [baud_fast]/[baud_slow] default to RS232R.v's 25 MHz constants (115200 = clk/217,
+     19200 = clk/1302); the board passes clock-scaled values so the wire stays at a
+     standard rate (feat/fast-clock: 60 MHz ⇒ 521/3125), like {!Spi}'s [slow_div_log2]. *)
   let limit =
-    mux2 i.fsel (of_unsigned_int ~width:12 217) (of_unsigned_int ~width:12 1302)
+    mux2
+      i.fsel
+      (of_unsigned_int ~width:12 baud_fast)
+      (of_unsigned_int ~width:12 baud_slow)
   in
   let endtick = (tick_v ==: limit) -- "endtick" in
   let midtick =

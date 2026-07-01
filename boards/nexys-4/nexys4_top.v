@@ -55,21 +55,24 @@ module nexys4_top (
   output wire        RamCLK
 );
 
-  // ── Clocking: one MMCM, 100 MHz -> 50 MHz (system) + 65 MHz (pixel) ──────────────
-  // VCO = 100 * 6.5 = 650 MHz; 650/13 = 50 MHz, 650/10 = 65 MHz (1024x768@60 pixel clk).
-  // Phase-9 scratch: system clock raised 25->50 MHz (CLKOUT0_DIVIDE_F 26->13). The
-  // clk25/bufg_25 net & instance names are KEPT (they now carry 50 MHz) to avoid rippling
-  // through soc_board's `clock` port and the .xdc bufg_25/O selectors. PSRAM wait-states +
-  // ms prescaler are retuned to match in test/emit_board_verilog.ml (4 cycles, 50000).
+  // ── Clocking: one MMCM, 100 MHz -> 60 MHz (system) + 65 MHz (pixel) ──────────────
+  // VCO = 100/5 * 39 = 780 MHz; 780/13 = 60 MHz, 780/12 = 65 MHz (1024x768@60 pixel clk).
+  // feat/fast-clock: system clock raised 50->60 MHz (enabled by the pipelined DSP
+  // multipliers — mul_stages:2 — which move the multiply off the critical path). 780 is the
+  // LCM of 60 and 65, so BOTH outputs stay exact (CLKOUT0 fractional 13.000, CLKOUT1 integer
+  // 12); reaching VCO 780 from the 100 MHz input needs DIVCLK 5 / MULT 39 (PFD 20 MHz). The
+  // clk25/bufg_25 net & instance names are KEPT (they now carry 60 MHz) to avoid rippling
+  // through soc_board's `clock` port and the .xdc bufg_25/O selectors. PSRAM wait-states + ms
+  // prescaler + SPI divider are retuned to match in test/emit_board_verilog.ml (5, 60000, ÷256).
   wire clk25, clk65, clkfb, clkfb_bufg, mmcm_locked;
   wire clk25_raw, clk65_raw;
 
   MMCME2_BASE #(
     .CLKIN1_PERIOD   (10.000),   // 100 MHz
-    .DIVCLK_DIVIDE   (1),
-    .CLKFBOUT_MULT_F (6.500),    // VCO 650 MHz
-    .CLKOUT0_DIVIDE_F(13.000),   // 50 MHz (Phase-9 scratch; was 26.000 = 25 MHz)
-    .CLKOUT1_DIVIDE  (10),       // 65 MHz
+    .DIVCLK_DIVIDE   (5),        // PFD = 100/5 = 20 MHz
+    .CLKFBOUT_MULT_F (39.000),   // VCO = 20 * 39 = 780 MHz (feat/fast-clock; was 6.5/÷1 = 650)
+    .CLKOUT0_DIVIDE_F(13.000),   // 60 MHz (780/13; feat/fast-clock, was 650/13 = 50)
+    .CLKOUT1_DIVIDE  (12),       // 65 MHz (780/12; was 650/10)
     .STARTUP_WAIT    ("FALSE")
   ) mmcm (
     .CLKIN1   (CLK100MHZ),
