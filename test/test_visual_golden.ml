@@ -138,7 +138,7 @@ let boot_soc ~cap ~chunk ~settle =
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Soc.create ~contents:Oracle.Boot_rom.bootloader)
+      (Soc.create ~contents:Risc5.Rom.bootloader)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in

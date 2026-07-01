@@ -40,7 +40,7 @@
     warm reset the retained lines still equal PSRAM (the CPU is the sole writer, every
     store is snooped, and external PSRAM persists). Verified on silicon (boots clean) and
     in sim by the board visual golden — byte-identical desktop with the cache on
-    (test/test_visual_golden_board.ml) — and the running-OS instruction-lockstep bench.
+    (test/boards/nexys-4/test_visual_golden_board.ml) — and the running-OS lockstep bench.
 
     {1 Geometry}
 

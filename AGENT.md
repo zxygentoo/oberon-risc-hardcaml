@@ -519,7 +519,8 @@ oberon-risc-hardcaml/
   AGENT.md / CLAUDE.md    ← this file (CLAUDE.md is a symlink to AGENT.md)
   dune-project, dune      ← root build config (dune restricted to: lib boards test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
-                            real modules — shifters, ALU, CPU core… — from Phase 1)
+                            real modules — shifters, ALU, CPU core… — from Phase 1;
+                            `rom.ml` = the boot ROM image, so risc5 is self-contained)
   boards/                 ← board-specific layer (Phase 7); one dir per target. The
                             git-ignored generated/build trees are hoisted out (below) so
                             each boards/<target>/ stays 100% tracked source.
@@ -529,16 +530,20 @@ oberon-risc-hardcaml/
       cellram_model.{ml,mli}  sim double of the external PSRAM chip (test-only; never synthesized)
       icache.{ml,mli}         Phase-10a direct-mapped write-through I-cache (async LUTRAM) — 0-stall hit before Cellram
       soc_board.{ml,mli}      board SoC — core(`ce`) + Cellram + peripherals + video (+ optional Icache)
+      emit_board_verilog.ml   emit soc_board as Verilog (ROM from Risc5.Rom → oracle-free); run by gen_verilog.sh
       nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code
       nexys4.xdc            pin constraints (derived from the Digilent master XDC)
       *.tcl, gen_verilog.sh Vivado emit → synth → program flow
       README.md             Phase-7 design log + resume notes
     _generated/<target>/  ← git-ignored: soc_board.v emitted from Hardcaml
     _build/<target>/      ← git-ignored: Vivado runs + the bitstream
-  test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
-                            `test_boot_checkpoint` = Phase-5 boot checkpoint
-                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
-                            formal/ = logic-equivalence proofs (`@formal`, Phase 8)
+  test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` + `test_rom` (ROM guard,
+                            §8) = the fast suite, `test_boot_checkpoint` = Phase-5 boot
+                            checkpoint (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL
+                            co-sim, formal/ = logic-equivalence proofs (`@formal`, Phase 8)
+    boards/<target>/      ← board-SoC integration tests mirroring boards/<target>/: the PSRAM
+                            boot checkpoint + visual golden, sharing the `board_tb` harness
+                            (@boot_checkpoint_board / @visual_golden_board)
     fetch-rtl.sh          ← fetch + checksum-verify the reference .v on demand (shared by
     rtl-sources.txt         cosim + formal); the provenance pins live in rtl-sources.txt
     _po/                  ← original sources, git-ignored; fetch-rtl.sh populates
@@ -559,9 +564,11 @@ vendor-primitive-free Hardcaml library (`nexys4_board`: the synthesizable board 
 vendor primitives (MMCM/IOBUF/POR) live in the hand-written `nexys4_top.v`. Generated/build
 artifacts hoist to `boards/_generated/<target>/` + `boards/_build/<target>/` — two all-boards
 `.gitignore` entries (`/boards/_generated/`, `/boards/_build/`) — so every `boards/<target>/`
-stays pure tracked source. Tests follow §6: `cellram`'s unit checks co-locate inline against
-`cellram_model` (both in the board lib, no oracle); only the oracle-coupled board boot
-checkpoint + the faithful SD model live in `test/`.
+stays pure tracked source. The board's Verilog emitter (`emit_board_verilog`) lives here too —
+it bakes the design ROM (`Risc5.Rom`), so the whole `boards/<target>/` is oracle-free. Tests
+follow §6: `cellram`/`icache` unit checks co-locate inline against `cellram_model` (in the
+board lib, no oracle); the oracle-coupled board integration tests — the PSRAM boot checkpoint +
+visual golden — live in `test/boards/<target>/`, sharing the `board_tb` harness.
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
 `vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
@@ -570,8 +577,10 @@ sources and builds them as library **`oracle`** in our project (warnings off; on
 `unix`). Self-contained and leaves the submodule pristine. *Cleaner alternative if ever
 wanted:* give the emulator a `public_name` upstream (needs a package stanza in that repo),
 then depend on it directly and delete the wrapper. FP vectors
-(`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) and the boot ROM
-(`Oracle.Boot_rom`) come straight from the submodule — no copies needed.
+(`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) come straight from the submodule. The
+boot ROM lives in the design as `Risc5.Rom` (so the published `risc5` library is
+self-contained); the oracle keeps its own `Oracle.Boot_rom` copy, and a guard test
+(`test/test_rom.ml`) pins the two equal — design and oracle can never boot different images.
 
 **Toolchain:** **OxCaml** — opam switch **`5.2.0+ox`** (`ocaml-variants.5.2.0+ox`), dune
 `3.22+ox`, Hardcaml **`v0.18~preview`** (with `ppx_hardcaml` + `hardcaml_waveterm`, same

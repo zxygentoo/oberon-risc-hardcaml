@@ -3,13 +3,13 @@
    The Phase-6b visual golden (test_visual_golden.ml) renders the idle Oberon desktop on
    the flat-BRAM {!Risc5.Soc} and asserts it is byte-identical to the oracle. This variant
    runs the *board* SoC ({!Nexys4_board.Soc_board} + the {!Nexys4_board.Cellram_model}
-   PSRAM double) with the Phase-10a I-cache ON, past the handoff, and asserts the *same*
-   framebuffer against the oracle. That is the strong coherence test: if the cache ever
-   served stale code/data — the module loader writing code the cache holds, or a
-   framebuffer word the CPU cached being overwritten — the desktop would render wrong and
-   the hash would differ. Byte-identical ⇒ the cache is transparent through the whole
-   boot + module load + desktop render, not just the boot-to-handoff prefix the lockstep
-   bench covers.
+   PSRAM double, via the shared {!Board_tb}) with the Phase-10a I-cache ON, past the
+   handoff, and asserts the *same* framebuffer against the oracle. That is the strong
+   coherence test: if the cache ever served stale code/data — the module loader writing
+   code the cache holds, or a framebuffer word the CPU cached being overwritten — the
+   desktop would render wrong and the hash would differ. Byte-identical ⇒ the cache is
+   transparent through the whole boot + module load + desktop render, not just the
+   boot-to-handoff prefix the lockstep bench covers.
 
    Feasibility note: this is practical *only* with the cache. Cache-off the board runs OS
    code at ~26 cyc/instr, so drawing the desktop would take hundreds of millions of
@@ -22,74 +22,7 @@
 
 module R = Oracle.Risc
 open Hardcaml
-module Soc_board = Nexys4_board.Soc_board
-module Cellram_model = Nexys4_board.Cellram_model
-
-(* board SoC closed with the behavioural PSRAM on its pins (same wiring as bench_boot /
-   test_boot_checkpoint_board), parameterised only by [icache]; faithful mul, rc=5. *)
-module Tb = struct
-  module I = struct
-    type 'a t =
-      { clock : 'a
-      ; pclk : 'a [@bits 1]
-      ; rst_n : 'a [@bits 1]
-      ; miso : 'a [@bits 1]
-      ; rxd : 'a [@bits 1]
-      ; btn : 'a [@bits 4]
-      ; sw : 'a [@bits 8]
-      ; gpio_in : 'a [@bits 8]
-      ; ps2c : 'a [@bits 1]
-      ; ps2d : 'a [@bits 1]
-      ; msclk : 'a [@bits 1]
-      ; msdat : 'a [@bits 1]
-      }
-    [@@deriving hardcaml]
-  end
-
-  module O = struct
-    type 'a t = { sclk : 'a [@bits 1] } [@@deriving hardcaml]
-  end
-
-  let create ~icache (i : _ I.t) : _ O.t =
-    let dq = Signal.wire 16 in
-    let soc =
-      Soc_board.create
-        ~contents:Oracle.Boot_rom.bootloader
-        ~read_cycles:5
-        ~write_cycles:5
-        ~icache
-        { Soc_board.I.clock = i.clock
-        ; pclk = i.pclk
-        ; rst_n = i.rst_n
-        ; miso = i.miso
-        ; rxd = i.rxd
-        ; btn = i.btn
-        ; sw = i.sw
-        ; gpio_in = i.gpio_in
-        ; ps2c = i.ps2c
-        ; ps2d = i.ps2d
-        ; msclk = i.msclk
-        ; msdat = i.msdat
-        ; mem_dq_i = dq
-        }
-    in
-    let m =
-      Cellram_model.create
-        { Cellram_model.I.clock = i.clock
-        ; mem_adr = soc.mem_adr
-        ; mem_dq_o = soc.mem_dq_o
-        ; ce_n = soc.ram_ce_n
-        ; we_n = soc.ram_we_n
-        ; ub_n = soc.ram_ub_n
-        ; lb_n = soc.ram_lb_n
-        }
-    in
-    Signal.assign dq m.mem_dq_i;
-    { O.sclk = soc.sclk }
-  ;;
-end
-
-module Sim = Cyclesim.With_interface (Tb.I) (Tb.O)
+module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
 let project_root () =
   let rec up dir =
@@ -193,12 +126,16 @@ let fb_fnv fb =
 ;;
 
 (* Boot the board SoC (SD card via {!Sd_bridge}) with the cache [icache], run PAST the
-   handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes —
-   settles (drawn, then unchanged for [settle] chunks) or [cap] cycles. *)
+   handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
+   {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
+   cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
 let boot_soc_board ~icache ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
-  let sim = Sim.create ~config:Cyclesim.Config.trace_all (Tb.create ~icache) in
+  let sim =
+    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
+      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache i)
+  in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
   let some w = function
@@ -212,18 +149,8 @@ let boot_soc_board ~icache ~cap ~chunk ~settle =
   and spi_ctrl = reg "spi_ctrl" in
   let cram_lo = some "cram_lo" (Cyclesim.lookup_mem_by_name sim "cram_lo") in
   let cram_hi = some "cram_hi" (Cyclesim.lookup_mem_by_name sim "cram_hi") in
-  (* word w from the two byte lanes: halfword 2w = low 16 bits, 2w+1 = high 16 bits;
-     within each, cram_lo = byte [7:0], cram_hi = byte [15:8] (mirrors
-     test_boot_checkpoint_board). *)
   let read_fb () =
-    Array.init fb_words (fun i ->
-      let w = fb_base_word + i in
-      let bl k = Cyclesim.Memory.to_int cram_lo ~address:k in
-      let bh k = Cyclesim.Memory.to_int cram_hi ~address:k in
-      bl (2 * w)
-      lor (bh (2 * w) lsl 8)
-      lor (bl ((2 * w) + 1) lsl 16)
-      lor (bh ((2 * w) + 1) lsl 24))
+    Array.init fb_words (fun i -> Board_tb.read_word ~cram_lo ~cram_hi (fb_base_word + i))
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in

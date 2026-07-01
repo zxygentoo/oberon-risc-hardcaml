@@ -63,7 +63,7 @@ module nexys4_top (
   // 12); reaching VCO 780 from the 100 MHz input needs DIVCLK 5 / MULT 39 (PFD 20 MHz). The
   // clk25/bufg_25 net & instance names are KEPT (they now carry 60 MHz) to avoid rippling
   // through soc_board's `clock` port and the .xdc bufg_25/O selectors. PSRAM wait-states + ms
-  // prescaler + SPI divider are retuned to match in test/emit_board_verilog.ml (5, 60000, ÷256).
+  // prescaler + SPI divider are retuned to match in emit_board_verilog.ml (5, 60000, ÷256).
   wire clk25, clk65, clkfb, clkfb_bufg, mmcm_locked;
   wire clk25_raw, clk65_raw;
 

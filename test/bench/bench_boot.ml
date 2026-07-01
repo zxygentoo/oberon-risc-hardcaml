@@ -114,7 +114,7 @@ let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
     Sim.create
       ~config:Cyclesim.Config.trace_all
       (Tb.create
-         ~contents:Oracle.Boot_rom.bootloader
+         ~contents:Risc5.Rom.bootloader
          ~fast_mul
          ~mul_stages
          ~icache
@@ -209,7 +209,7 @@ let make_os ~icache =
     Sim.create
       ~config:Cyclesim.Config.trace_all
       (Tb.create
-         ~contents:Oracle.Boot_rom.bootloader
+         ~contents:Risc5.Rom.bootloader
          ~fast_mul:false
          ~mul_stages:0
          ~icache

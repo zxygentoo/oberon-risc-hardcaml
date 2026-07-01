@@ -9,8 +9,9 @@
 
 (data_only_dirs _po _work)
 
-; Shared off-chip SD card (bit-level SPI slave over Oracle.Disk) used by the three SoC
-; integration tests below (boot checkpoint / visual golden / core RTL co-sim capture).
+; Shared off-chip SD card (bit-level SPI slave over Oracle.Disk) used by the SoC integration
+; tests — the BRAM boot checkpoint / visual golden + core RTL co-sim capture below, and the
+; board (PSRAM) checkpoint / visual golden in test/boards/nexys-4/.
 
 (library
  (name sd_bridge)
@@ -26,8 +27,8 @@
  (libraries unix))
 
 ; Shared SoC-independent half of the boot-handoff checkpoints (disk, oracle boot, §8-aware
-; compare, the run driver), used by both test_boot_checkpoint (BRAM) and
-; test_boot_checkpoint_board (PSRAM); see boot_checkpoint_common.mli.
+; compare, the run driver), used by both test_boot_checkpoint (BRAM, below) and
+; test_boot_checkpoint_board (PSRAM, in test/boards/nexys-4/); see boot_checkpoint_common.mli.
 
 (library
  (name boot_checkpoint_common)
@@ -35,13 +36,19 @@
  (libraries oracle))
 
 (tests
- (names test_fp_adder test_fp_multiplier test_fp_divider test_cpu_lockstep)
+ (names
+  test_fp_adder
+  test_fp_multiplier
+  test_fp_divider
+  test_cpu_lockstep
+  test_rom)
  (modules
   fp_replay
   test_fp_adder
   test_fp_multiplier
   test_fp_divider
-  test_cpu_lockstep)
+  test_cpu_lockstep
+  test_rom)
  (libraries risc5 oracle hardcaml hardcaml_waveterm qcheck-core)
  ; Phase 3b: the frozen FP vectors (vendored, data-only) feed test_fp_adder's replay.
  (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
@@ -62,30 +69,6 @@
  (action
   (run ./test_boot_checkpoint.exe)))
 
-; Phase 7: board boot-handoff checkpoint (AGENT.md §6) — the same boot proven through the
-; PSRAM board SoC (Soc_board + Cellram + cellram_model). Built by @check so it can't rot;
-; run on demand: dune build @boot_checkpoint_board
-
-(executable
- (name test_boot_checkpoint_board)
- (modules test_boot_checkpoint_board)
- (libraries
-  risc5
-  nexys4_board
-  oracle
-  hardcaml
-  sd_bridge
-  boot_checkpoint_common)
- ; the Tb wrapper (Soc_board + cellram_model) derives its own interfaces
- (preprocess
-  (pps ppx_hardcaml)))
-
-(rule
- (alias boot_checkpoint_board)
- (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
- (action
-  (run ./test_boot_checkpoint_board.exe)))
-
 ; Phase 6b: visual golden (AGENT.md §6). Continue the boot past the OS handoff and diff the
 ; framebuffer (a RAM region) against the oracle, rendered for eyeballing. Opt-in (boots the
 ; real disk image): dune build @visual_golden
@@ -101,22 +84,9 @@
  (action
   (run ./test_visual_golden.exe)))
 
-; Phase-10a: board visual golden WITH the I-cache — the coherence proof. Boots the
-; PSRAM board SoC (Soc_board + cellram_model) with the cache ON past the handoff and asserts
-; the desktop framebuffer is byte-identical to the oracle. Opt-in: dune build @visual_golden_board
-
-(executable
- (name test_visual_golden_board)
- (modules test_visual_golden_board)
- (libraries risc5 nexys4_board oracle hardcaml sd_bridge)
- (preprocess
-  (pps ppx_hardcaml)))
-
-(rule
- (alias visual_golden_board)
- (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
- (action
-  (run ./test_visual_golden_board.exe)))
+; The board (PSRAM) SoC integration tests — boot checkpoint + visual golden through
+; Soc_board + cellram_model — moved to test/boards/nexys-4/ (mirroring boards/nexys-4/),
+; where they share the board_tb harness. Same aliases: @boot_checkpoint_board / @visual_golden_board.
 
 ; Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3) — capture half: records the core's
 ; per-cycle I/O over the real boot, which test/cosim/core.cpp replays through RISC5.v under
@@ -130,14 +100,5 @@
  (libraries risc5 oracle hardcaml unix sd_bridge))
 
 ; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
-; their own dune — driven by `dune build @bench` / `@profile_boot`.
-
-; Phase 7: emit the board SoC (Nexys4_board.Soc_board) as Verilog with the boot ROM baked in
-; — boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v, which
-; the hand-written nexys4_top.v wraps with the vendor primitives. Built by @check so it can't
-; rot.
-
-(executable
- (name emit_board_verilog)
- (modules emit_board_verilog)
- (libraries hardcaml nexys4_board oracle))
+; their own dune — driven by `dune build @bench` / `@profile_boot`. The board-SoC Verilog
+; emitter moved to boards/nexys-4/ (it emits that board's SoC, next to its build scripts).
