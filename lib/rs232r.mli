@@ -33,5 +33,11 @@ end
 
 (** [create i] builds the receiver, cycle-accurate to [RS232R.v]: the [Q0]/[Q1]
     synchronizer and start-edge detector, the [tick] baud divider, mid-bit sampling at
-    [midtick], and the [run]/[stat] framing of the nine-window receive. *)
-val create : Signal.t I.t -> Signal.t O.t
+    [midtick], and the [run]/[stat] framing of the nine-window receive.
+
+    [?baud_slow]/[?baud_fast] are the bit-window lengths in clocks for the two [fsel]
+    rates (default [1302]/[217] = [RS232R.v]'s 19200/115200 at 25 MHz). They scale with
+    the system clock so the wire stays at a standard baud — the board passes clock-matched
+    values (e.g. 60 MHz ⇒ [3125]/[521] for exact 19200 / ~115200); the default keeps the
+    faithful, Phase-8-proven 25 MHz unit. Must fit the 12-bit [tick] (< 4096). *)
+val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t

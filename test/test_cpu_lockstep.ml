@@ -47,8 +47,12 @@ type t =
      cycle *)
   }
 
-let create () =
-  let sim = Sim.create ~config:Cyclesim.Config.trace_all Core.create in
+(* [?core] swaps the core constructor so the same harness can lockstep a variant build —
+   e.g. the Phase-9 [~fast_mul ~mul_stages:2] pipelined-DSP core (see the runner).
+   Defaults to the faithful [Core.create]; eta-expanded to erase its optional args to the
+   plain [_ I.t -> _ O.t] the simulator wants. *)
+let create ?(core = fun i -> Core.create i) () =
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all core in
   let inp = Cyclesim.inputs sim in
   let some what = function
     | Some x -> x
@@ -502,5 +506,32 @@ let () =
        (fun raw ->
           let case, adr_word, init_word, byte_mode, lane = decode_store raw in
           agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane));
-  Printf.printf "cpu lockstep (stores): 50000 QCheck cases, passed\n"
+  Printf.printf "cpu lockstep (stores): 50000 QCheck cases, passed\n";
+  (* Phase-9 fast_mul, pipelined variant — re-run the register-op lockstep on a core with
+     the 2-cycle *pipelined* DSP multipliers swapped in (Risc5_core.create ~fast_mul:true
+     ~mul_stages:2). The units' z + stall are already proven bit-identical to the faithful
+     multipliers by the co-located differential qcheck (lib/multiplier.ml,
+     fp_multiplier.ml), which rides the Phase-8 proof transitively; that check drives the
+     unit from a testbench that *mimics* the core's run/stall/operand-hold protocol. This
+     closes the remaining sliver: it exercises the units under the *real* core's driving,
+     over fuzzed operands broader than a boot stream — so the novel 2-cycle stall timing
+     is verified in situ. MUL (op 10) and FML (op 14) hit the swapped units; the other ops
+     run through the unchanged glue (harmless extra integration coverage). Bit-identical
+     to the faithful path, the fast core diverges from the oracle in exactly the same §8
+     corners, so [steered] is reused verbatim. The combinational create_opt (mul_stages:0)
+     is left to differential qcheck + boot + visual-golden — its result is same-cycle, no
+     stall timing to re-check. *)
+  let t_fast = create ~core:(fun i -> Core.create ~fast_mul:true ~mul_stages:2 i) () in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:50_000
+       ~max_gen:60_000
+       ~name:"cpu register-op lockstep, fast_mul mul_stages:2 (pipelined DSP MUL/FML)"
+       seed
+       (fun raw ->
+          let case = decode raw in
+          QCheck.assume (not (steered case));
+          agree t_fast case));
+  Printf.printf
+    "cpu lockstep (register ops, fast_mul mul_stages:2): 50000 QCheck cases, passed\n"
 ;;

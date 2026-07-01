@@ -494,19 +494,29 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
    register-file write and all five iterative units together for a multi-cycle PSRAM wait,
    so the slow memory looks single-cycle to the core (AGENT.md §3). [vdd] ⇒ byte-identical
    to the bare RTL port. *)
-let create ?(ce = vdd) ?(fast_mul = false) i =
+let create ?(ce = vdd) ?(fast_mul = false) ?(mul_stages = 0) i =
   (* [fast_mul] (Phase 9, AGENT.md §5) swaps the two iterative shift-add multipliers — the
      integer [Multiplier] (33 cycles) and the FP [Fp_multiplier] mantissa engine (25) —
-     for their combinational DSP variants ([create_opt], each proven bit-identical)
-     through the units seam. Everything else, and the default [create], stays the faithful
-     port. *)
+     for their DSP variants (each proven bit-identical) through the units seam. Everything
+     else, and the default [create], stays the faithful port.
+
+     [mul_stages] (experiment feat/fast-clock) picks the DSP variant: [0] (default) = the
+     combinational [create_opt] (the 50 MHz build); [>0] = [create_opt_pipelined] with
+     that many pipeline registers on the product, which Vivado retimes into the DSP48 so
+     the multiply leaves the critical path — for pushing the clock past ~52 MHz. *)
   let units = Units.with_ce ce in
   let units =
     if fast_mul
     then
       { units with
-        multiplier = Multiplier.create_opt ~ce
-      ; fp_multiplier = Fp_multiplier.create_opt ~ce
+        multiplier =
+          (if mul_stages = 0
+           then Multiplier.create_opt ~ce
+           else Multiplier.create_opt_pipelined ~ce ~stages:mul_stages)
+      ; fp_multiplier =
+          (if mul_stages = 0
+           then Fp_multiplier.create_opt ~ce
+           else Fp_multiplier.create_opt_pipelined ~ce ~stages:mul_stages)
       }
     else units
   in

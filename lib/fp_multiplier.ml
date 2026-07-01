@@ -117,6 +117,29 @@ let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = gnd; z = pack ~p:(xm *: ym) i }
 ;;
 
+(* Phase-9 experiment (feat/fast-clock) — the pipelined FP multiply, analogue of
+   {!Multiplier.create_opt_pipelined}. {!create_opt} is combinational
+   ([regfile→DSP→round→reg], the critical path once both multiplies are DSP-backed); here
+   the 48-bit mantissa product is registered through [stages] flops (Vivado → DSP48
+   MREG/PREG) before {!pack}, so the multiply and the exponent/round wrapper land in
+   separate cycles. Multi-cycle via the same run-gated counter/[stall] as the integer
+   unit; operands are held stable across the run, so it stays bit-identical to {!create}/
+   {!create_opt} (differential qcheck). *)
+let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
+  let spec = Reg_spec.create () ~clock:i.clock in
+  let xm = vdd @: select i.x ~high:22 ~low:0 in
+  let ym = vdd @: select i.y ~high:22 ~low:0 in
+  (* [stages] registers on the mantissa product; Vivado pulls them into the DSP *)
+  let p =
+    List.fold (List.init stages ~f:Fn.id) ~init:(xm *: ym) ~f:(fun acc _ ->
+      Signal.reg spec ~enable:ce acc)
+  in
+  let s =
+    Signal.reg_fb spec ~enable:ce ~width:4 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 4))
+  in
+  { O.stall = i.run &: ~:(s ==:. stages); z = pack ~p i }
+;;
+
 (* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
    Value-correctness is the verilator RTL co-sim's job (test/cosim/, the §6 fidelity
    oracle): it proves bit-exactness to FPMultiplier.v over the frozen fp_vectors M-lines +
@@ -167,6 +190,43 @@ let%expect_test "FML create_opt ≡ create (differential qcheck, 32-bit z, 20000
        ~name:"fp_create_opt=create"
        QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
        (fun (x, y) -> Int.equal (z_ref ~x ~y) (z_opt ~x ~y)));
+  [%expect {| |}]
+;;
+
+let%expect_test "FML create_opt_pipelined ≡ create (differential qcheck, stages=2, 20000 \
+                 cases)"
+  =
+  (* Same differential check, fast side = the *pipelined* DSP FP multiply, driven through
+     the run/stall handshake (multi-cycle now); confirms the registered mantissa product +
+     shared [pack] match the iterative unit and that the pipeline's stall timing is sound. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let ref_sim = Sim.create create
+  and opt_sim = Sim.create (create_opt_pipelined ~stages:2) in
+  let ri = Cyclesim.inputs ref_sim
+  and ro = Cyclesim.outputs ref_sim
+  and oi = Cyclesim.inputs opt_sim
+  and oo = Cyclesim.outputs opt_sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  let run_fml (inp : _ I.t) (out : _ O.t) sim ~x ~y =
+    set inp.x x 32;
+    set inp.y y 32;
+    set inp.run 1 1;
+    Cyclesim.cycle sim;
+    while Bits.to_int_trunc !(out.stall) = 1 do
+      Cyclesim.cycle sim
+    done;
+    let z = Bits.to_unsigned_int !(out.z) in
+    set inp.run 0 1;
+    Cyclesim.cycle sim;
+    z
+  in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:20_000
+       ~name:"fp_create_opt_pipelined=create"
+       QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       (fun (x, y) ->
+         Int.equal (run_fml ri ro ref_sim ~x ~y) (run_fml oi oo opt_sim ~x ~y)));
   [%expect {| |}]
 ;;
 

@@ -42,7 +42,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
+let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let run = Always.Variable.reg spec ~width:1 in
@@ -54,7 +54,12 @@ let create (i : _ I.t) : _ O.t =
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
   (* combinational: end-of-bit / end-of-frame, line driver, ready *)
-  let endtick = mux2 i.fsel (tick_v ==:. 217) (tick_v ==:. 1302) -- "endtick" in
+  (* [baud_fast]/[baud_slow] default to RS232T.v's 25 MHz constants (clk/217 = 115200,
+     clk/1302 = 19200); the board passes clock-scaled values (feat/fast-clock: 60 MHz ⇒
+     521/3125) so the wire stays at a standard rate. *)
+  let endtick =
+    mux2 i.fsel (tick_v ==:. baud_fast) (tick_v ==:. baud_slow) -- "endtick"
+  in
   let endbit = bitcnt_v ==:. 9 in
   let rdy = ~:run_v in
   let txd = select shreg_v ~high:0 ~low:0 in

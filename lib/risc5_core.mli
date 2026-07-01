@@ -67,10 +67,21 @@ end
 
     [?fast_mul] (default [false], Phase 9 — AGENT.md §5) swaps both shift-add multipliers
     — the integer {!Multiplier} and the FP {!Fp_multiplier} mantissa engine — for their
-    combinational DSP variants ({!Multiplier.create_opt} / {!Fp_multiplier.create_opt},
-    each proven bit-identical via its differential qcheck) through the {!Units} seam; the
-    default keeps the faithful, Phase-8-proven units. Everything else is unchanged. *)
-val create : ?ce:Signal.t -> ?fast_mul:bool -> Signal.t I.t -> Signal.t O.t
+    DSP variants (each proven bit-identical via its differential qcheck) through the
+    {!Units} seam; the default keeps the faithful, Phase-8-proven units. Everything else
+    is unchanged.
+
+    [?mul_stages] (default [0], experiment [feat/fast-clock]) selects which DSP variant
+    [fast_mul] uses: [0] = the combinational [create_opt] (the 50 MHz build); [n > 0] =
+    [create_opt_pipelined ~stages:n], where [n] product registers are retimed into the
+    DSP48 so the multiply drops off the critical path — for running the system clock past
+    ~52 MHz (the multiplies become [n]-cycle again, via the core's stall path). *)
+val create
+  :  ?ce:Signal.t
+  -> ?fast_mul:bool
+  -> ?mul_stages:int
+  -> Signal.t I.t
+  -> Signal.t O.t
 
 (** The eight submodule constructors the core wires up — the modules [RISC5.v]
     instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven
