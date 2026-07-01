@@ -22,87 +22,12 @@
 
 open Hardcaml
 open Boot_checkpoint_common
-module Soc_board = Nexys4_board.Soc_board
-module Cellram_model = Nexys4_board.Cellram_model
 
-(* The board SoC closed with the behavioural cellular-RAM on its pins — same wiring as the
-   board boot checkpoint, but [create] is parameterised by the knobs we sweep: [fast_mul]
-   / [mul_stages] (the DSP multiplier variant) and [read_cycles] / [write_cycles] (the
-   PSRAM latency). Only [sclk] is read directly (for the SD bridge); the rest go by name. *)
-module Tb = struct
-  module I = struct
-    type 'a t =
-      { clock : 'a
-      ; pclk : 'a [@bits 1]
-      ; rst_n : 'a [@bits 1]
-      ; miso : 'a [@bits 1]
-      ; rxd : 'a [@bits 1]
-      ; btn : 'a [@bits 4]
-      ; sw : 'a [@bits 8]
-      ; gpio_in : 'a [@bits 8]
-      ; ps2c : 'a [@bits 1]
-      ; ps2d : 'a [@bits 1]
-      ; msclk : 'a [@bits 1]
-      ; msdat : 'a [@bits 1]
-      }
-    [@@deriving hardcaml]
-  end
-
-  module O = struct
-    type 'a t = { sclk : 'a [@bits 1] } [@@deriving hardcaml]
-  end
-
-  let create
-    ~contents
-    ~fast_mul
-    ~mul_stages
-    ~icache
-    ~read_cycles
-    ~write_cycles
-    (i : _ I.t)
-    : _ O.t
-    =
-    let dq = Signal.wire 16 in
-    let soc =
-      Soc_board.create
-        ~contents
-        ~read_cycles
-        ~write_cycles
-        ~fast_mul
-        ~mul_stages
-        ~icache
-        { Soc_board.I.clock = i.clock
-        ; pclk = i.pclk
-        ; rst_n = i.rst_n
-        ; miso = i.miso
-        ; rxd = i.rxd
-        ; btn = i.btn
-        ; sw = i.sw
-        ; gpio_in = i.gpio_in
-        ; ps2c = i.ps2c
-        ; ps2d = i.ps2d
-        ; msclk = i.msclk
-        ; msdat = i.msdat
-        ; mem_dq_i = dq
-        }
-    in
-    let m =
-      Cellram_model.create
-        { Cellram_model.I.clock = i.clock
-        ; mem_adr = soc.mem_adr
-        ; mem_dq_o = soc.mem_dq_o
-        ; ce_n = soc.ram_ce_n
-        ; we_n = soc.ram_we_n
-        ; ub_n = soc.ram_ub_n
-        ; lb_n = soc.ram_lb_n
-        }
-    in
-    Signal.assign dq m.mem_dq_i;
-    { O.sclk = soc.sclk }
-  ;;
-end
-
-module Sim = Cyclesim.With_interface (Tb.I) (Tb.O)
+(* The board SoC + behavioural PSRAM model is the shared {!Board_tb}; the bench drives its
+   [fast_mul] / [mul_stages] (the DSP-multiplier variant) and [read_cycles] /
+   [write_cycles] (the PSRAM latency) knobs across the sweeps below. Only [sclk] is read
+   directly (for the SD bridge); the rest go by name via [trace_all]. *)
+module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
 let cycle_cap = 80_000_000
 
@@ -111,15 +36,8 @@ let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (Tb.create
-         ~contents:Risc5.Rom.bootloader
-         ~fast_mul
-         ~mul_stages
-         ~icache
-         ~read_cycles
-         ~write_cycles)
+    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
+      Board_tb.create ~fast_mul ~mul_stages ~icache ~read_cycles ~write_cycles i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -206,15 +124,14 @@ let make_os ~icache =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (Tb.create
-         ~contents:Risc5.Rom.bootloader
-         ~fast_mul:false
-         ~mul_stages:0
-         ~icache
-         ~read_cycles:5
-         ~write_cycles:5)
+    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
+      Board_tb.create
+        ~fast_mul:false
+        ~mul_stages:0
+        ~icache
+        ~read_cycles:5
+        ~write_cycles:5
+        i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in

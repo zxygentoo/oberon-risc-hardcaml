@@ -1,9 +1,10 @@
 (* Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
    PSRAM double {!Nexys4_board.Cellram_model} on its memory pins. Both board integration
-   tests here (the boot-handoff checkpoint and the visual golden) wire the SoC to the
-   model identically and reconstruct 32-bit words from its two byte lanes the same way;
-   this factors that out. (test/bench/bench_boot does the same wiring and could adopt this
-   too.) The public contract is in board_tb.mli. *)
+   tests here (the boot-handoff checkpoint and the visual golden) — and
+   test/bench/bench_boot — wire the SoC to the model identically and reconstruct 32-bit
+   words from its two byte lanes the same way; this factors that out. The
+   [fast_mul]/[mul_stages] knobs exist for the bench's DSP-multiplier sweep (the tests
+   leave them at the Soc_board defaults). The public contract is in board_tb.mli. *)
 
 open Hardcaml
 module Soc_board = Nexys4_board.Soc_board
@@ -35,6 +36,8 @@ let create
   ?(read_cycles = 2)
   ?(write_cycles = 2)
   ?(icache = false)
+  ?(fast_mul = false)
+  ?(mul_stages = 0)
   ?(contents = Risc5.Rom.bootloader)
   (i : _ I.t)
   : _ O.t
@@ -46,6 +49,8 @@ let create
       ~read_cycles
       ~write_cycles
       ~icache
+      ~fast_mul
+      ~mul_stages
       { Soc_board.I.clock = i.clock
       ; pclk = i.pclk
       ; rst_n = i.rst_n

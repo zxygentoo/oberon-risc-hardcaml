@@ -1,7 +1,6 @@
 (** Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
     PSRAM double {!Nexys4_board.Cellram_model} on its memory pins — the common wiring of
-    the board boot checkpoint and the board visual golden (bench_boot does the same wiring
-    and could adopt it too). *)
+    the board boot checkpoint, the board visual golden, and test/bench/bench_boot. *)
 
 open Hardcaml
 
@@ -33,12 +32,15 @@ end
     PSRAM model. [contents] defaults to the design ROM {!Risc5.Rom.bootloader};
     [read_cycles] / [write_cycles] default to 2 (the model answers at once, so small waits
     exercise only the controller FSM — the checkpoint's regime; the visual golden passes 5
-    to match the board). [sclk] is the only output read directly; everything else is
-    reached by name under [Cyclesim.Config.trace_all]. *)
+    to match the board). [fast_mul] / [mul_stages] (default off) select the DSP-multiplier
+    variant — for the bench's sweep; the tests leave them off. [sclk] is the only output
+    read directly; everything else is reached by name under [Cyclesim.Config.trace_all]. *)
 val create
   :  ?read_cycles:int
   -> ?write_cycles:int
   -> ?icache:bool
+  -> ?fast_mul:bool
+  -> ?mul_stages:int
   -> ?contents:int array
   -> Signal.t I.t
   -> Signal.t O.t

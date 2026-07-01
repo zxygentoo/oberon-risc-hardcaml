@@ -32,15 +32,9 @@
 (executable
  (name bench_boot)
  (modules bench_boot)
- (libraries
-  risc5
-  nexys4_board
-  oracle
-  hardcaml
-  sd_bridge
-  boot_checkpoint_common)
- (preprocess
-  (pps ppx_hardcaml)))
+ ; board_tb (test/boards/nexys-4) brings the Soc_board+Cellram_model wiring — and risc5 /
+ ; nexys4_board transitively; the bench itself no longer derives interfaces, so no ppx.
+ (libraries board_tb oracle hardcaml sd_bridge boot_checkpoint_common))
 
 (rule
  (alias bench_boot)
