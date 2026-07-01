@@ -207,6 +207,7 @@ Vivado-specific layer.
 | **7** ✅ | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream**. The Phase-6 design ports **nearly unchanged** onto a **Nexys 4** and **boots Project Oberon to the idle desktop from an SD image** on real silicon. One bug surfaced — **horizontal video flicker** — whose cause the **Phase-8 formal layer had already pinpointed**: VID's framebuffer-fetch **CDC**, the one spot not cycle-equivalent to `VID60.v`. The Phase-6 `caught`/`req` handshake sampled a `pclk` flop directly in `clk` with no synchroniser (+ a clk→pclk feedback) — deterministic in sim, metastable/timing-marginal on silicon. **Fixed** with a metastability-safe **toggle pulse-synchroniser** (`lib/vid.ml` `pulse_sync` — proven no-loss/no-spurious for all phases in Phase 8; the cosim + visual-golden confirm it's output-identical) **+ the matching `.xdc` CDC constraints** (`nexys4.xdc`: `set_clock_groups -asynchronous` clk25↔clk65 + `ASYNC_REG` on `sync0/1/2` — a `set_max_delay -datapath_only` on the `req_toggle→sync0` hop is deliberately *not* used: clock_groups outranks it in Vivado and would render it inert, and the routed hop is already ~0.95 ns; see the `nexys4.xdc` note). **Flicker confirmed gone on real hardware (both PO and EO)** — the fix holds on silicon. Post-route timing closes with WNS 9.389 ns (pixel domain) / 20.992 ns (clk25 domain), all constraints met. *Note:* the single onboard PS/2 port is wired to the mouse; the **PS/2 keyboard's on-hardware test is pending a Pmod PS/2 adapter** for the 2nd port (the `PS2` controller itself is proven in @formal + cosim, so this is a board-wiring bring-up step, not a design gap). | on-hardware boot ✅ |
 | **8** *(stretch)* ✅ *(in-scope)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v`, plus the **register file** proven ≡ a behavioural spec (`registers_spec.v` — `Registers.v`'s duplicated bit-sliced `RAM16X1D` is a synthesis idiom with incongruent state, so we prove the 16×32/3R/1W *contract*; §2/§3). Every datapath unit proven. And the **whole core glue** — incl. the **in-situ ALU** (`aluRes`, no standalone `.v`) — proven ≡ `RISC5.v` with the 8 submodules black-boxed (assume-guarantee: `equiv_make` merges + checks the unit inputs, `cutpoint -blackbox` assumes their outputs, sound on the leaf proofs; teeth-checked by mutation). The datapath + core layer is closed, and the **Tier-1 peripherals are now proven too** — the same yosys `equiv_induct` path extended to the faithful-`.v` peripherals (the exhaustive upgrade of their Phase-6a cosim): **Tier 1** RS232R/T, SPI, PS2 ✓ (clean single-clock FSMs as `sequential` rows; each lib register *named*, then paired to the RTL by a per-row `renames` list — e.g. `q0→Q0`, `spi_shreg→shreg`; SPI's `rdy` `output reg` pairs via the output port; PS2's 16×8 `fifo` pairs through the `memory` pass like the register file), **plus the Mouse** (Tier 2) ✓ — its open-drain `inout msclk/msdat` (we split into `*_oe`+resolved-input) handled by two shims wrapping *both* sides into one explicit interface with a **free** external read (else yosys ties the inout read to 0 and the FSM degenerates — a vacuous proof) and the resolved line `oe ? 0 : ext` as the observable; the tristate lowered by `tribuf -formal`/`chformal -remove`/`setundef -one` (the pad pull-up). **And VID** (Tier 2) ✓ — a *partial* multiclock proof: drop `VID60.v`'s DCM (Phase-7 primitive) + `expose -input pclk`, **cut** `vidbuf` to a shared free input so the raster + pixel datapath prove ≡ `VID60.v` *given the fetched word*, and **`equiv_remove`** the `req` handshake — the framebuffer-fetch CDC deliberately departs (our toggle pulse-synchroniser vs the RTL async-set `req1`). That departure's **fetch invariant** is then closed by a *property* proof (`vid_invariant`): the extracted `pulse_sync` primitive is proven **one-`req`-per-`req0`, no loss, no spurious — for all clk/pclk phases and all reachable states** via `yosys-smtbmc -i`/z3 **k-induction** (the engine SymbiYosys wraps; no `sby` needed — and no hand-crafted inductive invariant: k≈48 spanning a fetch cycle suffices) — the CDC-robustness the single-phase Cyclesim test can't reach. The 2-group prefetch's `vidadr` departure is closed the same way — by **decomposition**: its look-ahead address is proven ≡ an independent geometry spec (`vid_addr`, combinational `Sec`/z3, all `(hcnt,vcnt)`), timing comes from `vid_invariant`, and a **reviewed composition lemma** glues them (the one place a hand argument bridges the mechanized pieces; the monolithic all-phases proof doesn't converge — col 0 is cross-line; see test/formal/README "VID prefetch"). **17 checks** total, each mutation-checked. *(That VID-CDC departure was no longer just a sim artifact: its `caught` one-shot turned out to be a real metastability bug on the Nexys 4 — horizontal flicker — so `vid.ml` now ships the synchroniser the proof is built around; the formal layer flagged the exact fragile spot.)* **Out of scope:** the SoC top (`RISC5Top`) — board-specific, our sim `Soc` ≠ `RISC5Top.OStation.v` by design (DCM/PROM/IOBUF/memory are Phase 7); revisit only if a board SoC lands. See test/formal/README | z3 `Unsat` / yosys all-`$equiv`-proven |
 | **9** *(stretch)* ✅ *(compute arc)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving. *Landed:* DSP MUL + FML, pipelined to **60 MHz**, benchmarked end-to-end (`test/bench/`). *Deferred:* Newton-Raphson DIV. *Verdict:* memory-bound, not compute-bound → Phase 10 | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
+| **10a** *(stretch)* ✅ *(memory arc)* | **I-cache** — the Phase-9 verdict acted on. A direct-mapped, write-through read/I-cache (`Icache`) in front of `Cellram`, in the **board layer** so the core stays byte-identical (§8): async-read LUTRAM (the register-file idiom) gives a **0-stall combinational hit** (drop `mem_pend`, so Cellram's `ce = ~mem_pend | …` rises the same cycle); write-through + **snoop-invalidate** = transparent coherence (Oberon has no flush op — the real machine has no cache). *Landed:* **~6× on running-OS code** (93% hit-rate), boots clean on **real hardware**, 60 MHz still closes (the cache fill path is now the critical path); 720 LUT distributed RAM, **0 BRAM**. *Deferred:* burst/wide-PSRAM fill, D-cache (10b/c) | architectural lockstep + **coherence**: byte-identical desktop with the cache ON (`@visual_golden_board`) + 28.8K-instr pc-lockstep vs cache-off; `Icache`'s own co-located fill/hit/snoop tests |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
 `RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
@@ -263,27 +264,45 @@ PSRAM. The broad win actually banked is the **50→60 MHz clock, 1.2×**, on com
 the DSP48s are placed, and they *enabled* the clock bump), but further multiply/clock work is Amdahl- or
 memory-capped. The next lever is memory, not compute (Phase 10). See `test/bench/README.md`.
 
-### Phase 10 *(potential)*: memory — a cache
+### Phase 10a ✅ + 10b/c *(potential)*: memory — a cache
 
-The Phase-9 benchmark points here unambiguously: the machine is **memory-bound**. Every OS instruction
-fetch is a multi-cycle PSRAM read (`read_cycles:5` at 60 MHz — boot already spends ~24% in wait *with
-code in the ROM fast-path*, and the running OS is worse), so the leverage is in cutting memory latency,
-not adding compute. Rough scope, cheapest-win-first:
+The Phase-9 benchmark pointed here unambiguously — the machine is **memory-bound**: every OS instruction
+fetch is a multi-cycle PSRAM read (`read_cycles:5` at 60 MHz), so the leverage is cutting memory latency,
+not adding compute. **Phase 10a landed the instruction cache and confirmed the diagnosis on silicon.**
 
-- **Instruction cache** — the standout. A small direct-mapped I-cache in front of `Cellram` (a few KB of
-  BRAM: tag + valid, fill a line on miss, hit = single-cycle fetch) turns the fetch-every-cycle PSRAM
-  stall into a hit most of the time. Biggest expected win, and the design has *no* cache today — a
-  clean, self-contained hardware lesson.
-- **Wider / burst PSRAM** — the bus is 16-bit (two half-words per 32-bit word); a 32-bit or burst path
-  (the M45W8MW16 has a 104 MHz synchronous burst mode) cuts the per-access cost for *all* traffic,
-  complementary to a cache.
-- **D-cache / write buffer** — lower priority; loads/stores are a smaller slice than fetches.
+**10a — the I-cache (done).** A small direct-mapped, write-through read/I-cache
+(`boards/nexys-4/icache.ml`, default 1024 one-word lines = 4 KB) in front of `Cellram`, in the **board
+layer** — never `lib/`, so the core stays byte-identical and its Phase-8 proof is untouched (the latency
+it fights is a board phenomenon; the `lib/` sim has single-cycle memory). Two design choices carry it:
 
-Verification stays Phase-9-style — judged against the **ISA/oracle** (Oberon still boots and lockesteps),
-not `RISC5.v` timing; a cache is a new architectural block, not in the faithful RTL. `@bench_boot` + the
-boot checkpoint are the ready-made before/after harness (add hit-rate to the bench). The subtle part is
-**coherence**: a cache must stay transparent to the memory model — invalidate on writes to a cached line
-(the video-DMA framebuffer writes, the module loader's code writes), or the machine sees stale code/data.
+- **0-stall combinational hit.** The tag/data array is **async-read distributed RAM** (`multiport_memory`,
+  exactly the register-file idiom §2/§6 — BRAM can't read combinationally). On a hit, `soc_board` drops
+  `mem_pend` to `Cellram`, whose `ce = ~mem_pend | …`, so `ce` rises the *same* cycle and the word is
+  muxed from the cache: a hit costs zero stall cycles, no new pipe stage, no core change. Synthesises to
+  `RAMS64E` LUTRAM (720 LUT distributed, **0 BRAM**); 60 MHz still closes with the *fill* path (`pc_reg →
+  icache_mem write` ≈ 15.6 ns) as the new critical path — the register file's async-read twin.
+- **Coherence with no flush op** (Oberon has none — the real machine has no cache). One invariant: *a
+  valid line always equals PSRAM*, because fills copy PSRAM and the cache issues no writes itself
+  (Cellram's write path is unchanged = write-through). The only staleness risk is a write to a cached
+  address, which we **snoop**: a CPU store invalidates a matching line. Three cases — **CPU→CPU** (incl.
+  the module loader writing code then jumping into it — the case that would otherwise trap the OS),
+  **CPU→video** (write-through keeps the framebuffer live for the video DMA's own, never-cached read
+  port), **video→CPU** (read-only, nothing to snoop). Because the invariant holds *continuously*, no
+  reset-invalidate is needed: the LUTRAM powers up `INIT=0` (all lines invalid) at configuration.
+
+Result: **~6× on running-OS code** (93% hit-rate), +5% through boot (already ROM-fast-pathed), and the
+board "boots clean, runs way smoother" on real hardware. Verified by the usual layers, now cache-aware:
+`@bench_boot` (a *same-work* instruction-lockstep off-vs-on compare — the honest number, not
+phase-drifted throughput), `@visual_golden_board` (**byte-identical** idle desktop with the cache ON = a
+full coherence proof, the Phase-6b golden re-run through the board SoC), the 28.8K-instruction pc-lockstep
+it rides on, and `Icache`'s own co-located fill/hit/snoop-invalidate tests (§6).
+
+**10b/c — further, deferred.** *Burst / wider PSRAM fill* — the bus is 16-bit (two half-words per word); a
+32-bit or burst path (the M45W8MW16's synchronous burst mode) lowers the miss penalty and helps *all*
+traffic, and is where multi-word cache lines pay off (the cache becomes its fill engine). *D-cache / write
+buffer* — lower priority; loads/stores are a smaller slice than fetches. Verification stays
+Phase-10a-style — judged against the **ISA/oracle**, not `RISC5.v` timing (a cache is a new architectural
+block, not in the faithful RTL).
 
 ---
 
@@ -500,7 +519,8 @@ oberon-risc-hardcaml/
   AGENT.md / CLAUDE.md    ← this file (CLAUDE.md is a symlink to AGENT.md)
   dune-project, dune      ← root build config (dune restricted to: lib boards test vendor)
   lib/                    ← Hardcaml design library `risc5` (placeholder in Phase 0;
-                            real modules — shifters, ALU, CPU core… — from Phase 1)
+                            real modules — shifters, ALU, CPU core… — from Phase 1;
+                            `rom.ml` = the boot ROM image, so risc5 is self-contained)
   boards/                 ← board-specific layer (Phase 7); one dir per target. The
                             git-ignored generated/build trees are hoisted out (below) so
                             each boards/<target>/ stays 100% tracked source.
@@ -508,17 +528,22 @@ oberon-risc-hardcaml/
                             never the reverse → lib/ stays board-independent):
       cellram.{ml,mli}        PSRAM controller + CPU/video arbiter (synthesizable, vendor-free)
       cellram_model.{ml,mli}  sim double of the external PSRAM chip (test-only; never synthesized)
-      soc_board.{ml,mli}      board SoC — core(`ce`) + Cellram + peripherals + video
+      icache.{ml,mli}         Phase-10a direct-mapped write-through I-cache (async LUTRAM) — 0-stall hit before Cellram
+      soc_board.{ml,mli}      board SoC — core(`ce`) + Cellram + peripherals + video (+ optional Icache)
+      emit_board_verilog.ml   emit soc_board as Verilog (ROM from Risc5.Rom → oracle-free); run by gen_verilog.sh
       nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code
       nexys4.xdc            pin constraints (derived from the Digilent master XDC)
       *.tcl, gen_verilog.sh Vivado emit → synth → program flow
       README.md             Phase-7 design log + resume notes
     _generated/<target>/  ← git-ignored: soc_board.v emitted from Hardcaml
     _build/<target>/      ← git-ignored: Vivado runs + the bitstream
-  test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` = the fast suite,
-                            `test_boot_checkpoint` = Phase-5 boot checkpoint
-                            (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL co-sim,
-                            formal/ = logic-equivalence proofs (`@formal`, Phase 8)
+  test/                   ← tests; `test_fp_*` + `test_cpu_lockstep` + `test_rom` (ROM guard,
+                            §8) = the fast suite, `test_boot_checkpoint` = Phase-5 boot
+                            checkpoint (opt-in: `dune build @boot_checkpoint`), cosim/ = RTL
+                            co-sim, formal/ = logic-equivalence proofs (`@formal`, Phase 8)
+    boards/<target>/      ← board-SoC integration tests mirroring boards/<target>/: the PSRAM
+                            boot checkpoint + visual golden, sharing the `board_tb` harness
+                            (@boot_checkpoint_board / @visual_golden_board)
     fetch-rtl.sh          ← fetch + checksum-verify the reference .v on demand (shared by
     rtl-sources.txt         cosim + formal); the provenance pins live in rtl-sources.txt
     _po/                  ← original sources, git-ignored; fetch-rtl.sh populates
@@ -534,14 +559,16 @@ oberon-risc-hardcaml/
 
 **Board layer layout (Phase 7, locked).** Each target is `boards/<target>/` — a
 vendor-primitive-free Hardcaml library (`nexys4_board`: the synthesizable board design
-`cellram`/`soc_board`, plus `cellram_model`, the sim chip-double) that depends on `risc5`
+`cellram`/`icache`/`soc_board`, plus `cellram_model`, the sim chip-double) that depends on `risc5`
 *one-way*, so the compiler (not convention) keeps `lib/` board-independent (§3). The lone
 vendor primitives (MMCM/IOBUF/POR) live in the hand-written `nexys4_top.v`. Generated/build
 artifacts hoist to `boards/_generated/<target>/` + `boards/_build/<target>/` — two all-boards
 `.gitignore` entries (`/boards/_generated/`, `/boards/_build/`) — so every `boards/<target>/`
-stays pure tracked source. Tests follow §6: `cellram`'s unit checks co-locate inline against
-`cellram_model` (both in the board lib, no oracle); only the oracle-coupled board boot
-checkpoint + the faithful SD model live in `test/`.
+stays pure tracked source. The board's Verilog emitter (`emit_board_verilog`) lives here too —
+it bakes the design ROM (`Risc5.Rom`), so the whole `boards/<target>/` is oracle-free. Tests
+follow §6: `cellram`/`icache` unit checks co-locate inline against `cellram_model` (in the
+board lib, no oracle); the oracle-coupled board integration tests — the PSRAM boot checkpoint +
+visual golden — live in `test/boards/<target>/`, sharing the `board_tb` harness.
 
 **Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
 `vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
@@ -550,8 +577,10 @@ sources and builds them as library **`oracle`** in our project (warnings off; on
 `unix`). Self-contained and leaves the submodule pristine. *Cleaner alternative if ever
 wanted:* give the emulator a `public_name` upstream (needs a package stanza in that repo),
 then depend on it directly and delete the wrapper. FP vectors
-(`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) and the boot ROM
-(`Oracle.Boot_rom`) come straight from the submodule — no copies needed.
+(`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) come straight from the submodule. The
+boot ROM lives in the design as `Risc5.Rom` (so the published `risc5` library is
+self-contained); the oracle keeps its own `Oracle.Boot_rom` copy, and a guard test
+(`test/test_rom.ml`) pins the two equal — design and oracle can never boot different images.
 
 **Toolchain:** **OxCaml** — opam switch **`5.2.0+ox`** (`ocaml-variants.5.2.0+ox`), dune
 `3.22+ox`, Hardcaml **`v0.18~preview`** (with `ppx_hardcaml` + `hardcaml_waveterm`, same

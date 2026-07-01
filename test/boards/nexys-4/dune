@@ -1,0 +1,48 @@
+; Board (Nexys 4) SoC integration tests — mirror boards/nexys-4/ under test/. Both close the
+; PSRAM board SoC with cellram_model through the shared board_tb harness (this dir). Built by
+; @check so they can't rot; opt-in to run, like the other heavyweight checks (§6):
+;   dune build @boot_checkpoint_board   dune build @visual_golden_board
+
+(library
+ (name board_tb)
+ (modules board_tb)
+ (libraries risc5 nexys4_board hardcaml)
+ (preprocess
+  (pps ppx_hardcaml)))
+
+; Phase 7: board boot-handoff checkpoint — the same boot proven through the PSRAM board SoC
+; (Soc_board + cellram_model), the SoC-independent half shared with the BRAM checkpoint via
+; boot_checkpoint_common. Run: dune build @boot_checkpoint_board
+
+(executable
+ (name test_boot_checkpoint_board)
+ (modules test_boot_checkpoint_board)
+ (libraries
+  risc5
+  nexys4_board
+  oracle
+  hardcaml
+  sd_bridge
+  boot_checkpoint_common
+  board_tb))
+
+(rule
+ (alias boot_checkpoint_board)
+ (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./test_boot_checkpoint_board.exe)))
+
+; Phase-10a: board visual golden WITH the I-cache — the coherence proof. Boots the PSRAM board
+; SoC with the cache ON past the handoff and asserts the desktop framebuffer is byte-identical
+; to the oracle. Run: dune build @visual_golden_board
+
+(executable
+ (name test_visual_golden_board)
+ (modules test_visual_golden_board)
+ (libraries risc5 nexys4_board oracle hardcaml sd_bridge board_tb))
+
+(rule
+ (alias visual_golden_board)
+ (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./test_visual_golden_board.exe)))

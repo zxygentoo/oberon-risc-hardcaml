@@ -9,6 +9,6 @@ gen="$root/boards/_generated/nexys-4"
 
 mkdir -p "$gen"
 cd "$root"
-dune build test/emit_board_verilog.exe
-dune exec test/emit_board_verilog.exe > "$gen/soc_board.v"
+dune build boards/nexys-4/emit_board_verilog.exe
+dune exec boards/nexys-4/emit_board_verilog.exe > "$gen/soc_board.v"
 echo "wrote $gen/soc_board.v ($(wc -l < "$gen/soc_board.v") lines)"

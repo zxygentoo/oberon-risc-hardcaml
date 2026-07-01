@@ -1,30 +1,29 @@
-(* Phase 6b — visual golden (AGENT.md §5/§6).
+(* Phase-10a — board visual golden WITH the I-cache: the definitive coherence proof.
 
-   Continue the boot PAST the OS handoff and diff the framebuffer (a RAM region) against
-   the oracle, rendered to ASCII for eyeballing. The oracle boot is bit-deterministic (its
-   [Headless] driver paces a synthetic 60 Hz clock; [test_boot.ml] freezes the same
-   hashes) and its idle desktop screen is static, so once both machines have run far
-   enough the SoC's framebuffer must match it bit-for-bit (hash 0xb9bdbf56ba51298d, 18607
-   px).
+   The Phase-6b visual golden (test_visual_golden.ml) renders the idle Oberon desktop on
+   the flat-BRAM {!Risc5.Soc} and asserts it is byte-identical to the oracle. This variant
+   runs the *board* SoC ({!Nexys4_board.Soc_board} + the {!Nexys4_board.Cellram_model}
+   PSRAM double, via the shared {!Board_tb}) with the Phase-10a I-cache ON, past the
+   handoff, and asserts the *same* framebuffer against the oracle. That is the strong
+   coherence test: if the cache ever served stale code/data — the module loader writing
+   code the cache holds, or a framebuffer word the CPU cached being overwritten — the
+   desktop would render wrong and the hash would differ. Byte-identical ⇒ the cache is
+   transparent through the whole boot + module load + desktop render, not just the
+   boot-to-handoff prefix the lockstep bench covers.
 
-   The SoC is much slower per "frame" than the oracle: it bit-bangs the SD card over SPI
-   at real timing ({!Sd_bridge}) while the oracle's disk is instant, so the desktop only
-   finishes drawing ~32-34M cycles in (vs the oracle's frame 40). Hence the generous cycle
-   cap; the run settles once the framebuffer is drawn and then unchanged for [settle]
-   chunks.
+   Feasibility note: this is practical *only* with the cache. Cache-off the board runs OS
+   code at ~26 cyc/instr, so drawing the desktop would take hundreds of millions of
+   cycles; the cache's ~6x (down to ~4.4 cyc/instr) brings it into interpreter range. So
+   the cache is what makes a board-level visual golden runnable at all. (AGENT.md §5 Phase
+   10.)
 
-   Framebuffer: [Risc.default_display_start = 0xE7F00], 1024x768x1bpp = 32x768 = 24576
-   words (word i covers 32 horizontal px; Oberon's origin is bottom-left, so we render
-   rows top down). Opt-in (boots the real disk): [dune build @visual_golden]; [SOC_CAP]
-   overrides the cap, [DISK_IMG] the image. *)
+   Opt-in: dune build @visual_golden_board. Env: SOC_CAP overrides the cycle cap, ICACHE=0
+   runs the (much slower) cache-off control, DISK_IMG the image. *)
 
 module R = Oracle.Risc
 open Hardcaml
-module Soc = Risc5.Soc
-module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
+module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
-(* Locate the project root by walking up for [dune-project] (as test_boot_checkpoint
-   does), so the disk resolves from any cwd. *)
 let project_root () =
   let rec up dir =
     if Sys.file_exists (Filename.concat dir "dune-project")
@@ -32,7 +31,7 @@ let project_root () =
     else (
       let parent = Filename.dirname dir in
       if String.equal parent dir
-      then failwith "test_visual_golden: no dune-project found above cwd"
+      then failwith "test_visual_golden_board: no dune-project found above cwd"
       else up parent)
   in
   up (Sys.getcwd ())
@@ -48,7 +47,7 @@ let disk_image =
 ;;
 
 let copy_to_temp src =
-  let tmp = Filename.temp_file "visual_" ".dsk" in
+  let tmp = Filename.temp_file "visual_board_" ".dsk" in
   let ic = open_in_bin src
   and oc = open_out_bin tmp in
   output_string oc (really_input_string ic (in_channel_length ic));
@@ -62,8 +61,8 @@ let fb_h = 768
 let fb_words = fb_w * fb_h
 let fb_base_word = 0x39FC0 (* display_start 0xE7F00 / 4 *)
 
-(* Boot the oracle exactly as the frontend / test_boot.ml does (PCLink + no-op clipboard +
-   disk), advance [frames] at the synthetic 60 Hz clock, and snapshot the framebuffer. *)
+(* Boot the oracle exactly as test_visual_golden / test_boot.ml does and snapshot the
+   drawn, stable framebuffer + its hash. *)
 let boot_oracle frames =
   let tmp = copy_to_temp disk_image in
   let risc = R.make () in
@@ -93,8 +92,6 @@ let popcount fb =
     fb
 ;;
 
-(* Downsample to ASCII: one char per [sx]x[sy] block, '#' if any pixel in the block is
-   set. Rows run top (y high) to bottom (y = 0) since Oberon's origin is bottom-left. *)
 let render fb ~sx ~sy =
   let buf = Buffer.create 8192 in
   let y = ref (fb_h - sy) in
@@ -114,8 +111,7 @@ let render fb ~sx ~sy =
   Buffer.contents buf
 ;;
 
-(* FNV-1a over the framebuffer words, matching Oracle.Headless.framebuffer_hash, so the
-   SoC framebuffer hash compares directly to the oracle's. *)
+(* FNV-1a over the framebuffer words, matching Oracle.Headless.framebuffer_hash. *)
 let fb_fnv fb =
   let prime = 0x0000_0100_0000_01b3L
   and offset = 0xcbf2_9ce4_8422_2325L in
@@ -129,16 +125,16 @@ let fb_fnv fb =
   Array.fold_left word offset fb
 ;;
 
-(* Boot our SoC from the disk (the {!Sd_bridge} SD card feeding it) and run PAST the
-   handoff until the framebuffer settles (drawn, then unchanged for [settle] chunks) or
-   [cap] cycles. Returns (framebuffer words, settled?). *)
-let boot_soc ~cap ~chunk ~settle =
+(* Boot the board SoC (SD card via {!Sd_bridge}) with the cache [icache], run PAST the
+   handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
+   {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
+   cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
+let boot_soc_board ~icache ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (Soc.create ~contents:Risc5.Rom.bootloader)
+    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
+      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -151,23 +147,15 @@ let boot_soc ~cap ~chunk ~settle =
   and rdy = reg "rdy"
   and shreg = reg "spi_shreg"
   and spi_ctrl = reg "spi_ctrl" in
-  let lanes =
-    Array.init 4 (fun k ->
-      let n = Printf.sprintf "ram%d" k in
-      some n (Cyclesim.lookup_mem_by_name sim n))
-  in
+  let cram_lo = some "cram_lo" (Cyclesim.lookup_mem_by_name sim "cram_lo") in
+  let cram_hi = some "cram_hi" (Cyclesim.lookup_mem_by_name sim "cram_hi") in
   let read_fb () =
-    Array.init fb_words (fun i ->
-      let w = fb_base_word + i in
-      let b k = Cyclesim.Memory.to_int lanes.(k) ~address:w in
-      (b 3 lsl 24) lor (b 2 lsl 16) lor (b 1 lsl 8) lor b 0)
+    Array.init fb_words (fun i -> Board_tb.read_word ~cram_lo ~cram_hi (fb_base_word + i))
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
   inp.rst_n := lo;
   inp.miso := hi;
-  (* idle the peripheral inputs high (released lines); switches/buttons default 0 = disk
-     boot, matching the oracle *)
   inp.rxd := hi;
   inp.ps2c := hi;
   inp.ps2d := hi;
@@ -211,23 +199,31 @@ let boot_soc ~cap ~chunk ~settle =
 ;;
 
 let () =
-  (* oracle target: the drawn, stable screen (stable by frame 30; 40 for margin) *)
+  let icache =
+    match Sys.getenv_opt "ICACHE" with
+    | Some "0" -> false
+    | _ -> true
+  in
   let oracle_fb, oracle_hash = boot_oracle 40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
     (popcount oracle_fb);
   Printf.printf
-    "booting SoC past the handoff (bit-banged SD — draws ~32-34M cycles in)...\n%!";
+    "booting BOARD SoC (Cellram PSRAM, icache=%b) past the handoff — cache makes this \
+     feasible...\n\
+     %!"
+    icache;
   let cap =
     match Sys.getenv_opt "SOC_CAP" with
     | Some s -> int_of_string s
-    | None -> 50_000_000
+    | None -> 160_000_000
   in
-  let soc_fb, settled = boot_soc ~cap ~chunk:2_000_000 ~settle:3 in
+  let soc_fb, settled = boot_soc_board ~icache ~cap ~chunk:2_000_000 ~settle:3 in
   let soc_hash = fb_fnv soc_fb in
   Printf.printf
-    "soc: hash=0x%Lx  %d set px  settled=%b\n%!"
+    "soc (icache=%b): hash=0x%Lx  %d set px  settled=%b\n%!"
+    icache
     soc_hash
     (popcount soc_fb)
     settled;
@@ -241,18 +237,23 @@ let () =
         if !first < 0 then first := i))
     soc_fb;
   Printf.printf
-    "--- ORACLE ---\n%s\n--- SoC ---\n%s\n%!"
+    "--- ORACLE ---\n%s\n--- SoC (board, icache=%b) ---\n%s\n%!"
     (render oracle_fb ~sx:16 ~sy:16)
+    icache
     (render soc_fb ~sx:16 ~sy:16);
   if !diffs = 0 && Int64.equal soc_hash oracle_hash
   then
     Printf.printf
-      "VISUAL GOLDEN PASS — SoC framebuffer byte-identical to the oracle (hash 0x%Lx)\n"
+      "VISUAL GOLDEN (BOARD, icache=%b) PASS — board-SoC framebuffer byte-identical to \
+       the oracle (hash 0x%Lx). The I-cache is transparent through boot + module load + \
+       desktop render.\n"
+      icache
       oracle_hash
   else (
     Printf.printf
-      "VISUAL GOLDEN FAIL: %d/%d framebuffer words differ (first word 0x%X: soc=0x%08X \
-       oracle=0x%08X); settled=%b\n"
+      "VISUAL GOLDEN (BOARD, icache=%b) FAIL: %d/%d framebuffer words differ (first word \
+       0x%X: soc=0x%08X oracle=0x%08X); settled=%b\n"
+      icache
       !diffs
       fb_words
       (if !first >= 0 then fb_base_word + !first else 0)

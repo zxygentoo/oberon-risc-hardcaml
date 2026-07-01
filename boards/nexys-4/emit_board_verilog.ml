@@ -1,7 +1,11 @@
 (* Phase 7 — emit the synthesizable board SoC ({!Nexys4_board.Soc_board}) as Verilog, with
-   the real boot ROM baked in. The hand-written boards/nexys-4/nexys4_top.v wraps the
-   emitted [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
-   boards/nexys-4/gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
+   the real boot ROM baked in. The hand-written nexys4_top.v (same dir) wraps the emitted
+   [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
+   gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
+
+   Lives in the board layer (not test/): it emits *this board's* SoC and sits next to the
+   gen_verilog.sh / build.tcl / nexys4_top.v that consume it. The ROM image comes from the
+   design library ({!Risc5.Rom}), so the board emit needs no software oracle.
 
    Parameters baked into the netlist: 60000 clocks/ms (1 ms at 60 MHz); 5-cycle PSRAM
    phases (83 ns > the chip's 70 ns at 60 MHz). Tune read/write cycles here if hardware
@@ -24,7 +28,7 @@ let () =
     Circ.create_exn
       ~name:"soc_board"
       (Soc_board.create
-         ~contents:Oracle.Boot_rom.bootloader
+         ~contents:Risc5.Rom.bootloader
          ~clocks_per_ms:60000
            (* 5 cycles/phase = 83 ns at 60 MHz (16.67 ns) > the chip's 70 ns (in spec). 4
               cycles = 66.7 ns is now under spec (was fine at 50 MHz, 80 ns). The
@@ -45,6 +49,11 @@ let () =
               lets the system clock go to 60 MHz. The new limiter is the FPAdder's
               normalize/round arithmetic (see the branch's synth notes). *)
          ~mul_stages:2
+           (* Phase-10a: the direct-mapped read/I-cache in front of Cellram. Async-read
+              distributed RAM (LUTRAM), so a hit is combinational — check the util report
+              infers RAM (distributed), not BRAM/FF, and that the combinational hit path
+              (regfile → tag compare → mem_rdata mux → decode) still closes 60 MHz. *)
+         ~icache:true
            (* UART baud divider scaled for 60 MHz so the wire is a standard rate: slow =
               60e6/19200 = 3125 (exact 19200, oat's default), fast = 60e6/115200 ≈ 521.
               The faithful 1302/217 constants are 25 MHz-only — at 60 MHz they'd give
