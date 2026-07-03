@@ -37,7 +37,8 @@ end
 
     [?baud_slow]/[?baud_fast] are the bit-window lengths in clocks for the two [fsel]
     rates (default [1302]/[217] = [RS232R.v]'s 19200/115200 at 25 MHz). They scale with
-    the system clock so the wire stays at a standard baud — the board passes clock-matched
-    values (e.g. 60 MHz ⇒ [3125]/[521] for exact 19200 / ~115200); the default keeps the
+    the system clock so the wire stays at a standard baud — the 60 MHz board passes
+
+    [521]/[521] (both settings ~115200; see emit_board_verilog.ml); the default keeps the
     faithful, Phase-8-proven 25 MHz unit. Must fit the 12-bit [tick] (< 4096). *)
 val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t

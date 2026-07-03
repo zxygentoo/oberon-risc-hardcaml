@@ -67,7 +67,8 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
      {1 'b0, limit[11:1]}
      . [baud_fast]/[baud_slow] default to RS232R.v's 25 MHz constants (115200 = clk/217,
      19200 = clk/1302); the board passes clock-scaled values so the wire stays at a
-     standard rate (feat/fast-clock: 60 MHz ⇒ 521/3125), like {!Spi}'s [slow_div_log2]. *)
+     standard rate (feat/fast-clock: 60 MHz ⇒ 521/521, both ~115200), like {!Spi}'s
+     [slow_div_log2]. *)
   let limit =
     mux2
       i.fsel

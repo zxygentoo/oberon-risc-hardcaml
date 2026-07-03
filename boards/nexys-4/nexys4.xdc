@@ -9,7 +9,7 @@
 set_property -dict {PACKAGE_PIN E3 IOSTANDARD LVCMOS33} [get_ports CLK100MHZ]
 create_clock -period 10.000 -name clk100 [get_ports CLK100MHZ]
 
-## The MMCM's 25 MHz and 65 MHz outputs are auto-derived. They drive separate domains bridged
+## The MMCM's 60 MHz and 65 MHz outputs are auto-derived. They drive separate domains bridged
 ## only by VID's CDC handshakes (data stable for many cycles before sampling), so treat them as
 ## asynchronous for timing (don't time the cross-domain paths).
 set_clock_groups -asynchronous \

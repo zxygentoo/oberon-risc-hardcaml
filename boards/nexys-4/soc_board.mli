@@ -9,6 +9,10 @@
     - reads/writes of main memory, and the video framebuffer DMA, go through {!Cellram},
       which drives the external chip pins exposed here ([mem_adr]/[mem_dq_*]/[ram_*_n]).
       Boot-ROM fetches and MMIO accesses take the controller's on-chip fast path;
+    - MMIO {e stores} take only that fast path — unlike [Soc], which faithfully also
+      writes them into the aliased RAM word (soc.ml: "stores go to RAM unconditionally"),
+      the board never sends an MMIO store to PSRAM. Benign (Oberon never reads the aliased
+      top-64-B words back) and load-bearing for the one-pulse write strobes;
     - the framebuffer word is latched into [Vid] on the controller's [vid_ack];
     - the ms-timer IRQ is {e stretched}: [RISC5.v] latches its interrupt capture every
       clock (even under stallX), but here the core's [irq1]/[int_pnd] flops are ce-gated,
@@ -18,22 +22,32 @@
 
     The chip itself is off-FPGA: in simulation a {!Cellram_model} is wired to these pins
     (the board boot checkpoint); on the board the Verilog top wires IOBUFs. The
-    synthesizable design here holds no main-memory array. [contents] is the boot-ROM
-    image; [clocks_per_ms] the ms-timer prescaler (25000 = 1 ms at 25 MHz);
-    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2);
-    [spi_slow_div_log2] the SPI slow-divider depth (default 6 = clk÷64 = {!Spi}/[SPI.v];
-    the 50 MHz build passes 7 = clk÷128 to keep SD init ≤400 kHz); [fast_mul] (default
-    [false], Phase 9) swaps the core's iterative multiplier for the DSP-backed
-    {!Risc5_core.create}[ ?fast_mul] one — see there; [icache] (default [false],
-    Phase-10a) inserts a direct-mapped write-through read cache in front of {!Cellram}
-    ({!Icache}), serving PSRAM fetches/loads from on-chip distributed RAM (LUTRAM) on a
-    hit. *)
+    synthesizable design here holds no main-memory array.
+
+    Parameters (defaults are the faithful/sim values; the 60 MHz board build's overrides
+    all live in emit_board_verilog.ml): [contents] is the boot-ROM image; [clocks_per_ms]
+    the ms-timer prescaler (default 25000 = 1 ms at 25 MHz; the board passes 60000);
+    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2, the
+    sim/test value; the board synthesizes 5 = 83 ns at 60 MHz); [spi_slow_div_log2] the
+    SPI slow-divider depth (default 6 = clk÷64 = {!Spi}/[SPI.v]; the board passes 8 =
+    clk÷256 to keep SD init ≤400 kHz at 60 MHz); [fast_mul]/[mul_stages] (defaults
+    [false]/[0], Phase 9) swap the core's iterative multipliers for the DSP-backed,
+    optionally pipelined {!Risc5_core.create} variants — see there (the board passes
+    [true]/[2]); [icache] (default [false], Phase-10a) inserts a direct-mapped
+    write-through read cache in front of {!Cellram} ({!Icache}), serving PSRAM
+    fetches/loads from on-chip distributed RAM (LUTRAM) on a hit, sized by [lines_log2]
+    (default 10 = 4 KiB) with the [write_update]/[video] knobs documented at the signature
+    below; [uart_baud_slow]/[uart_baud_fast] the {!Rs232r}/{!Rs232t} divisors (defaults
+    1302/217, the faithful 25 MHz constants; the board passes 521/521 — both settings
+    ~115200, see emit_board_verilog.ml). *)
 
 open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a (** 25 MHz system / memory clock *)
+    { clock : 'a
+    (** system / memory clock (the faithful rate is 25 MHz; the board's MMCM drives 60 MHz
+        — the parameter defaults above assume 25, the board overrides) *)
     ; pclk : 'a (** 65 MHz pixel clock (MMCM-generated on the board) *)
     ; rst_n : 'a (** reset, active low *)
     ; miso : 'a (** SPI / SD-card data in (already ANDed SD & net) *)

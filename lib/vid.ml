@@ -73,7 +73,7 @@ let org = 0x37FC0
    [pulse] recurs slower than the synchroniser depth (in [vid], every 32 px ≈ 12 [clk] ≫
    3). The metastability-safe substitute for VID60.v's async-set capture [req1]
    (unrepresentable in Cyclesim — see [vid.mli]); proven no-loss/no-spurious for all
-   clk/pclk phases in test/formal (the [pulse_sync] @formal check). The [sync0]/[sync1]
+   clk/pclk phases in test/formal (the [vid_invariant] @formal check). The [sync0]/[sync1]
    flops want an ASYNC_REG / CDC constraint in the board [.xdc]. *)
 let pulse_sync ~src_spec ~dst_spec ~pulse =
   let req_toggle = reg_fb src_spec ~width:1 ~f:(fun t -> t ^: pulse) -- "req_toggle" in

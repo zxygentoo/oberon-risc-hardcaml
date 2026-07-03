@@ -56,7 +56,7 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   (* combinational: end-of-bit / end-of-frame, line driver, ready *)
   (* [baud_fast]/[baud_slow] default to RS232T.v's 25 MHz constants (clk/217 = 115200,
      clk/1302 = 19200); the board passes clock-scaled values (feat/fast-clock: 60 MHz ⇒
-     521/3125) so the wire stays at a standard rate. *)
+     521/521, both ~115200) so the wire stays at a standard rate. *)
   let endtick =
     mux2 i.fsel (tick_v ==:. baud_fast) (tick_v ==:. baud_slow) -- "endtick"
   in

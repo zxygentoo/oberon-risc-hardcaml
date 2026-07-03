@@ -1,4 +1,4 @@
-(* Guard test (AGENT.md §8 pattern, e.g. mov_flags_read_is_hardware_0x53): the design's
+(* Guard test (AGENT.md §8 pattern, e.g. the oracle's mov_flags_read_0x53): the design's
    boot ROM — [Risc5.Rom], shipped with the [risc5] library — must equal the oracle's own
    transcription ([Oracle.Boot_rom], from the C [risc-boot.inc]). Both are immutable, so
    this pins them: hardware-under-test and oracle can never boot different ROM images,

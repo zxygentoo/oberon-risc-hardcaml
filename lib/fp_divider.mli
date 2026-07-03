@@ -33,7 +33,9 @@ module I : sig
     { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [FDV] decoded — enable + synchronous clear for the counter *)
     ; x : 'a (** 32-bit dividend (operand [B]) *)
-    ; y : 'a (** 32-bit divisor (operand [C1]) *)
+    ; y : 'a
+    (** 32-bit divisor (operand [C0] — the raw register read: the FP units are
+        register-register, never the q-muxed immediate) *)
     }
   [@@deriving hardcaml]
 end

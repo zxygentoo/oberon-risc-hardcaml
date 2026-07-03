@@ -32,7 +32,9 @@ module I : sig
     { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [FML] decoded — enable + synchronous clear for the counter *)
     ; x : 'a (** 32-bit operand 1 (operand [B]) *)
-    ; y : 'a (** 32-bit operand 2 (operand [C1]) *)
+    ; y : 'a
+    (** 32-bit operand 2 (operand [C0] — the raw register read: the FP units are
+        register-register, never the q-muxed immediate) *)
     }
   [@@deriving hardcaml]
 end

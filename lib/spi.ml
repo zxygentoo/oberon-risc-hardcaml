@@ -10,10 +10,10 @@
 
    [slow_div_log2] (default 6) sets the slow-divider depth. 6 = clk÷64 = [SPI.v] exactly —
    the value the @formal proof and the cosim pin, and 390.6 kHz at 25 MHz (just under the
-   SD 400 kHz init ceiling). The board overrides to 7 (clk÷128) so the init clock stays
-   ≤400 kHz at a 50 MHz system clock (again 390.6 kHz). FAST is untouched: clk÷3 = 16.7
-   MHz at 50 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needed retuning
-   (PHASE9 §SPI).
+   SD 400 kHz init ceiling). The 60 MHz board overrides to 8 (clk÷256 = 234 kHz; ÷128
+   would be 469 kHz, over the ceiling — see emit_board_verilog.ml). FAST is untouched:
+   clk÷3 = 20 MHz at 60 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needs
+   retuning per clock.
 
    [mosi] taps [shreg] bit 7 (bytes leave MSbit first); [miso] is sampled into the
    register on [endtick]. The shift is NOT a plain [shreg<<1]: it is four byte-lanes
@@ -55,8 +55,8 @@ end
 
 let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
   (* tick must hold the slow terminal 2^slow_div_log2-1 and the fast terminal 2, so the
-     counter is [slow_div_log2] bits wide (>= 3 in practice; 6 = SPI.v, 7 = clk÷128
-     board). *)
+     counter is [slow_div_log2] bits wide (>= 3 in practice; 6 = SPI.v, 8 = clk÷256 = the
+     60 MHz board). *)
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let tick = Always.Variable.reg spec ~width:slow_div_log2 in
@@ -161,12 +161,12 @@ let%expect_test "spi — slow byte loopback: data round-trips, clk÷64 × 8 bits
   [%expect {| cycles=512  data_rx=0xA5 |}]
 ;;
 
-let%expect_test "spi — slow byte loopback at clk÷128 (board 50 MHz): 8 bits, 2× the \
+let%expect_test "spi — slow byte loopback at clk÷128 (a deeper divider): 8 bits, 2× the \
                  cycles"
   =
-  (* slow_div_log2:7 = the Nexys-4 50 MHz config; halves the SD-init clock to 390.6 kHz.
-     Same data, same handshake, just 128 (not 64) clocks per bit -> 1024 cycles for 8
-     bits. *)
+  (* slow_div_log2:7 pins the divider-depth parameterisation itself (the 50 MHz-era board
+     value; the 60 MHz board passes 8). Same data, same handshake, just 128 (not 64)
+     clocks per bit -> 1024 cycles for 8 bits. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~slow_div_log2:7) in
   let inp = Cyclesim.inputs sim in

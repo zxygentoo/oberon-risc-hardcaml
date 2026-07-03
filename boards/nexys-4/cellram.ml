@@ -100,10 +100,10 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) (i : _ I.t) : _ O.t =
      while a CPU READ is mid-flight (and not already completing this cycle), abort the
      read and let video go at once — the core is frozen on [ce] and never saw it retire,
      so it just re-arbitrates and restarts after. Reads are idempotent, so aborting costs
-     only the few wasted cycles (re-earned before the next group's request, ~12 clk away).
+     only the few wasted cycles (re-earned before the next group's ~500 ns-away request).
      WRITES are never preempted — a half-written word would corrupt RAM. This removes the
-     arbiter-wait term from the video deadline; the residual flicker / contention crashes
-     live there (PHASE7 §9.2). *)
+     arbiter-wait term from the video deadline; the residual flicker / contention risk
+     lives in the deadline margin itself (see the .mli + boards/nexys-4/README.md). *)
   let cpu_read_inflight = busy_v &: ~:op_vid_v &: ~:op_wr_v in
   let preempt =
     (cpu_read_inflight &: vid_pending_v &: ~:(cnt_zero &: half1)) -- "preempt"

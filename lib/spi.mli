@@ -44,7 +44,7 @@ end
     byte-interleaved shift permutation that realises fast/LSByte-first word order.
 
     [slow_div_log2] (default 6) is the slow-divider depth: the slow [sclk] is clk÷2[{^n}].
-    6 reproduces [SPI.v] bit-for-bit (the @formal / cosim baseline); the Nexys-4 board
-    overrides it to 7 (clk÷128) to hold the SD-init clock ≤400 kHz at a 50 MHz system
-    clock. FAST is fixed at clk÷3 regardless. *)
+    6 reproduces [SPI.v] bit-for-bit (the @formal / cosim baseline); the 60 MHz Nexys-4
+    board passes 8 (clk÷256 = 234 kHz) to hold the SD-init clock ≤400 kHz. FAST is fixed
+    at clk÷3 regardless. *)
 val create : ?slow_div_log2:int -> Signal.t I.t -> Signal.t O.t

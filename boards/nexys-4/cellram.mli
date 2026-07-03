@@ -36,7 +36,8 @@
 
     A transaction is two 16-bit halfword phases (low half = even halfword address, high
     half = odd); each phase drives the async pins for a parameterized number of cycles
-    ([read_cycles]/[write_cycles], sized for 70 ns at 25 MHz). 1 MB window:
+    ([read_cycles]/[write_cycles], sized so a phase covers the chip's 70 ns tAA at the
+    system clock — 5 at 60 MHz on the board). 1 MB window:
     [MemAdr[18:0] = {adr[19:2], half}], [MemAdr[22:19] = 0].
 
     {1 The on-chip fast path}
@@ -93,8 +94,8 @@ module O : sig
 end
 
 (** [create ?read_cycles ?write_cycles i] builds the controller. The cycle counts are the
-    cycles each 16-bit phase holds the async pins (default 2 each — 80 ns per phase at 25
-    MHz, in spec for the 70 ns chip and the value the board synthesizes; simulation
-    overrides them small since the behavioural model responds at once and only the FSM
-    control flow is under test). *)
+    cycles each 16-bit phase holds the async pins. The default 2 is the {e sim/test} value
+    (the behavioural model responds at once — only the FSM control flow is under test);
+    the board synthesizes 5 (83 ns per phase at 60 MHz, in spec for the 70 ns chip; see
+    emit_board_verilog.ml and the PSRAM I/O budget in nexys4.xdc). *)
 val create : ?read_cycles:int -> ?write_cycles:int -> Signal.t I.t -> Signal.t O.t

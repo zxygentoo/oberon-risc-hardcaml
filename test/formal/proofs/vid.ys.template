@@ -25,7 +25,7 @@ opt
 equiv_make {top} {gate} equiv
 hierarchy -top equiv
 # exclude the TWO deliberate departures from VID60.v, both fed only by their now-excluded output:
-#  - req:    our toggle pulse-synchroniser vs the RTL async-set req2 (the CDC; closed formally by
+#  - req:    our toggle pulse-synchroniser vs the RTL async-set req1 (the CDC; closed formally by
 #            the vid_invariant property proof).
 #  - vidadr: our 2-group prefetch look-ahead vs the RTL's current-group address. That the
 #            look-ahead DELIVERS the correct word (Org + ~vcnt:col, the RTL's own address) into

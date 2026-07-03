@@ -497,7 +497,7 @@ against the RTL itself they can't arise.*
 - **The flags/ID byte (resolved — not a steer-around).** `MOV'` flags-read returns
   `{N,Z,C,OV} | 0x53` — our `RISC5.v:113` emits low byte **`0x53`** (`{N,Z,C,OV,20'b0,8'h53}`).
   Our **OCaml oracle and the Rust port now both follow the hardware** and emit `0x53` (OCaml
-  `risc.ml:335`, Rust `risc.rs:542`, guard test `mov_flags_read_is_hardware_0x53`). **Only the
+  `risc.ml:335`, Rust `risc.rs:542`, guard test `mov_flags_read_0x53`). **Only the
   C reference still emits `0xD0`**, and C isn't our oracle — so the OCaml lockstep oracles this
   byte *directly*, no steering needed. Principle to keep regardless: **our Verilog is the spec.**
   See `../oberon-risc-emu-rs/DIVERGENCES.md`.
@@ -576,6 +576,8 @@ oberon-risc-hardcaml/
     boards/<target>/      ← board-SoC integration tests mirroring boards/<target>/: the PSRAM
                             boot checkpoint + visual golden, sharing the `board_tb` harness
                             (@boot_checkpoint_board / @visual_golden_board)
+    bench/                ← Phase-9/10 benchmarks + profiles (@bench / @bench_boot /
+                            @profile_boot, all opt-in); see test/bench/README.md
     fetch-rtl.sh          ← fetch + checksum-verify the reference .v on demand (shared by
     rtl-sources.txt         cosim + formal); the provenance pins live in rtl-sources.txt
     _po/                  ← original sources, git-ignored; fetch-rtl.sh populates

@@ -48,7 +48,10 @@ module I : sig
     ; u : 'a (** [FLT] select (integer -> float) *)
     ; v : 'a (** [FLOOR] select (float -> integer) *)
     ; x : 'a (** 32-bit operand 1 (operand [B]) — a float, or an integer for [FLT] *)
-    ; y : 'a (** 32-bit operand 2 (operand [C1]) — a float; unused by [FLT]/[FLOOR] *)
+    ; y : 'a
+    (** 32-bit operand 2 (operand [C0] — the raw register read: the FP units are
+        register-register, never the q-muxed immediate; [RISC5.v] feeds
+        [{FSB^C0[31], C0[30:0]}]) — a float; unused by [FLT]/[FLOOR] *)
     }
   [@@deriving hardcaml]
 end

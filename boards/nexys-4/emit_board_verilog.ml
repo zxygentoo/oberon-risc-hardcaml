@@ -33,13 +33,14 @@ let () =
            (* 5 cycles/phase = 83 ns at 60 MHz (16.67 ns) > the chip's 70 ns (in spec). 4
               cycles = 66.7 ns is now under spec (was fine at 50 MHz, 80 ns). The
               worst-case framebuffer fetch still fits under VID's ~477 ns xfer deadline
-              even behind one CPU access (the video-flicker margin, PHASE7 §9.2). Raise to
-              6 (100 ns) if PSRAM reads turn flaky on HW. *)
+              even behind one CPU access (the video-flicker margin — see the preempt note
+              in cellram.ml + boards/nexys-4/README.md). Raise to 6 (100 ns) if PSRAM
+              reads turn flaky on HW. *)
          ~read_cycles:5
          ~write_cycles:5
            (* SPI slow divider clk÷256: SD-init clock = 60 MHz / 256 = 234 kHz (≤ the 400
               kHz ceiling). ÷128 would be 469 kHz, over the limit at 60 MHz. FAST stays
-              clk÷3 = 20 MHz, under the 25 MHz SD limit. (PHASE9 §SPI.) *)
+              clk÷3 = 20 MHz, under the 25 MHz SD limit. *)
          ~spi_slow_div_log2:8
            (* Phase-9 DSP multipliers: swap the iterative MUL/FML for their DSP48-backed
               variants (proven bit-identical). *)
@@ -61,11 +62,13 @@ let () =
               gained a level (fill_data vs wdata) on the cache-write path, which was
               already the 60 MHz critical path — check WNS still closes. *)
          ~write_update:true
-           (* UART baud divider scaled for 60 MHz so the wire is a standard rate: slow =
-              60e6/19200 = 3125 (exact 19200, oat's default), fast = 60e6/115200 ≈ 521.
-              The faithful 1302/217 constants are 25 MHz-only — at 60 MHz they'd give
-              46083 baud (nonstandard), which no host UART can lock to. (Found via oat
-              over the real serial link.) *)
+           (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and
+              deliberately 521/521: BOTH [fsel] settings ship ~115200 (60e6/522, −0.2%).
+              Serial reads are wire-limited, so 115200 is ~5x the throughput of 19200, and
+              oat runs 115200 — no 19200 mode is wired on this board. The faithful
+              1302/217 constants are 25 MHz-only — at 60 MHz they'd give 46083 baud
+              (nonstandard), which no host UART can lock to. (Found via oat over the real
+              serial link.) *)
          ~uart_baud_slow:521
          ~uart_baud_fast:521)
   in

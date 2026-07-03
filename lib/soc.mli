@@ -51,7 +51,8 @@
     {1 Parameters}
 
     [~contents] is the boot ROM image (keeping the design library free of [prom.mem]);
-    [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz. *)
+    [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz; [?fast_mul] (default [false],
+    Phase 9) selects the core's DSP-backed multipliers ({!Risc5_core.create} — see there). *)
 
 open Hardcaml
 

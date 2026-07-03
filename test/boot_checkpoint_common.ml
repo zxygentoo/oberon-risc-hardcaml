@@ -15,9 +15,9 @@ type snapshot =
 
 (* Locate the project root by walking up for [dune-project], so the disk resolves from any
    cwd — the [@boot_checkpoint*] rules (cwd [_build/default/test]) and a bare [dune exec]
-   from the repo root alike. The marker sits at both the real root and dune's
-   [_build/default] mirror, with the disk at the same [vendor/] offset under each
-   (declared as a rule dep so dune copies it there). *)
+   from the repo root alike. (dune does NOT mirror [dune-project] into [_build/default],
+   so the walk climbs out of [_build] and lands at the real root every time; the rules'
+   declared disk dep is a rebuild trigger, not the copy that gets read.) *)
 let project_root () =
   let rec up dir =
     if Sys.file_exists (Filename.concat dir "dune-project")

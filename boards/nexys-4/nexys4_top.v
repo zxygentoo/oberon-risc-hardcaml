@@ -3,7 +3,7 @@
 //
 // Phase 7 board top for the original Digilent Nexys 4 (XC7A100T, Cellular-RAM).
 // Hand-written vendor wrapper around the Hardcaml-generated `soc_board`
-// (boards/_generated/nexys-4/soc_board.v): clock generation (MMCM 100->25/65 MHz), a
+// (boards/_generated/nexys-4/soc_board.v): clock generation (MMCM 100->60/65 MHz), a
 // power-on reset, and the IOBUFs / pin mapping the synthesizable design can't express.
 // See boards/nexys-4/README.md.
 //
@@ -99,14 +99,16 @@ module nexys4_top (
 
   // ── Power-on / button reset (active-low rst_n to the SoC) ────────────────────────
   // Held low until the MMCM locks and a counter elapses, and whenever the reset button is
-  // pressed (btnCpuReset is active-low). The counter is sized ~2.7 s (26 bits at 25 MHz)
+  // pressed (btnCpuReset is active-low). The counter gives ~1.1 s (26 bits at 60 MHz;
+  // it was ~2.7 s when picked empirically at 25 MHz — the margin shrank with the clock
+  // bump but stays ample, mouse-confirmed on hardware at 60 MHz)
   // so the whole SoC — the mouse included — stays in reset until the board's USB-HID PIC
   // has booted and enumerated the USB mouse. The Mouse sends its PS/2 init handshake once
   // and latches `run`; if it fires before the PIC is ready, streaming never starts and the
   // cursor stays dead until a manual reset. Delaying that single init past PIC-ready avoids
   // it — automating the post-config btnCpuReset the bring-up needed. Dwarfed by Oberon's
   // ~20 s boot; trim/raise if a slower mouse needs it.
-  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~2.7 s at 25 MHz (was 16 bits / ~2.6 ms)
+  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~1.1 s at 60 MHz (was 16 bits / ~1 ms)
   wire        por_done = (por_cnt == 26'd0);
   always @(posedge clk25) begin
     if (!mmcm_locked)   por_cnt <= 26'h3FFFFFF;
@@ -218,11 +220,11 @@ module nexys4_top (
   assign sd_reset = 1'b0;    // hold the card out of reset / powered (verify polarity on HW)
 
   // ── Status / PS/2-mouse-diagnostic LEDs (upper bank) ─────────────────────────────
-  // LD8 = 25 MHz heartbeat, LD15 = MMCM locked. LD9-14 diagnose the mouse bring-up.
+  // LD8 = system-clock heartbeat, LD15 = MMCM locked. LD9-14 diagnose the mouse bring-up.
   reg [24:0] heartbeat = 25'd0;
   always @(posedge clk25) heartbeat <= heartbeat + 25'd1;
 
-  localparam [24:0] HOLD = 25'd2_500_000;   // ~0.1 s persistence at 25 MHz
+  localparam [24:0] HOLD = 25'd2_500_000;   // ~42 ms persistence at 60 MHz
 
   // Decoded mouse state from the SoC debug word {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}.
   wire        ms_run  = mouse_dbg[27];
@@ -251,7 +253,7 @@ module nexys4_top (
     hold_host <= (msclk_oe | msdat_oe) ? HOLD : (hold_host != 0 ? hold_host - 25'd1 : 25'd0);
   end
 
-  assign led[8]  = heartbeat[24];      // ~0.75 Hz blink: the 25 MHz clock is alive
+  assign led[8]  = heartbeat[24];      // ~1.8 Hz blink: the 60 MHz clock is alive
   assign led[9]  = ms_run;             // mouse init completed (run=1, now streaming reports)
   assign led[10] = x_ever;             // module's X accumulated away from 0 (X decode works)
   assign led[11] = y_ever;             // module's Y accumulated away from 0 (Y decode works)

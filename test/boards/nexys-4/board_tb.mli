@@ -28,13 +28,15 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create ?read_cycles ?write_cycles ?icache ?contents i] wires the board SoC to the
-    PSRAM model. [contents] defaults to the design ROM {!Risc5.Rom.bootloader};
-    [read_cycles] / [write_cycles] default to 2 (the model answers at once, so small waits
-    exercise only the controller FSM — the checkpoint's regime; the visual golden passes 5
-    to match the board). [fast_mul] / [mul_stages] (default off) select the DSP-multiplier
-    variant — for the bench's sweep; the tests leave them off. [sclk] is the only output
-    read directly; everything else is reached by name under [Cyclesim.Config.trace_all]. *)
+(** [create ?read_cycles ?write_cycles ?icache ?lines_log2 ?write_update ?video ?fast_mul ?mul_stages ?contents i]
+    wires the board SoC to the PSRAM model. [contents] defaults to the design ROM
+    {!Risc5.Rom.bootloader}; [read_cycles] / [write_cycles] default to 2 (the model
+    answers at once, so small waits exercise only the controller FSM — the checkpoint's
+    regime; the visual golden passes 5 to match the board). The cache knobs ([icache] /
+    [lines_log2] / [write_update]) and [fast_mul] / [mul_stages] (all default off) forward
+    to {!Nexys4_board.Soc_board.create} — for the bench's sweeps; the tests leave them
+    off. [sclk] is the only output read directly; everything else is reached by name under
+    [Cyclesim.Config.trace_all]. *)
 val create
   :  ?read_cycles:int
   -> ?write_cycles:int

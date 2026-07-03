@@ -81,7 +81,8 @@ int main(int argc, char** argv) {
   // drive rec[k]'s inputs (rst verbatim — rec[0] is the rst=0 reset cycle that forces
   // PC<=StartAdr on its own edge), settle, compare the outputs, then clock. No separate reset
   // tick is needed, and because the codebus consumed at the first rst=1 edge (the branch
-  // target) is in the trace, the reset boundary stays in lockstep. skip defaults to 0.
+  // target) is in the trace, the reset boundary stays in lockstep. skip defaults to 2
+  // (see the usage note at the top).
 
   Rec ring[RING];
   long ring_n = 0;
