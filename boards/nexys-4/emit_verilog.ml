@@ -34,13 +34,15 @@ let () =
       (Soc.create
          ~contents:Risc5.Rom.bootloader
          ~clocks_per_ms:60000
-           (* 5 cycles/phase = 83 ns at 60 MHz (16.67 ns) > the chip's 70 ns (in spec). 4
-              cycles = 66.7 ns is now under spec (was fine at 50 MHz, 80 ns). The
-              worst-case framebuffer fetch still fits under VID's ~477 ns xfer deadline
-              even behind one CPU access (the video-flicker margin — see the preempt note
-              in cellram.ml + boards/nexys-4/README.md). Raise to 6 (100 ns) if PSRAM
-              reads turn flaky on HW. *)
-         ~read_cycles:5
+           (* READ phase 6 cycles = 100 ns at 60 MHz — deliberately one above the 5 (83
+              ns) the 70 ns chip strictly needs. At rc=5 the FPGA I/O round-trip budget
+              was 13.3 ns and became a standing knife-edge as the design grew (failed
+              once, grazed twice: RamUBn -0.163, then +0.130, +0.009 on MemDB-in); rc=6
+              gives the nexys4.xdc groups 30 ns. Cost is bounded by construction — PSRAM
+              reads are only cache misses since 10a — and measured in bench_boot (rc5 vs
+              rc6 same-work lockstep, ~0.5%). WRITE phase stays 5 (83 ns): its group-3
+              budget never pressured, and drains are background since the 10d buffer. *)
+         ~read_cycles:6
          ~write_cycles:5
            (* SPI slow divider clk÷256: SD-init clock = 60 MHz / 256 = 234 kHz (≤ the 400
               kHz ceiling). ÷128 would be 469 kHz, over the limit at 60 MHz. FAST stays
@@ -83,6 +85,12 @@ let () =
               (high-fanout — it gates every core register); check WNS still closes at 60
               MHz and where the critical path lands. *)
          ~write_buffer:true
+           (* Depth-2 FIFO (Phase-10d follow-up): the depth-1 residual storeW (7.5% of
+              clocks) was slot-full waits from Oberon's 2-store procedure prologues —
+              depth 2 collects ~3/4 of it (measured 1.066x same-work, long-window CPI 1.45
+              -> 1.36, storeW -> 1.7%; bench_boot). The all-depths ceiling from there is
+              1.02x, so depth 3+ is measured dead. *)
+         ~wbuf_depth:2
            (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and
               deliberately 521/521: BOTH [fsel] settings ship ~115200 (60e6/522, −0.2%).
               Serial reads are wire-limited, so 115200 is ~5x the throughput of 19200, and

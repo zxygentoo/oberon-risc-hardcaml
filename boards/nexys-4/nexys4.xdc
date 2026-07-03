@@ -33,19 +33,25 @@ set_property ASYNC_REG true \
 ## set_max_delay -datapath_only instead — only then does max_delay actually apply.
 
 ## ── PSRAM async-interface I/O budget ─────────────────────────────────────────────────
-## Cellram holds each 16-bit phase for read_cycles = 5 clk = 83.3 ns at 60 MHz and samples
-## MemDB at the phase-end edge. The M45W8MW16-70 needs address/CE valid 70 ns AT THE CHIP
-## (tAA/tCO), so the FPGA round trip must fit the remainder:
+## Cellram holds each 16-bit READ phase for read_cycles = 6 clk = 100 ns at 60 MHz and
+## samples MemDB at the phase-end edge. The M45W8MW16-70 needs address/CE valid 70 ns AT
+## THE CHIP (tAA/tCO), so the FPGA round trip must fit the remainder:
 ##   t_out(reg -> addr/ctl pad) + board flight + t_in(MemDB pad -> deepest consumer FF)
-##     <= 83.3 - 70 = 13.3 ns.
+##     <= 100 - 70 = 30 ns.
+## (Phase-10d follow-up: this was read_cycles = 5 = 83.3 ns, leaving 13.3 ns split
+## 6.7 + 6.6 — a knife-edge that failed once (RamUBn -0.163) and grazed twice (+0.130,
+## +0.009 on MemDB-in) as the design grew. rc=6 costs only the cache misses ~2 cycles
+## each — measured ~0.5% CPI in bench_boot — and buys 16.7 ns of standing margin. The
+## WRITE phase stays write_cycles = 5: the write-path group-3 geometry below never
+## pressured, and drains are background work since the write buffer.)
 ## Three groups (an unconstrained I/O path is never timed at all — before this block the
 ## margin was hand arithmetic only):
-##   1. Read-critical OUTPUTS <= 6.7 ns: MemAdr (tAA), RamCEn (tCO) and RamLBn/UBn
+##   1. Read-critical OUTPUTS <= 12.0 ns: MemAdr (tAA), RamCEn (tCO) and RamLBn/UBn
 ##      (tBA = 70 ns too, and they DO transition on the first read after a byte store).
 ##      NOT RamOEn (tOE = 20 ns only) or RamWEn (write-path) — those sit in group 3.
-##      Needs the FAST/16 drivers below; at default drive the strobes alone are ~7.4 ns
-##      and the two groups cannot both fit 13.3.
-##   2. MemDB INPUT <= 6.6 ns. NB the budget must cover the DEEPEST same-edge consumer,
+##      Kept on the FAST/16 drivers below (~1 ns saved per output; SI-comfortable on the
+##      short point-to-point traces).
+##   2. MemDB INPUT <= 12.0 ns. NB the budget must cover the DEEPEST same-edge consumer,
 ##      not just Cellram's lo/rdata capture flop: on the load-retire cycle the raw pad
 ##      value flows pad -> rdata -> inbus -> regmux -> flags/SPC in one cycle (~5.7 ns
 ##      routed), and all of it sits inside the data-valid-to-capture-edge window.
@@ -54,12 +60,10 @@ set_property ASYNC_REG true \
 ##      ~63 ns of real budget) and RamWEn (write pulse geometry, whole-cycle margins).
 ##      Keeping any of these in group 1 over-constrains the router for nothing (it cost
 ##      -0.7 ns of fake violations and pressured the real clk25 paths).
-## 1 + 2 = 13.3 exactly — the demand is genuinely knife-edge at the slow corner (the
-## routed halves land within ~0.3 ns of their bounds); board flight (~0.3 ns round trip, the chip sits next to the
-## FPGA) eats into slack rather than being reserved. If either group ever misses:
-## rebalance the split, or bump read_cycles to 6 in emit_board_verilog.ml (100 ns window
-## -> ~30 ns budget). tWP is comfortable by construction (WEn low 4 of 5 cycles = 67 ns
-## >> 45 ns, a full cycle of data hold past WEn rise).
+## 1 + 2 = 24.0 of the 30.0 available — ~6 ns of genuine slack on top of the constraint
+## targets; board flight (~0.3 ns round trip, the chip sits next to the FPGA) eats into
+## that slack rather than being reserved. tWP is comfortable by construction (WEn low 4
+## of 5 write cycles = 67 ns >> 45 ns, a full cycle of data hold past WEn rise).
 ## Fast/strong drivers on the whole PSRAM interface: the OBUF is the dominant t_out
 ## term (~3 ns of the strobes' ~4.4 ns logic at the default DRIVE 12 / SLOW slew), and
 ## the traces are short point-to-point to the adjacent chip (no connector), so FAST/16
@@ -68,9 +72,9 @@ set_property SLEW FAST [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLB
 set_property DRIVE 16  [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLBn RamUBn}]
 
 set clk_sys [get_clocks -of_objects [get_pins bufg_25/O]]
-set_max_delay 6.700 -datapath_only -from $clk_sys \
+set_max_delay 12.000 -datapath_only -from $clk_sys \
   -to [get_ports {MemAdr[*] RamCEn RamLBn RamUBn}]
-set_max_delay 6.600 -datapath_only -from [get_ports {MemDB[*]}] -to $clk_sys
+set_max_delay 12.000 -datapath_only -from [get_ports {MemDB[*]}] -to $clk_sys
 set_max_delay 12.000 -datapath_only -from $clk_sys \
   -to [get_ports {MemDB[*] RamOEn RamWEn}]
 

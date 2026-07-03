@@ -48,7 +48,9 @@ controller, no DDR/MIG. `Cellram` adapts it to the 32-bit word interface the CPU
 expect:
 
 - **Width (16 ↔ 32):** each 32-bit word is two 16-bit halfword phases (low half, high half);
-  each phase holds the async pins for `read_cycles` / `write_cycles` clocks (sized for 70 ns).
+  each phase holds the async pins for `read_cycles` / `write_cycles` clocks (sized for the 70 ns
+  chip; the board ships read 6 = 100 ns / write 5 = 83 ns — the read phase deliberately one over
+  minimum to buy the FPGA I/O round trip a 30 ns budget, see the synthesis note below).
 - **Wait-states → CPU:** `ce = ~mem_pend | <the access completes this cycle>`. The core advances
   only when an access finishes — or freely during a compute (MUL/DIV/FP) stall, when it needs no
   memory (`mem_pend = 0`).
@@ -73,6 +75,11 @@ expect:
   in `cellram.mli`: an MMIO store can become visible before an earlier buffered RAM store lands in
   PSRAM — benign here (no peripheral reads RAM; video reads the `Framebuf` shadow). Landed
   **1.237× same-work** (CPI 1.90→1.53), long-window CPI 1.64→**1.45**, frozen clocks 19.9→9.5%.
+  The board ships **`wbuf_depth:2`** — the slot is a small FIFO (slot 0 drains, shift-down on
+  completion, order preserved; depth 1 is cycle-identical to the single slot), and depth 2 collects
+  the 2-store procedure-prologue bursts that were the depth-1 residual: another **1.066×**
+  same-work, CPI 1.45→**1.36**, storeW →1.7% (depth 3+ measured dead at a 1.02× remaining
+  ceiling).
 
 Full detail in `cellram.mli`. `cellram_model.ml` is a behavioural double of the chip, wired to
 Cellram's pins only in simulation (the board tests); it never synthesizes.
@@ -157,8 +164,11 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
 and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache`/`write_update`/`fb_bram`/`write_buffer:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
-(One synthesis note, Phase-10d: the default implementation effort left the `RamUBn` output 0.163 ns
-over the PSRAM I/O budget — placement, not logic — so `build.tcl` runs Explore-class directives;
-the structural fallback if that margin ever flakes is registering the byte-enable pins.)
+`icache`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+(One synthesis note, Phase-10d: the rc=5 PSRAM I/O budget (13.3 ns split across the address-out and
+data-in groups) became a standing knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then
+two builds grazed at +0.130 and +0.009. `build.tcl` runs Explore-class implementation directives,
+and the structural fix is in: `read_cycles:6` re-derives the budget to 30 ns (12/12 split, ~5 ns
+measured headroom per group), for a measured 0.86% same-work cost — the worst path is back on the
+internal cache-write path, where it has lived since 10b.)
 outputs land in the git-ignored `boards/_build/nexys-4/`.

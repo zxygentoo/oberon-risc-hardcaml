@@ -131,19 +131,30 @@ let fb_fnv fb =
 (* Boot the board SoC (SD card via {!Sd_bridge}) with the cache [icache], run PAST the
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
-   cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
-let boot_board ~icache ~write_update ~fb_bram ~write_buffer ~cap ~chunk ~settle =
+   cycles. read_cycles = 6 / write_cycles = 5 to match the board timing the golden is
+   defending (emit_verilog.ml). *)
+let boot_board
+  ~icache
+  ~write_update
+  ~fb_bram
+  ~write_buffer
+  ~wbuf_depth
+  ~cap
+  ~chunk
+  ~settle
+  =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create
-        ~read_cycles:5
+        ~read_cycles:6
         ~write_cycles:5
         ~icache
         ~write_update
         ~fb_bram
         ~write_buffer
+        ~wbuf_depth
         i)
   in
   let inp = Cyclesim.inputs sim
@@ -264,13 +275,15 @@ let () =
     | Some "1" -> true
     | _ -> false
   in
-  (* opt-in (Phase-10d): WBUF=1 runs the golden with the 1-entry write buffer — the
-     byte-identical desktop + shadow check is its coherence/ordering proof *)
-  let write_buffer =
+  (* opt-in (Phase-10d): WBUF=n runs the golden with the n-entry write buffer (n >= 1;
+     unset/0 = off) — the byte-identical desktop + shadow check is its coherence/ordering
+     proof at that depth *)
+  let wbuf_depth =
     match Sys.getenv_opt "WBUF" with
-    | Some "1" -> true
-    | _ -> false
+    | Some s -> int_of_string s
+    | None -> 0
   in
+  let write_buffer = wbuf_depth >= 1 in
   let oracle_fb, oracle_hash = boot_oracle 40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
@@ -278,12 +291,13 @@ let () =
     (popcount oracle_fb);
   Printf.printf
     "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b \
-     write_buffer=%b) past the handoff — cache makes this feasible...\n\
+     write_buffer=%b depth=%d) past the handoff — cache makes this feasible...\n\
      %!"
     icache
     write_update
     fb_bram
-    write_buffer;
+    write_buffer
+    wbuf_depth;
   let cap =
     match Sys.getenv_opt "SOC_CAP" with
     | Some s -> int_of_string s
@@ -295,6 +309,7 @@ let () =
       ~write_update
       ~fb_bram
       ~write_buffer
+      ~wbuf_depth:(max 1 wbuf_depth)
       ~cap
       ~chunk:2_000_000
       ~settle:3

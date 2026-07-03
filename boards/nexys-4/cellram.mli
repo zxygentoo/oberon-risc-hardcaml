@@ -96,8 +96,10 @@ end
 (** [create ?read_cycles ?write_cycles ?write_buffer i] builds the controller. The cycle
     counts are the cycles each 16-bit phase holds the async pins. The default 2 is the
     {e sim/test} value (the behavioural model responds at once — only the FSM control flow
-    is under test); the board synthesizes 5 (83 ns per phase at 60 MHz, in spec for the 70
-    ns chip; see emit_verilog.ml and the PSRAM I/O budget in nexys4.xdc).
+    is under test); the board synthesizes read 6 / write 5 (100 / 83 ns at 60 MHz — the
+    read phase is deliberately one over the 70 ns chip's minimum to give the FPGA I/O
+    round trip a 30 ns budget instead of a knife-edge 13.3; see emit_verilog.ml and the
+    PSRAM I/O budget in nexys4.xdc).
 
     [write_buffer] (Phase-10d, default [false] = the proven synchronous write path) adds a
     {b 1-entry write buffer}: a PSRAM-bound store retires in a {e single} [ce] cycle — the
@@ -119,10 +121,18 @@ end
       frame stale). Coherence is untouched: the cache snoop/update and the [Framebuf]
       shadow write happen at store {e retire} (the accept cycle), and PSRAM catches up
       before anyone can read it (drain-before-read; video via [fb_bram] never reads
-      PSRAM). *)
+      PSRAM).
+
+    [wbuf_depth] (default 1 = the proven Phase-10d single slot, cycle-identical) sizes the
+    buffer as a FIFO of 1..4 pending stores: slot 0 (the oldest) is the drain source, a
+    completing drain shifts the queue down, and a store is accepted 0-stall whenever any
+    slot is free — so bursts up to [wbuf_depth] stores retire back-to-back. Total store
+    order is preserved by construction, and drain-before-read waits for the {e whole} FIFO
+    to empty, so the coherence argument is depth-independent. *)
 val create
   :  ?read_cycles:int
   -> ?write_cycles:int
   -> ?write_buffer:bool
+  -> ?wbuf_depth:int
   -> Signal.t I.t
   -> Signal.t O.t

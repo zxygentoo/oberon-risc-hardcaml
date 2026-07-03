@@ -121,11 +121,18 @@ the running OS (cache on, boot to the handoff, then a 2M-instruction window) unl
 - **10d write buffer, measured** (Phase-10d landed) — the same-work lockstep of
   synchronous stores vs the 1-entry buffer (`?write_buffer`): **1.237×** (CPI 1.90→1.53
   over a 126.8K-instr aligned prefix — above the 1.22× ceiling estimate, which priced
-  misses off a different stream). The wbuf-ON profile is the current residual: **CPI
-  1.45**, frozen 9.5% — storeW 7.5% (slot-full burst waits: a deeper FIFO's whole
-  remaining ceiling is **1.08×**, the measured depth-vs-payoff verdict) + read-wait 2.0%
-  (of which drain-before-read costs +0.4% — the conservative hazard rule, priced and
-  kept). Arc trajectory, long windows: CPI 26.28 → 2.16 → 1.75 → 1.64 → **1.45**.
+  misses off a different stream). The wbuf-ON profile gave the depth-1 residual: CPI
+  1.45, frozen 9.5% — storeW 7.5% slot-full burst waits (deeper-FIFO ceiling **1.08×**)
+  + read-wait 2.0% (of which drain-before-read costs +0.4% — the conservative hazard
+  rule, priced and kept).
+- **10d follow-up: depth-2 FIFO + the rc=6 margin trade, measured** — the depth-1 vs
+  depth-2 lockstep (`?wbuf_depth`): **1.066×**, near the 1.08× ceiling (the burst waits
+  were Oberon's 2-store procedure prologues, as hypothesised); CPI 1.45→**1.36**, storeW
+  →1.7%, and the ceiling from there is **1.02×** — depth 3+ is measured dead. The rc5 vs
+  rc6 lockstep prices the PSRAM I/O margin trade (`read_cycles:6` after the 13.3 ns
+  budget failed once and grazed twice in synthesis): **0.86%** — only the ~0.3%-of-
+  accesses miss classes pay +2 cycles. Shipped baseline: **CPI 1.37**, frozen 4.2%. Arc
+  trajectory, long windows: CPI 26.28 → 2.16 → 1.75 → 1.64 → 1.45 → **1.37**.
 
 Four harness lessons, so they're not relearned: **video DMA is live in every board sim**
 (Cyclesim's one-domain semantics advance the pclk raster 1:1 regardless of the `pclk`
