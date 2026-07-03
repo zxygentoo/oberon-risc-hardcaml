@@ -78,10 +78,20 @@ let create (i : _ I.t) : _ O.t =
 let%expect_test "registers = 16×32 array model [qcheck, 500 sequences]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let w32 v = Bits.of_unsigned_int ~width:32 v in
+  (* one sim for all 500 sequences (hoisted out of the property, §6); each sequence starts
+     by zeroing the 16 registers so the fresh-zeros model stays aligned — the same hoist +
+     zeroing pattern as sram.ml's round-trip qcheck *)
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
   let check_seq ops =
-    let sim = Sim.create create in
-    let inp = Cyclesim.inputs sim in
-    let outp = Cyclesim.outputs sim in
+    for k = 0 to 15 do
+      inp.wr := Bits.of_unsigned_int ~width:1 1;
+      inp.rno0 := Bits.of_unsigned_int ~width:4 k;
+      inp.din := w32 0;
+      Cyclesim.cycle sim
+    done;
+    inp.wr := Bits.of_unsigned_int ~width:1 0;
     let mem = Array.create ~len:16 0 in
     List.for_all ops ~f:(fun (wr, (rno0, rno1, rno2, din)) ->
       inp.wr := Bits.of_unsigned_int ~width:1 wr;

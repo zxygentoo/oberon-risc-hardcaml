@@ -187,7 +187,9 @@ k-induction (`vid_invariant`); the prefetch's **delivery** by decomposition — 
 ≡ a geometry spec (`vid_addr`, combinational Sec/z3, all `(hcnt,vcnt)`) + that same `vid_invariant`
 for timing + a reviewed composition lemma (a weaker tier — the one place a hand argument glues the
 mechanized pieces; see "VID prefetch delivery" below). **17 checks**, all proven; every one
-mutation-checked.
+mutation-checked. (NB the mutation checks were performed *manually at proof-authoring time* —
+`@formal` re-runs only the positive proofs; there is no re-runnable mutation harness. The
+specific mutations and their observed failures are recorded per-proof below.)
 
 ## Peripheral modules — Tier 1 + Tier 2 done (VID partial by design)
 

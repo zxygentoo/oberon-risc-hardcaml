@@ -108,10 +108,12 @@ let boot_oracle_to_handoff () =
    code-address link) or it is a real failure. Prints a summary; returns [true] on pass. *)
 let compare_snapshots ~hw ~oracle =
   let fail = ref false in
+  let arch_fail = ref false in
   let require name cond =
     if not cond
     then (
       fail := true;
+      arch_fail := true;
       Printf.printf "  FAIL: %s\n" name)
   in
   require "pc" (hw.pc = oracle.pc);
@@ -158,7 +160,8 @@ let compare_snapshots ~hw ~oracle =
       (hw.ram !first_real)
       (oracle.ram !first_real));
   Printf.printf
-    "arch: pc/flags/H match; %d reg(s) = §8 code-addr skew (the R15 link)\n"
+    "arch: pc/flags/H %s; %d reg(s) = §8 code-addr skew (the R15 link)\n"
+    (if !arch_fail then "MISMATCH (see FAIL lines above)" else "match")
     !skew_regs;
   Printf.printf
     "loaded image [0..0x%X): %d exact, %d §8-skewed (boot-stack links), %d real diffs\n"

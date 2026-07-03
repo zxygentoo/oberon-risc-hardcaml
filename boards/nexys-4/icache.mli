@@ -80,8 +80,8 @@ module O : sig
 end
 
 (** [create ?lines_log2 ?write_update i] builds the cache. [lines_log2] (default 10 = 1024
-    lines = 4 KiB of data) is log2 of the number of direct-mapped lines; the tag is
-    [18 - lines_log2] bits.
+    lines = 4 KiB of data) is log2 of the number of direct-mapped lines, valid 1..17
+    (checked; 18 would need a degenerate 0-bit tag); the tag is [18 - lines_log2] bits.
 
     [write_update] (default [false] = the proven Phase-10a snoop-invalidate) switches the
     store-hit snoop from {e invalidate} to {e update-in-place} for {b word} stores: the

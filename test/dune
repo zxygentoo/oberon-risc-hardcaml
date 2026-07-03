@@ -49,7 +49,7 @@
   test_fp_divider
   test_cpu_lockstep
   test_rom)
- (libraries risc5 oracle hardcaml hardcaml_waveterm qcheck-core)
+ (libraries risc5 oracle hardcaml qcheck-core)
  ; Phase 3b: the frozen FP vectors (vendored, data-only) feed test_fp_adder's replay.
  (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
  (preprocess

@@ -260,7 +260,11 @@ type memory_out =
    inbus through), the store byte replicate, and the rd/wr strobes. [stall_l0] is the
    first of the two load/store stall cycles. *)
 let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
-  let stall_l0 = dec.ldr |: dec.str &: ~:stall_l1 in
+  (* (LDR|STR) & ~stallL1 (RISC5.v:168) — the OR bound first by name: &:/|: are
+     equal-precedence left-assoc, so the bare mix parses right but READS wrong under
+     Verilog/C intuition (ocamlformat strips clarifying parens as redundant) *)
+  let ld_or_st = dec.ldr |: dec.str in
+  let stall_l0 = ld_or_st &: ~:stall_l1 in
   let data_adr = sel_bottom b ~width:24 +: sresize dec.off ~width:24 in
   let ben = dec.p &: ~:(dec.q) &: dec.v &: ~:stall_x &: ~:stall_l1 in
   let byte_lane = sel_bottom data_adr ~width:2 in

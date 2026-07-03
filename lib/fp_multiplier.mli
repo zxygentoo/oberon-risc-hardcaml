@@ -62,8 +62,8 @@ val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 (** [create_opt_pipelined] — the {e pipelined} FP multiply (experiment [feat/fast-clock]),
     analogue of {!Multiplier.create_opt_pipelined}: the mantissa product is registered
     through [stages] flops (default 2, Vivado → DSP48 MREG/PREG) so the multiply and the
-    exponent/round {!pack} land in separate cycles, keeping the DSP off the critical path
-    above ~52 MHz. Multi-cycle via a run-gated counter/[stall], still bit-identical to
-    {!create}/{!create_opt} (differential qcheck). [?ce] gates the pipeline (default
-    [vdd]). *)
+    exponent/round [pack] (a private [.ml] helper) land in separate cycles, keeping the
+    DSP off the critical path above ~52 MHz. Multi-cycle via a run-gated counter/[stall],
+    still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
+    pipeline (default [vdd]). *)
 val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

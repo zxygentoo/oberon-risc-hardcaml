@@ -79,21 +79,24 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
     (tick_v ==: concat_msb [ gnd; select limit ~high:11 ~low:1 ]) -- "midtick"
   in
   let endbit = bitcnt_v ==:. 8 in
+  (* end of the 9th window (start + 8 data) = the frame is complete; bound by name so the
+     mixed &:/|: uses below stay unambiguous (equal precedence, left-assoc) *)
+  let frame_done = endtick &: endbit in
   let start_edge = (q1_v &: ~:q0_v) -- "start_edge" in
   Always.(
     compile
       [ q0 <-- i.rxd
       ; q1 <-- q0_v
-      ; run <-- (start_edge |: (~:(reset |: (endtick &: endbit)) &: run_v))
+      ; run <-- (start_edge |: (~:(reset |: frame_done) &: run_v))
       ; tick <-- mux2 (run_v &: ~:endtick) (tick_v +:. 1) (zero 12)
       ; bitcnt
         <-- mux2
               (endtick &: ~:endbit)
               (bitcnt_v +:. 1)
-              (mux2 (endtick &: endbit) (zero 4) bitcnt_v)
+              (mux2 frame_done (zero 4) bitcnt_v)
       ; shreg
         <-- mux2 midtick (concat_msb [ q1_v; select shreg_v ~high:7 ~low:1 ]) shreg_v
-      ; stat <-- (endtick &: endbit |: (~:(reset |: i.done_) &: stat_v))
+      ; stat <-- (frame_done |: (~:(reset |: i.done_) &: stat_v))
       ]);
   { O.rdy = stat_v; data = shreg_v }
 ;;

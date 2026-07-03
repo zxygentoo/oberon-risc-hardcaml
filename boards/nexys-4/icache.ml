@@ -40,6 +40,14 @@ end
    cached address is the 18-bit word address of the 1 MB window ([adr[19:2]]); index = its
    low [lines_log2] bits, tag = the rest. *)
 let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
+  (* outside 1..17 the index/tag selects die inside Hardcaml with an opaque width error
+     (18 would need a degenerate 0-bit tag); fail legibly at the seam instead *)
+  if lines_log2 < 1 || lines_log2 > 17
+  then
+    failwith
+      (Stdlib.Printf.sprintf
+         "Icache.create: lines_log2 = %d out of range (valid 1..17)"
+         lines_log2);
   let lines = 1 lsl lines_log2 in
   let tag_w = 18 - lines_log2 in
   let line_w = 1 + tag_w + 32 in
