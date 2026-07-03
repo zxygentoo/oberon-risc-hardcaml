@@ -1,9 +1,13 @@
-# Phase-9 benchmarks (`test/bench/`)
+# Phase-9 benchmarks (the gauge index)
 
 Measure-before/after-you-optimise gauges for the Phase-9 optimisation pass (AGENT.md §5).
 They print **reports, not pass/fail assertions**, so they're kept out of the always-on
 `dune runtest` and driven by alias. Together they answer one question in three views:
 **what did the DSP multipliers and the 50 → 60 MHz clock actually buy, end to end?**
+
+This README indexes all three; the two *target-independent* gauges (`bench_core`,
+`profile_boot`) live here, while `bench_boot` — board-specific through and through — lives
+in the board-test mirror, `test/boards/nexys-4/`. The aliases work from anywhere.
 
 The short answer, measured: a big *local* win (MUL 17× faster) that Amdahl shrinks to ~nil
 *aggregate*, because the machine is memory-bound. The broad, real win is the clock (1.2×);
@@ -15,7 +19,7 @@ the next real lever is memory, not compute.
 |---|---|---|
 | `dune build @bench` | MUL/DIV **cycles per op**, iterative vs DSP | one op, memoryless |
 | `dune build @profile_boot` | MUL/DIV **dynamic density** over a boot | oracle (instruction-level, no memory model) |
-| `dune build @bench_boot` | **total boot cycles** on the PSRAM SoC | whole machine, wait-states and all |
+| `dune build @bench_boot` | **total boot cycles** on the PSRAM SoC | whole machine, wait-states and all (`test/boards/nexys-4/`) |
 
 ### `bench_core` — per-op cost (`@bench`)
 White-box A/B in one binary: poke IR + operands, run to retirement, count cycles, swapping
@@ -40,7 +44,7 @@ projected compute speedup if MUL drops 33→2:  ~1.03x
 So the 17× per-op win rides on ops that are ~1-in-1000. Amdahl caps the *compute* payoff at
 ~3%.
 
-### `bench_boot` — the whole machine (`@bench_boot`)
+### `bench_boot` — the whole machine (`@bench_boot`, in `test/boards/nexys-4/`)
 Boots the real memory path — `Soc_board` (core on a clock-enable, main memory behind
 `Cellram` inserting `read_cycles`/`write_cycles` wait-states, driven from the real disk via
 the SD bridge) — to the OS handoff, counting total cycles. Two probes:

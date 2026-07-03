@@ -3,7 +3,10 @@
 ; (they print reports, not pass/fail assertions); drive them by alias:
 ;   dune build @bench           core cycles/op, iterative vs DSP multiplier
 ;   dune build @profile_boot    dynamic MUL/DIV count over a boot (Amdahl context)
-;   dune build @bench_boot      end-to-end boot cycles on the PSRAM SoC (memory-bound context)
+; Only the TARGET-INDEPENDENT gauges live here (lib units / the oracle). The third gauge,
+; @bench_boot (end-to-end cycles on the PSRAM board SoC), is board-specific and lives in
+; the board-test mirror, test/boards/nexys-4/ — README.md here stays the index for all
+; three.
 
 (executable
  (name bench_core)
@@ -25,19 +28,3 @@
  (deps ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
  (action
   (run ./profile_boot.exe)))
-
-; end-to-end: boot the PSRAM board SoC to the handoff, count total cycles (DSP-mul A/B +
-; read-latency sweep) — the memory-bound context the other two can't see.
-
-(executable
- (name bench_boot)
- (modules bench_boot)
- ; board_tb (test/boards/nexys-4) brings the Soc_board+Cellram_model wiring — and risc5 /
- ; nexys4_board transitively; the bench itself no longer derives interfaces, so no ppx.
- (libraries board_tb oracle hardcaml sd_bridge boot_checkpoint_common))
-
-(rule
- (alias bench_boot)
- (deps ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
- (action
-  (run ./bench_boot.exe)))

@@ -1,7 +1,7 @@
 (* Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
    PSRAM double {!Nexys4_board.Cellram_model} on its memory pins. Both board integration
-   tests here (the boot-handoff checkpoint and the visual golden) — and
-   test/bench/bench_boot — wire the SoC to the model identically and reconstruct 32-bit
+   tests here (the boot-handoff checkpoint and the visual golden) — and the board gauge
+   bench_boot (this dir) — wire the SoC to the model identically and reconstruct 32-bit
    words from its two byte lanes the same way; this factors that out. The
    [fast_mul]/[mul_stages] knobs exist for the bench's DSP-multiplier sweep (the tests
    leave them at the Soc_board defaults). The public contract is in board_tb.mli. *)

@@ -1,7 +1,9 @@
-; Board (Nexys 4) SoC integration tests — mirror boards/nexys-4/ under test/. Both close the
-; PSRAM board SoC with cellram_model through the shared board_tb harness (this dir). Built by
-; @check so they can't rot; opt-in to run, like the other heavyweight checks (§6):
+; Board (Nexys 4) SoC integration tests + the board bench — mirror boards/nexys-4/ under
+; test/. All close the PSRAM board SoC with cellram_model through the shared board_tb
+; harness (this dir). Built by @check so they can't rot; opt-in to run, like the other
+; heavyweight checks (§6):
 ;   dune build @boot_checkpoint_board   dune build @visual_golden_board
+;   dune build @bench_boot              (the board gauge; index in test/bench/README.md)
 
 (library
  (name board_tb)
@@ -46,3 +48,22 @@
  (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
  (action
   (run ./test_visual_golden_board.exe)))
+
+; Phase-9/10 board gauge (a report, not a pass/fail test): end-to-end boot cycles on the
+; PSRAM board SoC + the running-OS stall profile / video A/B / cache sweeps. It lives here
+; (not test/bench/) because it is board-specific through and through — it drives Soc_board's
+; full knob surface via board_tb and probes board signal names — while test/bench/ keeps the
+; target-independent gauges. The gauge index is test/bench/README.md.
+
+(executable
+ (name bench_boot)
+ (modules bench_boot)
+ ; board_tb brings the Soc_board+Cellram_model wiring — and risc5 / nexys4_board
+ ; transitively; the bench itself derives no interfaces, so no ppx.
+ (libraries board_tb oracle hardcaml sd_bridge boot_checkpoint_common))
+
+(rule
+ (alias bench_boot)
+ (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (action
+  (run ./bench_boot.exe)))

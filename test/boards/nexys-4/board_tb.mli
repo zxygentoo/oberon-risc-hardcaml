@@ -1,6 +1,6 @@
 (** Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
     PSRAM double {!Nexys4_board.Cellram_model} on its memory pins — the common wiring of
-    the board boot checkpoint, the board visual golden, and test/bench/bench_boot. *)
+    the board boot checkpoint, the board visual golden, and bench_boot (all this dir). *)
 
 open Hardcaml
 

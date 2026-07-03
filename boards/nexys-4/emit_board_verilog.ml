@@ -58,8 +58,8 @@ let () =
            (* Phase-10b: write-update snoop — a word store-hit refreshes the cached line
               in place instead of dropping it (96% of running-OS load misses were
               snoop-invalidate self-inflicted; load hit 59% -> 98%, same-work 1.305x in
-              sim — see Icache + test/bench/bench_boot.ml). Timing watch: the wd mux
-              gained a level (fill_data vs wdata) on the cache-write path, which was
+              sim — see Icache + test/boards/nexys-4/bench_boot.ml). Timing watch: the wd
+              mux gained a level (fill_data vs wdata) on the cache-write path, which was
               already the 60 MHz critical path — check WNS still closes. *)
          ~write_update:true
            (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and

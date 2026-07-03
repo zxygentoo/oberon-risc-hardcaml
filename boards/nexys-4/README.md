@@ -83,7 +83,7 @@ cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
 - **Write-update snoop (Phase-10b, `?write_update` — board emit on):** the plain snoop-invalidate
   left the load hit-rate at 58.7% because 96.1% of load misses were its own doing — Oberon's
   store-then-load stack discipline killed the hot lines (measured by the miss autopsy,
-  `test/bench/bench_boot.ml`). A **word** store that hits now rewrites the line in place with the
+  `test/boards/nexys-4/bench_boot.ml`). A **word** store that hits now rewrites the line in place with the
   store data — same single write port, and the same write-through transaction lands the identical
   word in PSRAM, so the coherence invariant is untouched; **byte** stores still invalidate. Load
   hit 58.7→98.4%, **1.305× same-work** on running-OS code; WNS +0.708 ns at 60 MHz (the cache-write
