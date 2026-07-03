@@ -732,6 +732,7 @@ let () =
    is visible. *)
 let stall_profile
   ?(video = true)
+  ?(write_update = false)
   ~lines_log2
   ~write_cycles
   ~instr_budget
@@ -739,7 +740,7 @@ let stall_profile
   ~seg
   ()
   =
-  let t = make_os ~video ~icache:true ~lines_log2 ~write_cycles () in
+  let t = make_os ~video ~write_update ~icache:true ~lines_log2 ~write_cycles () in
   boot_to_handoff t;
   let names = [| "retire"; "exec"; "compute"; "fetchW"; "loadW"; "storeW" |] in
   let tot = Array.make 6 0
@@ -955,11 +956,13 @@ let load_point ~lines_log2 ~instr_budget ~cycle_cap =
 let () =
   Printf.printf
     "\n\
-    \  Running-OS stall profile (cache on, 4KB, video DMA live — the board reality; long\n\
-    \  post-handoff window, every system clock bucketed; segmented per 250k instr).\n\
+    \  Running-OS stall profile (cache on, 4KB, WRITE-UPDATE — the shipped board config;\n\
+    \  video DMA live; long post-handoff window, every system clock bucketed; segmented\n\
+    \  per 250k instr).\n\
      %!";
   stall_profile
     ~video:true
+    ~write_update:true
     ~lines_log2:10
     ~write_cycles:5
     ~instr_budget:2_000_000
@@ -974,6 +977,7 @@ let () =
      %!";
   stall_profile
     ~video:false
+    ~write_update:true
     ~lines_log2:10
     ~write_cycles:5
     ~instr_budget:2_000_000
@@ -983,13 +987,26 @@ let () =
   Printf.printf
     "\n\
     \  Framebuffer-in-BRAM ceiling — same-work instruction lockstep, video on vs OFF\n\
-    \  (cache on, 4KB): what removing ALL video traffic from the PSRAM port buys.\n\
+    \  (cache on, 4KB, write-update — the shipped config): what removing ALL video\n\
+    \  traffic from the PSRAM port buys.\n\
      %!";
   let aligned, _diverged, c_on, c_off, _, _ =
     compare_pair
       ~max_instrs:200_000
-      (make_os ~video:true ~write_cycles:5 ~icache:true ~lines_log2:10 ())
-      (make_os ~video:false ~write_cycles:5 ~icache:true ~lines_log2:10 ())
+      (make_os
+         ~video:true
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+      (make_os
+         ~video:false
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
   in
   let f = float_of_int in
   Printf.printf
