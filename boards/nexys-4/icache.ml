@@ -18,9 +18,12 @@ module I = struct
     ; cacheable_read : 'a
          [@bits 1] (* mem_pend & ~wr & ~cpu_internal — a PSRAM fetch/load *)
     ; write : 'a [@bits 1] (* wr & ~cpu_internal — a PSRAM store, to snoop *)
+    ; ben : 'a [@bits 1] (* core byte-access flag: 1 = byte store (write-update can't) *)
     ; ce : 'a [@bits 1] (* Cellram.ce — the access-retire pulse *)
-    ; fill_data : 'a [@bits 32]
-    (* Cellram.rdata — the fetched word, valid at [ce] on a miss *)
+    ; fill_data : 'a
+         [@bits 32] (* Cellram.rdata — the fetched word, valid at [ce] on a miss *)
+    ; wdata : 'a [@bits 32]
+    (* core store data ([outbus]) — the word a write-update writes into a hit line *)
     }
   [@@deriving hardcaml]
 end
@@ -36,7 +39,7 @@ end
 (* [lines_log2] = log2 of the number of lines (default 1024 lines = 4 KiB of data). The
    cached address is the 18-bit word address of the 1 MB window ([adr[19:2]]); index = its
    low [lines_log2] bits, tag = the rest. *)
-let create ?(lines_log2 = 10) (i : _ I.t) : _ O.t =
+let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
   let lines = 1 lsl lines_log2 in
   let tag_w = 18 - lines_log2 in
   let line_w = 1 + tag_w + 32 in
@@ -67,12 +70,22 @@ let create ?(lines_log2 = 10) (i : _ I.t) : _ O.t =
   let stored_data = select stored ~high:31 ~low:0 in
   let tag_match = stored_valid &: (stored_tag ==: tag) in
   let hit = i.cacheable_read &: tag_match in
-  (* fill a read miss when it retires; drop a line a store overwrites. Mutually exclusive
-     (read cycle vs store cycle), so one write port serves both. *)
+  (* fill a read miss when it retires; on a store that hits, either UPDATE the line in
+     place (Phase-10b [write_update], word stores — the same write-through transaction
+     lands the same word in PSRAM, so the coherence invariant is untouched; idempotent
+     across the frozen store cycles since the ce-frozen core holds [adr]/[wdata] stable)
+     or drop it (byte stores — merging one lane would need read-modify; and the whole
+     store-hit case when [write_update] is off, the proven Phase-10a policy). All three
+     are mutually exclusive (fill needs a read cycle; update/invalidate split on [ben]),
+     so one write port still serves them all. *)
   let fill = i.cacheable_read &: i.ce &: ~:hit in
-  let invalidate = i.write &: tag_match in
-  assign we (fill |: invalidate);
-  assign wd (mux2 fill (vdd @: tag @: i.fill_data) (zero line_w));
+  let store_hit = i.write &: tag_match in
+  let update = if write_update then store_hit &: ~:(i.ben) else gnd in
+  let invalidate = if write_update then store_hit &: i.ben else store_hit in
+  assign we (fill |: update |: invalidate);
+  assign
+    wd
+    (mux2 (fill |: update) (vdd @: tag @: mux2 fill i.fill_data i.wdata) (zero line_w));
   { O.hit; rdata = stored_data }
 ;;
 
@@ -124,6 +137,50 @@ let%expect_test "icache — fill hits, tag-mismatch misses, store snoop-invalida
     A after fill        : hit=1 rdata=0xDEADBEEF
     C (same idx, tag+1) : hit=0
     A after store to A  : hit=0
+    |}]
+;;
+
+(* Phase-10b [write_update]: a WORD store that hits refreshes the line in place (the next
+   load serves the STORED word — the store-then-load pattern that was 96% of load misses
+   under snoop-invalidate); a BYTE store still kills the line. *)
+let%expect_test "icache — write-update: word store refreshes in place, byte store \
+                 invalidates [coherence]"
+  =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create (create ~write_update:true) in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  let step ~read ~write ~ben ~adr ~ce ~fill ~wdata =
+    set inp.adr adr 24;
+    set inp.cacheable_read read 1;
+    set inp.write write 1;
+    set inp.ben ben 1;
+    set inp.ce ce 1;
+    set inp.fill_data fill 32;
+    set inp.wdata wdata 32;
+    Cyclesim.cycle sim
+  in
+  let hit () = Bits.to_int_trunc !(outp.hit) in
+  let rdata () = Bits.to_unsigned_int !(outp.rdata) in
+  let a = 0x40 in
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:1 ~fill:0xAAAA0001 ~wdata:0;
+  (* miss on A -> fill *)
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  Stdlib.Printf.printf "A after fill       : hit=%d rdata=0x%X\n" (hit ()) (rdata ());
+  step ~read:0 ~write:1 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0xBBBB0002;
+  (* WORD store to A -> update in place *)
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  Stdlib.Printf.printf "A after word store : hit=%d rdata=0x%X\n" (hit ()) (rdata ());
+  step ~read:0 ~write:1 ~ben:1 ~adr:a ~ce:0 ~fill:0 ~wdata:0xCC;
+  (* BYTE store to A -> invalidate *)
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  Stdlib.Printf.printf "A after byte store : hit=%d\n" (hit ());
+  [%expect
+    {|
+    A after fill       : hit=1 rdata=0xAAAA0001
+    A after word store : hit=1 rdata=0xBBBB0002
+    A after byte store : hit=0
     |}]
 ;;
 

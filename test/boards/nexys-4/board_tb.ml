@@ -36,6 +36,9 @@ let create
   ?(read_cycles = 2)
   ?(write_cycles = 2)
   ?(icache = false)
+  ?lines_log2
+  ?(write_update = false)
+  ?(video = true)
   ?(fast_mul = false)
   ?(mul_stages = 0)
   ?(contents = Risc5.Rom.bootloader)
@@ -49,6 +52,9 @@ let create
       ~read_cycles
       ~write_cycles
       ~icache
+      ?lines_log2
+      ~write_update
+      ~video
       ~fast_mul
       ~mul_stages
       { Soc_board.I.clock = i.clock

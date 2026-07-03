@@ -66,6 +66,9 @@ let create
   ?(fast_mul = false)
   ?(mul_stages = 0)
   ?(icache = false)
+  ?lines_log2
+  ?(write_update = false)
+  ?(video = true)
   ?(uart_baud_slow = 1302)
   ?(uart_baud_fast = 217)
   (i : _ I.t)
@@ -99,7 +102,12 @@ let create
       ~viddata_par:vidpar
       { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
-  let vidreq = vid.req -- "vidreq" in
+  (* [?video] is a sim-only A/B seam: gating [vidreq] takes the video DMA off the PSRAM
+     port entirely — the framebuffer-in-BRAM counterfactual (bench_boot). Elaboration-time
+     and default [true], so the board netlist is untouched. (The [pclk] *input* cannot
+     serve as the gate: under Cyclesim's one-domain semantics the pclk raster advances 1:1
+     with [clk] regardless of the input's level — video DMA is live in every board sim.) *)
+  let vidreq = (if video then vid.req else gnd) -- "vidreq" in
   let vidadr = vid.vidadr -- "vidadr" in
   (* ── Core ── on the arbiter's clock-enable; [stall_x] tied off (video is arbitrated in
      {!Cellram}, which freezes the core via [ce] instead). The
@@ -121,15 +129,19 @@ let create
       }
   in
   (* ── Address decode ── (same constants as soc.ml / RISC5Top) *)
-  let rom_region = (select core.adr ~high:23 ~low:14 ==:. 0x3FF) -- "rom_region" in
-  let ioenb = (select core.adr ~high:23 ~low:6 ==:. 0x3FFFF) -- "ioenb" in
-  let iowadr = select core.adr ~high:5 ~low:2 in
+  let core_adr = core.adr -- "core_adr" in
+  let core_ben = core.ben -- "core_ben" in
+  let rom_region = (select core_adr ~high:23 ~low:14 ==:. 0x3FF) -- "rom_region" in
+  let ioenb = (select core_adr ~high:23 ~low:6 ==:. 0x3FFFF) -- "ioenb" in
+  let iowadr = select core_adr ~high:5 ~low:2 in
   (* on-chip fast path: a ROM-region fetch (codebus from PROM) or any MMIO load/store (top
      64 B). These take {!Cellram}'s 1-cycle path — never touching the PSRAM — which also
      keeps each MMIO access one CPU-cycle long, so the write strobes below pulse exactly
      once. *)
-  let is_fetch = (core.mem_pend &: ~:(core.rd) &: ~:(core.wr)) -- "is_fetch" in
-  let data_access = core.rd |: core.wr in
+  let core_rd = core.rd -- "core_rd" in
+  let core_wr = core.wr -- "core_wr" in
+  let is_fetch = (core.mem_pend &: ~:core_rd &: ~:core_wr) -- "is_fetch" in
+  let data_access = core_rd |: core_wr in
   let cpu_internal =
     (rom_region &: is_fetch |: (ioenb &: data_access)) -- "cpu_internal"
   in
@@ -148,9 +160,9 @@ let create
       { Cellram.I.clock = i.clock
       ; mem_pend = core.mem_pend &: ~:cache_hit
       ; cpu_internal
-      ; adr = core.adr
+      ; adr = core_adr
       ; wr = core.wr
-      ; ben = core.ben
+      ; ben = core_ben
       ; wdata = core.outbus
       ; vidreq
       ; vidadr
@@ -172,12 +184,16 @@ let create
       let cacheable_read = cacheable_read -- "cache_read" in
       let cache =
         Icache.create
+          ?lines_log2
+          ~write_update
           { Icache.I.clock = i.clock
-          ; adr = core.adr
+          ; adr = core_adr
           ; cacheable_read
           ; write = core.wr &: ~:cpu_internal
+          ; ben = core_ben
           ; ce = cellram.ce
           ; fill_data = cellram.rdata
+          ; wdata = core.outbus
           }
       in
       assign cache_hit (cache.hit -- "cache_hit");
@@ -186,7 +202,7 @@ let create
       assign cache_hit gnd;
       cellram.rdata)
   in
-  let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
+  let prom = Prom.create ~contents { Prom.I.adr = select core_adr ~high:10 ~low:2 } in
   (* ── SPI master (words 4/5) ── *)
   let spi_ctrl = Always.Variable.reg spec ~width:4 in
   Always.(
@@ -423,8 +439,11 @@ module Tb = struct
   ;;
 end
 
-(* drive every line to its idle level; [pclk] held low (no video DMA contends — these
-   tests exercise the CPU/MMIO paths, not the raster) *)
+(* drive every line to its idle level. NB [pclk] low does NOT quiet the video DMA: under
+   Cyclesim's one-domain semantics the pclk-clocked raster advances 1:1 with [clk]
+   whatever this input holds (lib/soc.ml's video test relies on exactly that), so video
+   contends for the PSRAM port in every board sim — gate it with [create]'s [?video] if a
+   test needs the bus to itself. *)
 let drive_idle (inp : _ Tb.I.t) =
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in

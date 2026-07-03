@@ -84,6 +84,17 @@ val create
   -> ?fast_mul:bool
   -> ?mul_stages:int
   -> ?icache:bool
+  -> ?lines_log2:int
+  -> ?write_update:bool
+       (** Phase-10b cache snoop policy (default [false] = the proven Phase-10a
+           snoop-invalidate): word store-hits update the cached line in place instead of
+           dropping it — see {!Icache.create} *)
+  -> ?video:bool
+       (** sim-only A/B seam (default [true] = the board): [false] gates [vidreq], taking
+           the video DMA off the PSRAM port — the framebuffer-in-BRAM counterfactual for
+           the bench. NB holding the [pclk] {e input} low does not do this: in Cyclesim's
+           one-domain sim the pclk raster advances 1:1 with [clk] regardless, so video is
+           live in every board sim unless gated here. *)
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

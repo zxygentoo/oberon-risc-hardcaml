@@ -39,6 +39,13 @@ val create
   :  ?read_cycles:int
   -> ?write_cycles:int
   -> ?icache:bool
+  -> ?lines_log2:int
+  -> ?write_update:bool
+       (** default [false]; [true] = the Phase-10b write-update snoop policy (word
+           store-hits refresh the cached line in place — see {!Nexys4_board.Icache}) *)
+  -> ?video:bool
+       (** default [true]; [false] gates the video DMA off the PSRAM port — the
+           framebuffer-in-BRAM counterfactual (see {!Nexys4_board.Soc_board.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
   -> ?contents:int array

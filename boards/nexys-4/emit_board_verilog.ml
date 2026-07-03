@@ -54,6 +54,13 @@ let () =
               infers RAM (distributed), not BRAM/FF, and that the combinational hit path
               (regfile → tag compare → mem_rdata mux → decode) still closes 60 MHz. *)
          ~icache:true
+           (* Phase-10b: write-update snoop — a word store-hit refreshes the cached line
+              in place instead of dropping it (96% of running-OS load misses were
+              snoop-invalidate self-inflicted; load hit 59% -> 98%, same-work 1.305x in
+              sim — see Icache + test/bench/bench_boot.ml). Timing watch: the wd mux
+              gained a level (fill_data vs wdata) on the cache-write path, which was
+              already the 60 MHz critical path — check WNS still closes. *)
+         ~write_update:true
            (* UART baud divider scaled for 60 MHz so the wire is a standard rate: slow =
               60e6/19200 = 3125 (exact 19200, oat's default), fast = 60e6/115200 ≈ 521.
               The faithful 1302/217 constants are 25 MHz-only — at 60 MHz they'd give
