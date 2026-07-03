@@ -209,6 +209,7 @@ Vivado-specific layer.
 | **9** *(stretch)* ✅ *(compute arc)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving. *Landed:* DSP MUL + FML, pipelined to **60 MHz**, benchmarked end-to-end (`test/bench/`). *Deferred:* Newton-Raphson DIV. *Verdict:* memory-bound, not compute-bound → Phase 10 | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 | **10a** *(stretch)* ✅ *(memory arc)* | **I-cache** — the Phase-9 verdict acted on. A direct-mapped, write-through read/I-cache (`Cache`) in front of `Cellram`, in the **board layer** so the core stays byte-identical (§8): async-read LUTRAM (the register-file idiom) gives a **0-stall combinational hit** (drop `mem_pend`, so Cellram's `ce = ~mem_pend | …` rises the same cycle); write-through + **snoop-invalidate** = transparent coherence (Oberon has no flush op — the real machine has no cache). *Landed:* **~6× on running-OS code** (93% hit-rate), boots clean on **real hardware**, 60 MHz still closes (the cache fill path is now the critical path); 720 LUT distributed RAM, **0 BRAM**. *Deferred:* burst/wide-PSRAM fill, D-cache (10b/c) | architectural lockstep + **coherence**: byte-identical desktop with the cache ON (`@visual_golden_board`) + 28.8K-instr pc-lockstep vs cache-off; `Cache`'s own co-located fill/hit/snoop tests |
 | **10b** *(stretch)* ✅ *(memory arc)* | **Write-update snoop** — the miss autopsy's verdict acted on: with the 10a cache the load hit-rate sat at **58.7% and capacity-flat** (1 KB→256 KB moved it 1.6 pt), and the autopsy showed why — **96.1% of running-OS load misses were snoop-invalidate self-inflicted** (Oberon's store-then-load stack discipline kills the hot lines). So a **word store-hit now refreshes the cached line in place** (`Cache ?write_update`, default off = the proven 10a policy): same single write port, the same write-through transaction lands the same word in PSRAM, so the coherence invariant is untouched; byte stores still invalidate (lane-merge unneeded — zero byte stores in the 2M-instr window). *Landed:* load hit **58.7→98.4%**, **1.305× same-work** on running-OS code (CPI 4.39→3.36, 99.4% overall hit-rate), 60 MHz closes at **WNS +0.708 ns** (the cache-write path absorbed the extra `wd` mux and is now the frequency limiter), still 720 LUT / **0 BRAM**; **boots clean on real hardware, runs visibly smooth**. Built on a new Phase-10 measurement layer in `test/boards/nexys-4/bench_boot.ml` (index: `test/bench/README.md`): a running-OS **stall profile** (every clock bucketed retire/exec/compute/fetchW/loadW/storeW + a video-contention overlay), the **`?video` A/B seam** (video DMA is live in *every* board sim — Cyclesim's one-domain sim advances the pclk raster 1:1 whatever the pclk input holds — so gating `vidreq` is the honest framebuffer-in-BRAM counterfactual: **1.228× same-work ceiling**, 22.7% port occupancy, 9% contention overlay), and the **miss autopsy** (an OCaml cache mirror validated **0-mismatch against the RTL hit bit over 2.1M reads**, replaying counterfactual snoop policies on the same access stream) | same-work pc-lockstep vs snoop-invalidate (29.1K instrs) + the autopsy mirror re-validated 0-mismatch against the write-update RTL + `@visual_golden_board` **byte-identical** with `WRITE_UPDATE=1` + co-located update/kill tests; on-hardware boot ✅ |
+| **10c** *(stretch)* ✅ *(memory arc)* | **Framebuffer-in-BRAM** — the video bus tax removed at the source. First the baseline was re-measured honestly: the stall profile now runs the *shipped* policy (`?write_update` threaded through — the 10a-policy profile still showed loadW 21.6% that write-update had already eliminated), giving the true 10b residual **CPI 1.75, 25.0% frozen: storeW 22.1% (88% of frozen)**, video contention 5.0% on **22.8% port occupancy**, and a re-measured gating ceiling of **1.180×** (the old 1.228× was vs the 10a policy). `Framebuf` (board layer): the framebuffer shadowed in on-chip **BRAM** — four byte-lane 32768×8 **sync-read** RAMs (sync read = block-RAM inference; the cache's async-LUTRAM idiom would burn ~26k LUTs) covering the **full DMA-addressable span** `[Vid.org, Vid.org+0x8000)` (no blanking-time assumptions; `Vid.org` newly exported so there is one constant). Same coherence shape as the cache: every PSRAM-bound store in the window **also writes the shadow in the same write-through transaction** (⇒ shadow ≡ PSRAM window at every instant; both power up zero and the OS paints the screen before showing it); CPU loads untouched; **video reads the shadow** — a 1-cycle `vid_ack` through `Vid`'s existing `?viddata_valid`/`?viddata_par` seams (`Vid` unchanged), vs the ~11-cycle arbitrated PSRAM read. `Cellram`'s `vidreq` ties low ⇒ its video FSM + read-preemption logic prune at synthesis. *Landed:* same-work **1.180× — exactly the gating ceiling** (the fb-bram cycle count is identical to the `?video:false` counterfactual's: the shadow read never touches `ce`), long-window CPI 1.75→**1.64**, video port occupancy/contention → **0**; residual now storeW 18.3% (92% of frozen), write-buffer ceiling from here **1.22×** at 4.4× bus-free headroom. Synth: **32 RAMB36** (the design's first BRAM use, 23.7% of 135), 720 LUTRAM unchanged, 60 MHz closes **WNS +0.213 ns** (critical path still the cache write). **Boots clean on real hardware, desktop smooth.** Harness lesson banked: Cyclesim **dead-code elimination eats unobserved logic** — with only `sclk` in `Board_tb.O` the whole pixel path *including the shadow BRAMs* was pruned and the golden's `lookup_mem_by_name "fb0"` found nothing; `Board_tb` now exposes `hsync`/`vsync`/`rgb` (the DCE sibling of the 10b "silent lookup" lesson) | same-work pc-lockstep vs the PSRAM video path (29.1K instrs, `?fb_bram` A/B) + `@visual_golden_board` with `FB_BRAM=1`: **byte-identical desktop read from the shadow** + **all 32768 shadow words ≡ the PSRAM window** (the invariant asserted directly) + `Framebuf` co-located tests; on-hardware boot ✅ |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
 `RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
@@ -265,7 +266,7 @@ PSRAM. The broad win actually banked is the **50→60 MHz clock, 1.2×**, on com
 the DSP48s are placed, and they *enabled* the clock bump), but further multiply/clock work is Amdahl- or
 memory-capped. The next lever is memory, not compute (Phase 10). See `test/bench/README.md`.
 
-### Phase 10: the memory arc — 10a I-cache ✅, 10b write-update ✅, 10c *(potential)*
+### Phase 10: the memory arc — 10a I-cache ✅, 10b write-update ✅, 10c framebuffer-in-BRAM ✅, 10d *(potential)*
 
 The Phase-9 benchmark pointed here unambiguously — the machine is **memory-bound**: every OS instruction
 fetch is a multi-cycle PSRAM read (`read_cycles:5` at 60 MHz), so the leverage is cutting memory latency,
@@ -320,19 +321,50 @@ one-domain semantics advance the pclk raster 1:1 regardless of the pclk *input* 
 reachable only via `lookup_reg_by_name`, which is why the contention overlay first read 0.0% (make
 unconditional lookups loud).
 
-**10c — further, deferred (ceilings now measured, `test/boards/nexys-4/bench_boot.ml`).** With write-update in,
-the residual frozen cycles are store-wait (write-through, the largest bucket now) and the video bus tax:
-- *Write buffer* — hide the ~11-cycle write-through behind execution; measured ceiling **1.19×** (stores
-  fully hidden), 1 store per 26 instructions with ≥2.9× bus-free headroom even with video live. The
-  hazards (drain vs read miss, load-of-buffered-address, never-preempted drain) are the real work.
-- *Framebuffer-in-BRAM* — a 96 KB BRAM shadow (CPU stores mirror into it, VID reads on-chip) takes video
-  off the PSRAM port entirely; measured same-work ceiling **1.228×** (`?video` A/B), and it deletes
-  Cellram's read-preemption logic. 0 of 135 BRAM tiles used today.
+**10c — framebuffer-in-BRAM (done).** The measurement came first: threading the shipped policy through
+the stall profile (`?write_update`, a one-flag bench fix) corrected the residual picture — loadW 21.6%
+was *already gone* (an artifact of profiling the 10a policy after 10b landed); the true 10b residual was
+CPI 1.75 with 25.0% frozen, **storeW 22.1% (88% of frozen)** and the video tax 22.8% port occupancy /
+5.0% contention, gating ceiling re-measured **1.180×** (the 1.228× on record was vs the 10a policy). The
+build is `Framebuf` (`boards/nexys-4/framebuf.ml`): the framebuffer **shadowed in on-chip BRAM**, the
+cache's coherence trick applied to the video window —
+- **A write-through shadow; PSRAM keeps the truth.** Every PSRAM-bound store in the DMA-addressable span
+  `[Vid.org, Vid.org+0x8000)` (the *full* 32768 words `Vid.lookahead` can address, so no blanking-time
+  assumptions; `Vid.org` newly exported — one constant, no drift) also writes the shadow, in the same
+  write-through transaction that lands the word in PSRAM ⇒ **shadow ≡ PSRAM window at every instant**
+  (both power up zero; the OS paints the screen before showing it). CPU *loads* are untouched.
+- **Video reads the shadow, 1 cycle.** Four byte-lane 32768×8 **sync-read** BRAMs (the `lib/ram.ml`
+  byte-enable idiom; sync read is what infers *block* RAM — the cache's async-LUTRAM idiom would burn
+  ~26k LUTs here) answer a fetch with `vid_ack` the next clock, through `Vid`'s existing
+  `?viddata_valid`/`?viddata_par` seams — `Vid` itself unchanged. `Cellram`'s `vidreq` ties low, so its
+  video FSM + read-preemption logic prune away at synthesis.
+
+Result: same-work **1.180× — exactly at the gating ceiling** (the fb-bram cycle count is *identical* to
+the `?video:false` counterfactual's: the shadow read never touches `ce`), long-window CPI 1.75→**1.64**,
+video off the PSRAM port entirely; **32 RAMB36** (first BRAM use, 23.7%), 720 LUTRAM unchanged, 60 MHz
+closes at WNS +0.213 ns (critical path still the cache write); **boots clean on hardware, desktop
+smooth**. Verified Phase-10a-style: the `?fb_bram` same-work lockstep, `Framebuf`'s co-located tests,
+and `@visual_golden_board` with `FB_BRAM=1` — byte-identical desktop *read from the shadow* plus a
+direct assert that **all 32768 shadow words equal the PSRAM window**. A third sim-infrastructure lesson
+joined the 10b pair: **Cyclesim dead-code elimination eats unobserved logic** — with only `sclk` in
+`Board_tb.O`, the whole pixel path *including the shadow BRAMs* was pruned and
+`lookup_mem_by_name "fb0"` found nothing; `Board_tb` now exposes `hsync`/`vsync`/`rgb` to keep the
+observed path live.
+
+**10d — further, deferred (ceilings re-measured post-10c, `test/boards/nexys-4/bench_boot.ml`).** With
+video off the port, the residual frozen cycles are almost all store-wait (18.3% of clocks, 92% of
+frozen):
+- *Write buffer* — hide the ~11-cycle write-through behind execution; measured ceiling **1.22×**
+  (CPI 1.64→1.34, stores fully hidden), 1 store per 26 instructions with **4.4× bus-free headroom** now
+  that the CPU has the bus to itself. The hazards (drain vs read miss, load-of-buffered-address,
+  never-preempted drain) are the real work.
 - *Burst / page-mode PSRAM fill* — the M45W8MW16's async page mode (~20 ns intra-page vs 70 ns tAA —
   verify against the datasheet) cuts every remaining miss/store phase ~30% with only a Cellram FSM
-  change; the full synchronous burst mode is heavier and mostly dominated by it at this traffic.
+  change; largely subsumed by a write buffer for stores, so its residual value is the few load/fetch
+  misses.
 - *Dead ends, measured:* bigger/split caches (the size sweep is capacity-flat: 1 KB→256 KB ≈ +1.6 pt
-  load hit), more compute (0.4% of clocks), write-allocate (+273 hits, evicts fetch lines).
+  load hit; post-write-update the residual misses are 90% genuine conflicts but total ~1% of cycles),
+  more compute (0.4% of clocks), write-allocate (+273 hits, evicts fetch lines).
 Verification stays Phase-10a-style — judged against the **ISA/oracle**, not `RISC5.v` timing (a cache is
 a new architectural block, not in the faithful RTL).
 
@@ -562,6 +594,7 @@ oberon-risc-hardcaml/
       cellram.{ml,mli}        PSRAM controller + CPU/video arbiter (synthesizable, vendor-free)
       cellram_model.{ml,mli}  sim double of the external PSRAM chip (test-only; never synthesized)
       cache.{ml,mli}          Phase-10a/b direct-mapped write-through read/I-cache (async LUTRAM) — 0-stall hit before Cellram
+      framebuf.{ml,mli}       Phase-10c framebuffer BRAM shadow — video DMA served on-chip, off the PSRAM port
       soc.{ml,mli}            board SoC — core(`ce`) + Cellram + peripherals + video (+ optional Cache)
       emit_verilog.ml         emit the board SoC as Verilog (module name stays `soc_board`; ROM from Risc5.Rom → oracle-free); run by gen_verilog.sh
       nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code

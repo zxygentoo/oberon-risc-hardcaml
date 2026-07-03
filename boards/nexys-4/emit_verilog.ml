@@ -66,6 +66,16 @@ let () =
               mux gained a level (fill_data vs wdata) on the cache-write path, which was
               already the 60 MHz critical path — check WNS still closes. *)
          ~write_update:true
+           (* Phase-10c: the framebuffer BRAM shadow — video served from {!Framebuf} (a
+              1-cycle on-chip read), Cellram's video port tied off (its video FSM +
+              read-preemption logic prune away). Same-work 1.180x in sim, video off the
+              PSRAM port entirely; the golden proves shadow ≡ PSRAM window +
+              byte-identical desktop (FB_BRAM=1). Synth watch: the four fb* arrays must
+              infer as BLOCK RAM (~32 RAMB36, first BRAM use in the design — check the
+              util report), and the shadow write path (core_adr -> 18-bit window compare
+              -> BRAM write port) must not disturb the cache-write critical path at 60
+              MHz. *)
+         ~fb_bram:true
            (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and
               deliberately 521/521: BOTH [fsel] settings ship ~115200 (60e6/522, −0.2%).
               Serial reads are wire-limited, so 115200 is ~5x the throughput of 19200, and

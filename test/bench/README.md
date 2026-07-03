@@ -93,12 +93,16 @@ the running OS (cache on, boot to the handoff, then a 2M-instruction window) unl
   the identical post-handoff instruction stream (the honest number; a fixed-cycle window
   conflates program phases): **5.94×**, 93.5% hit-rate on the 28.8K-instr aligned prefix.
 - **Stall profile** — every system clock bucketed (retire / exec / compute / fetchW /
-  loadW / storeW) with a video-contention overlay, segmented per 250k instructions.
-  Verdict at 10a: CPI 2.16, 39.3% of clocks frozen on PSRAM — loadW 21.6%, storeW 16.1%,
-  video overlay 9.0% (22.7% port occupancy). Plus the write-buffer ceiling (storeW fully
-  hidden = **1.19×**, ≥2.9× bus-free headroom).
+  loadW / storeW) with a video-contention overlay, segmented per 250k instructions. It
+  runs the **shipped policy** (write-update since 10b landed — a lesson in itself: the
+  10a-policy profile kept showing loadW 21.6% long after write-update had already
+  eliminated it). True verdict at 10b: CPI 1.75, 25.0% of clocks frozen — **storeW 22.1%
+  (88% of frozen)**, read-wait 3.0%, video overlay 5.0% (22.8% port occupancy); the
+  write-buffer ceiling there **1.28×** at 2.6× bus-free headroom.
 - **`?video` A/B** — gating `vidreq` at elaboration removes video from the PSRAM port =
-  the framebuffer-in-BRAM counterfactual: same-work **1.228×** ceiling.
+  the framebuffer-in-BRAM counterfactual. On the write-update baseline the same-work
+  ceiling is **1.180×** (the earlier 1.228× was measured against the 10a policy — a
+  slower machine overlaps video more).
 - **Miss autopsy** — an OCaml (valid, tag) mirror of the cache, validated **0-mismatch
   against the RTL's own `cache_hit` over boot + 2M instructions**, classifies every miss
   and replays counterfactual snoop policies on the same access stream. Verdict: **96.1%
@@ -107,17 +111,29 @@ the running OS (cache on, boot to the handoff, then a 2M-instruction window) unl
   measured by the lockstep A/B in the same run). Write-allocate measured not worth it.
 - **Load-locality sweep** — per-size fetch/load hit-rates, 1 KB→256 KB: capacity-flat
   (+1.6 pt), which is what pointed at policy rather than size.
+- **10c framebuffer-in-BRAM, measured** (Phase-10c landed) — the same-work lockstep of
+  PSRAM-video vs the `Framebuf` shadow (`?fb_bram`): **1.180×, exactly the gating
+  ceiling** — the shadow's 1-cycle BRAM read never touches the CPU's clock-enable, so
+  the fb-bram cycle count is identical to the `?video:false` counterfactual's. The
+  shadow-ON profile is the current residual: **CPI 1.64**, frozen 19.9%, storeW 18.3%
+  (92% of frozen), video occupancy/contention 0 — and the write-buffer ceiling from here
+  is **1.22×** at 4.4× bus-free headroom (the next lever).
 
-Two harness lessons, so they're not relearned: **video DMA is live in every board sim**
+Three harness lessons, so they're not relearned: **video DMA is live in every board sim**
 (Cyclesim's one-domain semantics advance the pclk raster 1:1 regardless of the `pclk`
-input level — hold-pclk-low does *not* quiet it; use the `?video` seam), and **make probe
+input level — hold-pclk-low does *not* quiet it; use the `?video` seam); **make probe
 lookups loud** — `cr_busy`/`cr_op_vid` are registers, invisible to `lookup_node_by_name`,
-and the silent `None` zeroed the contention overlay on its first run.
+and the silent `None` zeroed the contention overlay on its first run; and **dead-code
+elimination eats unobserved probes' *logic*** — with only `sclk` in `Board_tb.O`, Cyclesim
+pruned the whole pixel path *including the `fb*` shadow BRAMs*, and the golden's
+`lookup_mem_by_name "fb0"` found nothing; `Board_tb` now exposes `hsync`/`vsync`/`rgb` to
+keep the path live.
 
 ## Notes
 
 - All three are opt-in (built by `@check` so they can't rot; run by alias). `@bench_boot`
-  boots the PSRAM SoC three times through the interpreter (~a minute or two).
+  now carries the whole Phase-10 gauge suite — a dozen boots of the PSRAM SoC plus several
+  2M-instruction windows through the interpreter, ~20–25 minutes end to end.
 - Numbers above are from this sim harness (behavioural `Cellram_model`, `read_cycles` as
   noted). They're for *ratios and Amdahl context*, not absolute wall-clock — the point is
   which lever moves the needle, and by how much.
