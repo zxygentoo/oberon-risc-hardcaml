@@ -71,6 +71,7 @@ let create
   ?(video = true)
   ?(fb_bram = false)
   ?(write_buffer = false)
+  ?wbuf_depth
   ?(uart_baud_slow = 1302)
   ?(uart_baud_fast = 217)
   (i : _ I.t)
@@ -167,6 +168,7 @@ let create
       ?read_cycles
       ?write_cycles
       ~write_buffer
+      ?wbuf_depth
       { Cellram.I.clock = i.clock
       ; mem_pend = core.mem_pend &: ~:cache_hit
       ; cpu_internal

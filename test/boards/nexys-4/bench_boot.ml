@@ -145,6 +145,8 @@ let make_os
   ?(write_update = false)
   ?(fb_bram = false)
   ?(write_buffer = false)
+  ?wbuf_depth
+  ?(read_cycles = 5)
   ~write_cycles
   ~icache
   ~lines_log2
@@ -163,7 +165,8 @@ let make_os
         ~video
         ~fb_bram
         ~write_buffer
-        ~read_cycles:5
+        ?wbuf_depth
+        ~read_cycles
         ~write_cycles
         i)
   in
@@ -746,6 +749,8 @@ let stall_profile
   ?(write_update = false)
   ?(fb_bram = false)
   ?(write_buffer = false)
+  ?wbuf_depth
+  ?read_cycles
   ~lines_log2
   ~write_cycles
   ~instr_budget
@@ -759,6 +764,8 @@ let stall_profile
       ~write_update
       ~fb_bram
       ~write_buffer
+      ?wbuf_depth
+      ?read_cycles
       ~icache:true
       ~lines_log2
       ~write_cycles
@@ -1143,6 +1150,122 @@ let () =
     ~fb_bram:true
     ~write_buffer:true
     ~write_update:true
+    ~lines_log2:10
+    ~write_cycles:5
+    ~instr_budget:2_000_000
+    ~cycle_cap:20_000_000
+    ~seg:250_000
+    ();
+  (* ── Depth-2 FIFO A/B ── the depth-1 residual storeW is slot-full waits; depth 2 makes
+     bursts of two free (Oberon's 2-store procedure prologues are the hypothesis). The
+     all-depths ceiling is storeW -> 0; this lockstep + profile says how much depth 2
+     actually collects of it. *)
+  Printf.printf
+    "\n\
+    \  WRITE-BUFFER DEPTH (Phase-10d follow-up) — same-work instruction lockstep,\n\
+    \  1-entry vs 2-entry FIFO (cache on, 4KB, write-update, fb_bram).\n\
+     %!";
+  let aligned, _diverged, c_d1, c_d2, _, _ =
+    compare_pair
+      ~max_instrs:200_000
+      (make_os
+         ~fb_bram:true
+         ~write_buffer:true
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+      (make_os
+         ~fb_bram:true
+         ~write_buffer:true
+         ~wbuf_depth:2
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+  in
+  Printf.printf
+    "    aligned OS instructions : %d\n\
+    \    cycles over that prefix : depth-1 %d   depth-2 %d\n\
+    \    cycles / instruction    : depth-1 %.2f   depth-2 %.2f\n\
+    \    same-work speedup       : %.3fx\n\
+     %!"
+    aligned
+    c_d1
+    c_d2
+    (f c_d1 /. f (max 1 aligned))
+    (f c_d2 /. f (max 1 aligned))
+    (f c_d1 /. f (max 1 c_d2));
+  Printf.printf
+    "\n\
+    \  Stall profile with the DEPTH-2 buffer (write-update + fb_bram + wbuf_depth:2):\n\
+    \  residual storeW = bursts of 3+ (what a deeper FIFO still would not catch cheaply).\n\
+     %!";
+  stall_profile
+    ~fb_bram:true
+    ~write_buffer:true
+    ~wbuf_depth:2
+    ~write_update:true
+    ~lines_log2:10
+    ~write_cycles:5
+    ~instr_budget:2_000_000
+    ~cycle_cap:20_000_000
+    ~seg:250_000
+    ();
+  (* ── read_cycles 5 -> 6 A/B ── the PSRAM I/O timing budget at rc=5 (13.3 ns) became a
+     standing knife-edge in synthesis (failed once, grazed twice); rc=6 buys 16.7 ns of
+     margin. Its cost is only the cache misses (~2 extra cycles each) + slower drains'
+     slot-full waits — this lockstep prices it on the full shipped config. *)
+  Printf.printf
+    "\n\
+    \  READ_CYCLES 5 vs 6 (PSRAM I/O margin trade) — same-work instruction lockstep on\n\
+    \  the shipped config (cache, write-update, fb_bram, wbuf depth-2).\n\
+     %!";
+  let aligned, _diverged, c_rc5, c_rc6, _, _ =
+    compare_pair
+      ~max_instrs:200_000
+      (make_os
+         ~fb_bram:true
+         ~write_buffer:true
+         ~wbuf_depth:2
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+      (make_os
+         ~fb_bram:true
+         ~write_buffer:true
+         ~wbuf_depth:2
+         ~write_update:true
+         ~read_cycles:6
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+  in
+  Printf.printf
+    "    aligned OS instructions : %d\n\
+    \    cycles over that prefix : rc5 %d   rc6 %d\n\
+    \    cycles / instruction    : rc5 %.2f   rc6 %.2f\n\
+    \    rc6 cost                : %.2f%%\n\
+     %!"
+    aligned
+    c_rc5
+    c_rc6
+    (f c_rc5 /. f (max 1 aligned))
+    (f c_rc6 /. f (max 1 aligned))
+    (100. *. (f c_rc6 -. f c_rc5) /. f (max 1 c_rc5));
+  Printf.printf
+    "\n  Stall profile at rc=6 (the shipped board config after the margin trade):\n%!";
+  stall_profile
+    ~fb_bram:true
+    ~write_buffer:true
+    ~wbuf_depth:2
+    ~write_update:true
+    ~read_cycles:6
     ~lines_log2:10
     ~write_cycles:5
     ~instr_budget:2_000_000

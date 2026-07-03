@@ -28,18 +28,18 @@
     all live in emit_verilog.ml): [contents] is the boot-ROM image; [clocks_per_ms] the
     ms-timer prescaler (default 25000 = 1 ms at 25 MHz; the board passes 60000);
     [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2, the
-    sim/test value; the board synthesizes 5 = 83 ns at 60 MHz); [spi_slow_div_log2] the
-    SPI slow-divider depth (default 6 = clk÷64 = {!Spi}/[SPI.v]; the board passes 8 =
-    clk÷256 to keep SD init ≤400 kHz at 60 MHz); [fast_mul]/[mul_stages] (defaults
-    [false]/[0], Phase 9) swap the core's iterative multipliers for the DSP-backed,
-    optionally pipelined {!Cpu.create} variants — see there (the board passes [true]/[2]);
-    [icache] (default [false], Phase-10a) inserts a direct-mapped write-through read cache
-    in front of {!Cellram} ({!Cache}), serving PSRAM fetches/loads from on-chip
-    distributed RAM (LUTRAM) on a hit, sized by [lines_log2] (default 10 = 4 KiB) with the
-    [write_update]/[video] knobs documented at the signature below;
-    [uart_baud_slow]/[uart_baud_fast] the {!Uart_rx}/{!Uart_tx} divisors (defaults
-    1302/217, the faithful 25 MHz constants; the board passes 521/521 — both settings
-    ~115200, see emit_verilog.ml). *)
+    sim/test value; the board synthesizes read 6 / write 5 = 100 / 83 ns at 60 MHz — see
+    emit_verilog.ml); [spi_slow_div_log2] the SPI slow-divider depth (default 6 = clk÷64 =
+    {!Spi}/[SPI.v]; the board passes 8 = clk÷256 to keep SD init ≤400 kHz at 60 MHz);
+    [fast_mul]/[mul_stages] (defaults [false]/[0], Phase 9) swap the core's iterative
+    multipliers for the DSP-backed, optionally pipelined {!Cpu.create} variants — see
+    there (the board passes [true]/[2]); [icache] (default [false], Phase-10a) inserts a
+    direct-mapped write-through read cache in front of {!Cellram} ({!Cache}), serving
+    PSRAM fetches/loads from on-chip distributed RAM (LUTRAM) on a hit, sized by
+    [lines_log2] (default 10 = 4 KiB) with the [write_update]/[video] knobs documented at
+    the signature below; [uart_baud_slow]/[uart_baud_fast] the {!Uart_rx}/{!Uart_tx}
+    divisors (defaults 1302/217, the faithful 25 MHz constants; the board passes 521/521 —
+    both settings ~115200, see emit_verilog.ml). *)
 
 open Hardcaml
 
@@ -128,6 +128,9 @@ val create
            (drain-before-read), so coherence is untouched. Pair with [fb_bram] on the
            board (without it a not-yet-drained framebuffer word could reach the raster a
            frame stale) — see {!Cellram.create}. *)
+  -> ?wbuf_depth:int
+       (** write-buffer FIFO depth 1..4 (default 1 = the proven Phase-10d slot); bursts up
+           to the depth retire back-to-back — see {!Cellram.create} *)
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

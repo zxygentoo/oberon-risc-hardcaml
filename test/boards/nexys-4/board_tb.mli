@@ -65,6 +65,8 @@ val create
        (** default [false]; [true] = Phase-10d: 1-entry write buffer in
            {!Nexys4_board.Cellram} — stores retire in one ce cycle, the write drains in
            the background (see {!Nexys4_board.Cellram.create}) *)
+  -> ?wbuf_depth:int
+       (** write-buffer FIFO depth 1..4 (default 1; see {!Nexys4_board.Cellram.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
   -> ?contents:int array
