@@ -70,6 +70,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
+  ?(write_buffer = false)
   ?(uart_baud_slow = 1302)
   ?(uart_baud_fast = 217)
   (i : _ I.t)
@@ -165,6 +166,7 @@ let create
     Cellram.create
       ?read_cycles
       ?write_cycles
+      ~write_buffer
       { Cellram.I.clock = i.clock
       ; mem_pend = core.mem_pend &: ~:cache_hit
       ; cpu_internal

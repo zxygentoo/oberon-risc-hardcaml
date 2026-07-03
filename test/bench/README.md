@@ -115,19 +115,31 @@ the running OS (cache on, boot to the handoff, then a 2M-instruction window) unl
   PSRAM-video vs the `Framebuf` shadow (`?fb_bram`): **1.180×, exactly the gating
   ceiling** — the shadow's 1-cycle BRAM read never touches the CPU's clock-enable, so
   the fb-bram cycle count is identical to the `?video:false` counterfactual's. The
-  shadow-ON profile is the current residual: **CPI 1.64**, frozen 19.9%, storeW 18.3%
-  (92% of frozen), video occupancy/contention 0 — and the write-buffer ceiling from here
-  is **1.22×** at 4.4× bus-free headroom (the next lever).
+  shadow-ON profile gave the 10c residual: **CPI 1.64**, frozen 19.9%, storeW 18.3%
+  (92% of frozen), video occupancy/contention 0 — write-buffer ceiling from there
+  **1.22×** at 4.4× bus-free headroom.
+- **10d write buffer, measured** (Phase-10d landed) — the same-work lockstep of
+  synchronous stores vs the 1-entry buffer (`?write_buffer`): **1.237×** (CPI 1.90→1.53
+  over a 126.8K-instr aligned prefix — above the 1.22× ceiling estimate, which priced
+  misses off a different stream). The wbuf-ON profile is the current residual: **CPI
+  1.45**, frozen 9.5% — storeW 7.5% (slot-full burst waits: a deeper FIFO's whole
+  remaining ceiling is **1.08×**, the measured depth-vs-payoff verdict) + read-wait 2.0%
+  (of which drain-before-read costs +0.4% — the conservative hazard rule, priced and
+  kept). Arc trajectory, long windows: CPI 26.28 → 2.16 → 1.75 → 1.64 → **1.45**.
 
-Three harness lessons, so they're not relearned: **video DMA is live in every board sim**
+Four harness lessons, so they're not relearned: **video DMA is live in every board sim**
 (Cyclesim's one-domain semantics advance the pclk raster 1:1 regardless of the `pclk`
 input level — hold-pclk-low does *not* quiet it; use the `?video` seam); **make probe
 lookups loud** — `cr_busy`/`cr_op_vid` are registers, invisible to `lookup_node_by_name`,
-and the silent `None` zeroed the contention overlay on its first run; and **dead-code
+and the silent `None` zeroed the contention overlay on its first run; **dead-code
 elimination eats unobserved probes' *logic*** — with only `sclk` in `Board_tb.O`, Cyclesim
 pruned the whole pixel path *including the `fb*` shadow BRAMs*, and the golden's
 `lookup_mem_by_name "fb0"` found nothing; `Board_tb` now exposes `hsync`/`vsync`/`rgb` to
-keep the path live.
+keep the path live; and **`Cyclesim.outputs` samples *after* the clock edge by default**
+— `after(k) = before(k+1)`, so register-driven completions just read one iteration late,
+but an input-driven pulse like the write buffer's accept `ce` is invisible there (its
+first measurement read "6 cycles" for a 1-cycle store); the core's view is
+`~clock_edge:Before`, which the wbuf tests sample.
 
 ## Notes
 

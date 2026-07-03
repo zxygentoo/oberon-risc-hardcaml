@@ -121,6 +121,13 @@ val create
            synthesizer then prunes the arbiter's video FSM and read-preemption logic). The
            shadow mirrors the same PSRAM-bound stores the cache snoops, so it equals the
            PSRAM framebuffer window at every instant — see {!Framebuf}. *)
+  -> ?write_buffer:bool
+       (** Phase-10d (default [false] = the proven synchronous write path): a 1-entry
+           write buffer in {!Cellram} — a PSRAM store retires in one [ce] cycle and the
+           write drains in the background; PSRAM reads wait out a pending drain
+           (drain-before-read), so coherence is untouched. Pair with [fb_bram] on the
+           board (without it a not-yet-drained framebuffer word could reach the raster a
+           frame stale) — see {!Cellram.create}. *)
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

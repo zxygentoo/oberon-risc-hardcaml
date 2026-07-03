@@ -144,6 +144,7 @@ let make_os
   ?(video = true)
   ?(write_update = false)
   ?(fb_bram = false)
+  ?(write_buffer = false)
   ~write_cycles
   ~icache
   ~lines_log2
@@ -161,6 +162,7 @@ let make_os
         ~write_update
         ~video
         ~fb_bram
+        ~write_buffer
         ~read_cycles:5
         ~write_cycles
         i)
@@ -743,6 +745,7 @@ let stall_profile
   ?(video = true)
   ?(write_update = false)
   ?(fb_bram = false)
+  ?(write_buffer = false)
   ~lines_log2
   ~write_cycles
   ~instr_budget
@@ -751,7 +754,15 @@ let stall_profile
   ()
   =
   let t =
-    make_os ~video ~write_update ~fb_bram ~icache:true ~lines_log2 ~write_cycles ()
+    make_os
+      ~video
+      ~write_update
+      ~fb_bram
+      ~write_buffer
+      ~icache:true
+      ~lines_log2
+      ~write_cycles
+      ()
   in
   boot_to_handoff t;
   let names = [| "retire"; "exec"; "compute"; "fetchW"; "loadW"; "storeW" |] in
@@ -1075,6 +1086,62 @@ let () =
      %!";
   stall_profile
     ~fb_bram:true
+    ~write_update:true
+    ~lines_log2:10
+    ~write_cycles:5
+    ~instr_budget:2_000_000
+    ~cycle_cap:20_000_000
+    ~seg:250_000
+    ();
+  (* ── Phase-10d: the WRITE BUFFER, measured ── same-work lockstep of the 10c config vs
+     10c + the 1-entry buffer (ceiling 1.22x = all storeW hidden). The residual storeW in
+     the profile below is the slot-full burst cost — the number that says whether a deeper
+     buffer is worth building. *)
+  Printf.printf
+    "\n\
+    \  WRITE BUFFER (Phase-10d) — same-work instruction lockstep, synchronous stores vs\n\
+    \  the 1-entry write buffer (cache on, 4KB, write-update, fb_bram): the honest\n\
+    \  measured win vs the 1.22x all-hidden ceiling.\n\
+     %!";
+  let aligned, _diverged, c_sync, c_wbuf, _, _ =
+    compare_pair
+      ~max_instrs:200_000
+      (make_os
+         ~fb_bram:true
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+      (make_os
+         ~fb_bram:true
+         ~write_buffer:true
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+  in
+  Printf.printf
+    "    aligned OS instructions : %d\n\
+    \    cycles over that prefix : sync-stores %d   write-buffer %d\n\
+    \    cycles / instruction    : sync-stores %.2f   write-buffer %.2f\n\
+    \    same-work speedup       : %.3fx\n\
+     %!"
+    aligned
+    c_sync
+    c_wbuf
+    (f c_sync /. f (max 1 aligned))
+    (f c_wbuf /. f (max 1 aligned))
+    (f c_sync /. f (max 1 c_wbuf));
+  Printf.printf
+    "\n\
+    \  Stall profile with the write buffer ON (write-update + fb_bram + wbuf — the\n\
+    \  Phase-10d config): residual storeW = slot-full waits (the depth-vs-payoff data).\n\
+     %!";
+  stall_profile
+    ~fb_bram:true
+    ~write_buffer:true
     ~write_update:true
     ~lines_log2:10
     ~write_cycles:5

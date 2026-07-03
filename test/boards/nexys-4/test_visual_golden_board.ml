@@ -132,12 +132,19 @@ let fb_fnv fb =
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
    cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
-let boot_board ~icache ~write_update ~fb_bram ~cap ~chunk ~settle =
+let boot_board ~icache ~write_update ~fb_bram ~write_buffer ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache ~write_update ~fb_bram i)
+      Board_tb.create
+        ~read_cycles:5
+        ~write_cycles:5
+        ~icache
+        ~write_update
+        ~fb_bram
+        ~write_buffer
+        i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -257,25 +264,40 @@ let () =
     | Some "1" -> true
     | _ -> false
   in
+  (* opt-in (Phase-10d): WBUF=1 runs the golden with the 1-entry write buffer — the
+     byte-identical desktop + shadow check is its coherence/ordering proof *)
+  let write_buffer =
+    match Sys.getenv_opt "WBUF" with
+    | Some "1" -> true
+    | _ -> false
+  in
   let oracle_fb, oracle_hash = boot_oracle 40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
     (popcount oracle_fb);
   Printf.printf
-    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b) past the \
-     handoff — cache makes this feasible...\n\
+    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b \
+     write_buffer=%b) past the handoff — cache makes this feasible...\n\
      %!"
     icache
     write_update
-    fb_bram;
+    fb_bram
+    write_buffer;
   let cap =
     match Sys.getenv_opt "SOC_CAP" with
     | Some s -> int_of_string s
     | None -> 160_000_000
   in
   let soc_fb, settled, shadow_mismatches =
-    boot_board ~icache ~write_update ~fb_bram ~cap ~chunk:2_000_000 ~settle:3
+    boot_board
+      ~icache
+      ~write_update
+      ~fb_bram
+      ~write_buffer
+      ~cap
+      ~chunk:2_000_000
+      ~settle:3
   in
   (match shadow_mismatches with
    | None -> ()
