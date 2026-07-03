@@ -208,6 +208,7 @@ Vivado-specific layer.
 | **8** *(stretch)* ✅ *(in-scope)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v`, plus the **register file** proven ≡ a behavioural spec (`registers_spec.v` — `Registers.v`'s duplicated bit-sliced `RAM16X1D` is a synthesis idiom with incongruent state, so we prove the 16×32/3R/1W *contract*; §2/§3). Every datapath unit proven. And the **whole core glue** — incl. the **in-situ ALU** (`aluRes`, no standalone `.v`) — proven ≡ `RISC5.v` with the 8 submodules black-boxed (assume-guarantee: `equiv_make` merges + checks the unit inputs, `cutpoint -blackbox` assumes their outputs, sound on the leaf proofs; teeth-checked by mutation). The datapath + core layer is closed, and the **Tier-1 peripherals are now proven too** — the same yosys `equiv_induct` path extended to the faithful-`.v` peripherals (the exhaustive upgrade of their Phase-6a cosim): **Tier 1** RS232R/T, SPI, PS2 ✓ (clean single-clock FSMs as `sequential` rows; each lib register *named*, then paired to the RTL by a per-row `renames` list — e.g. `q0→Q0`, `spi_shreg→shreg`; SPI's `rdy` `output reg` pairs via the output port; PS2's 16×8 `fifo` pairs through the `memory` pass like the register file), **plus the Mouse** (Tier 2) ✓ — its open-drain `inout msclk/msdat` (we split into `*_oe`+resolved-input) handled by two shims wrapping *both* sides into one explicit interface with a **free** external read (else yosys ties the inout read to 0 and the FSM degenerates — a vacuous proof) and the resolved line `oe ? 0 : ext` as the observable; the tristate lowered by `tribuf -formal`/`chformal -remove`/`setundef -one` (the pad pull-up). **And VID** (Tier 2) ✓ — a *partial* multiclock proof: drop `VID60.v`'s DCM (Phase-7 primitive) + `expose -input pclk`, **cut** `vidbuf` to a shared free input so the raster + pixel datapath prove ≡ `VID60.v` *given the fetched word*, and **`equiv_remove`** the `req` handshake — the framebuffer-fetch CDC deliberately departs (our toggle pulse-synchroniser vs the RTL async-set `req1`). That departure's **fetch invariant** is then closed by a *property* proof (`vid_invariant`): the extracted `pulse_sync` primitive is proven **one-`req`-per-`req0`, no loss, no spurious — for all clk/pclk phases and all reachable states** via `yosys-smtbmc -i`/z3 **k-induction** (the engine SymbiYosys wraps; no `sby` needed — and no hand-crafted inductive invariant: k≈48 spanning a fetch cycle suffices) — the CDC-robustness the single-phase Cyclesim test can't reach. The 2-group prefetch's `vidadr` departure is closed the same way — by **decomposition**: its look-ahead address is proven ≡ an independent geometry spec (`vid_addr`, combinational `Sec`/z3, all `(hcnt,vcnt)`), timing comes from `vid_invariant`, and a **reviewed composition lemma** glues them (the one place a hand argument bridges the mechanized pieces; the monolithic all-phases proof doesn't converge — col 0 is cross-line; see test/formal/README "VID prefetch"). **17 checks** total, each mutation-checked. *(That VID-CDC departure was no longer just a sim artifact: its `caught` one-shot turned out to be a real metastability bug on the Nexys 4 — horizontal flicker — so `vid.ml` now ships the synchroniser the proof is built around; the formal layer flagged the exact fragile spot.)* **Out of scope:** the SoC top (`RISC5Top`) — board-specific, our sim `Soc` ≠ `RISC5Top.OStation.v` by design (DCM/PROM/IOBUF/memory are Phase 7); revisit only if a board SoC lands. See test/formal/README | z3 `Unsat` / yosys all-`$equiv`-proven |
 | **9** *(stretch)* ✅ *(compute arc)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving. *Landed:* DSP MUL + FML, pipelined to **60 MHz**, benchmarked end-to-end (`test/bench/`). *Deferred:* Newton-Raphson DIV. *Verdict:* memory-bound, not compute-bound → Phase 10 | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
 | **10a** *(stretch)* ✅ *(memory arc)* | **I-cache** — the Phase-9 verdict acted on. A direct-mapped, write-through read/I-cache (`Icache`) in front of `Cellram`, in the **board layer** so the core stays byte-identical (§8): async-read LUTRAM (the register-file idiom) gives a **0-stall combinational hit** (drop `mem_pend`, so Cellram's `ce = ~mem_pend | …` rises the same cycle); write-through + **snoop-invalidate** = transparent coherence (Oberon has no flush op — the real machine has no cache). *Landed:* **~6× on running-OS code** (93% hit-rate), boots clean on **real hardware**, 60 MHz still closes (the cache fill path is now the critical path); 720 LUT distributed RAM, **0 BRAM**. *Deferred:* burst/wide-PSRAM fill, D-cache (10b/c) | architectural lockstep + **coherence**: byte-identical desktop with the cache ON (`@visual_golden_board`) + 28.8K-instr pc-lockstep vs cache-off; `Icache`'s own co-located fill/hit/snoop tests |
+| **10b** *(stretch)* ✅ *(memory arc)* | **Write-update snoop** — the miss autopsy's verdict acted on: with the 10a cache the load hit-rate sat at **58.7% and capacity-flat** (1 KB→256 KB moved it 1.6 pt), and the autopsy showed why — **96.1% of running-OS load misses were snoop-invalidate self-inflicted** (Oberon's store-then-load stack discipline kills the hot lines). So a **word store-hit now refreshes the cached line in place** (`Icache ?write_update`, default off = the proven 10a policy): same single write port, the same write-through transaction lands the same word in PSRAM, so the coherence invariant is untouched; byte stores still invalidate (lane-merge unneeded — zero byte stores in the 2M-instr window). *Landed:* load hit **58.7→98.4%**, **1.305× same-work** on running-OS code (CPI 4.39→3.36, 99.4% overall hit-rate), 60 MHz closes at **WNS +0.708 ns** (the cache-write path absorbed the extra `wd` mux and is now the frequency limiter), still 720 LUT / **0 BRAM**; **boots clean on real hardware, runs visibly smooth**. Built on a new Phase-10 measurement layer in `test/bench/bench_boot.ml` (see README there): a running-OS **stall profile** (every clock bucketed retire/exec/compute/fetchW/loadW/storeW + a video-contention overlay), the **`?video` A/B seam** (video DMA is live in *every* board sim — Cyclesim's one-domain sim advances the pclk raster 1:1 whatever the pclk input holds — so gating `vidreq` is the honest framebuffer-in-BRAM counterfactual: **1.228× same-work ceiling**, 22.7% port occupancy, 9% contention overlay), and the **miss autopsy** (an OCaml cache mirror validated **0-mismatch against the RTL hit bit over 2.1M reads**, replaying counterfactual snoop policies on the same access stream) | same-work pc-lockstep vs snoop-invalidate (29.1K instrs) + the autopsy mirror re-validated 0-mismatch against the write-update RTL + `@visual_golden_board` **byte-identical** with `WRITE_UPDATE=1` + co-located update/kill tests; on-hardware boot ✅ |
 
 *Correct before fast (Phase 9).* Phases 0–8 hold the cycle-accurate mandate (§2), which keeps
 `RISC5.v` a *total* oracle — a bright line that keeps the spec unambiguous and bugs findable. Phase 9
@@ -264,7 +265,7 @@ PSRAM. The broad win actually banked is the **50→60 MHz clock, 1.2×**, on com
 the DSP48s are placed, and they *enabled* the clock bump), but further multiply/clock work is Amdahl- or
 memory-capped. The next lever is memory, not compute (Phase 10). See `test/bench/README.md`.
 
-### Phase 10a ✅ + 10b/c *(potential)*: memory — a cache
+### Phase 10: the memory arc — 10a I-cache ✅, 10b write-update ✅, 10c *(potential)*
 
 The Phase-9 benchmark pointed here unambiguously — the machine is **memory-bound**: every OS instruction
 fetch is a multi-cycle PSRAM read (`read_cycles:5` at 60 MHz), so the leverage is cutting memory latency,
@@ -297,12 +298,43 @@ phase-drifted throughput), `@visual_golden_board` (**byte-identical** idle deskt
 full coherence proof, the Phase-6b golden re-run through the board SoC), the 28.8K-instruction pc-lockstep
 it rides on, and `Icache`'s own co-located fill/hit/snoop-invalidate tests (§6).
 
-**10b/c — further, deferred.** *Burst / wider PSRAM fill* — the bus is 16-bit (two half-words per word); a
-32-bit or burst path (the M45W8MW16's synchronous burst mode) lowers the miss penalty and helps *all*
-traffic, and is where multi-word cache lines pay off (the cache becomes its fill engine). *D-cache / write
-buffer* — lower priority; loads/stores are a smaller slice than fetches. Verification stays
-Phase-10a-style — judged against the **ISA/oracle**, not `RISC5.v` timing (a cache is a new architectural
-block, not in the faithful RTL).
+**10b — write-update snoop (done).** The 10a cache left CPI 2.16 on the running OS with 39.3% of clocks
+frozen on PSRAM (stall profile) — and the biggest bucket, load-wait (21.6%), turned out to be almost
+entirely self-inflicted: the snoop *invalidated* a line on every store-hit, so Oberon's store-then-load
+stack discipline re-bought a ~20-cycle PSRAM read per procedure frame. The **miss autopsy** (an OCaml
+(valid, tag) mirror of the cache, validated 0-mismatch against the RTL's own `cache_hit` over boot + 2M
+instructions, then replaying counterfactual snoop policies on the same access stream) measured **96.1%
+of load misses store-killed** — and the capacity sweep was flat, so no cache size would fix it. The fix
+is one mux: on a **word store-hit, rewrite the line as `{valid, tag, wdata}`** through the same write
+port instead of zeroing it (`Icache ?write_update`, default off). Coherence is unchanged — the update
+happens in the same write-through transaction that lands the identical word in PSRAM, the ce-frozen core
+can't read mid-store, and video never reads the cache; byte stores still invalidate (merging one lane
+needs read-modify, and the measured byte-store count was zero). Result: load hit 58.7→**98.4%**
+(residual misses are 90% genuine conflicts), **1.305× same-work** (CPI 4.39→3.36 over the 29.1K-instr
+aligned prefix), long-window CPI 2.16→1.75; WNS +0.708 ns at 60 MHz (the cache-write path ate ~0.2 ns
+for the deeper `wd` mux and is now the critical path); boots clean and runs visibly smooth on the board.
+Two sim-infrastructure lessons banked along the way: **video DMA is live in every board sim** (Cyclesim's
+one-domain semantics advance the pclk raster 1:1 regardless of the pclk *input* — the old "pclk held low
+= no video" comment was wrong), so a real A/B needs the elaboration-time `?video` gate on `vidreq`; and
+**silent `lookup_node_by_name` failures zero out probe columns** — `cr_busy`/`cr_op_vid` are registers,
+reachable only via `lookup_reg_by_name`, which is why the contention overlay first read 0.0% (make
+unconditional lookups loud).
+
+**10c — further, deferred (ceilings now measured, `test/bench/bench_boot.ml`).** With write-update in,
+the residual frozen cycles are store-wait (write-through, the largest bucket now) and the video bus tax:
+- *Write buffer* — hide the ~11-cycle write-through behind execution; measured ceiling **1.19×** (stores
+  fully hidden), 1 store per 26 instructions with ≥2.9× bus-free headroom even with video live. The
+  hazards (drain vs read miss, load-of-buffered-address, never-preempted drain) are the real work.
+- *Framebuffer-in-BRAM* — a 96 KB BRAM shadow (CPU stores mirror into it, VID reads on-chip) takes video
+  off the PSRAM port entirely; measured same-work ceiling **1.228×** (`?video` A/B), and it deletes
+  Cellram's read-preemption logic. 0 of 135 BRAM tiles used today.
+- *Burst / page-mode PSRAM fill* — the M45W8MW16's async page mode (~20 ns intra-page vs 70 ns tAA —
+  verify against the datasheet) cuts every remaining miss/store phase ~30% with only a Cellram FSM
+  change; the full synchronous burst mode is heavier and mostly dominated by it at this traffic.
+- *Dead ends, measured:* bigger/split caches (the size sweep is capacity-flat: 1 KB→256 KB ≈ +1.6 pt
+  load hit), more compute (0.4% of clocks), write-allocate (+273 hits, evicts fetch lines).
+Verification stays Phase-10a-style — judged against the **ISA/oracle**, not `RISC5.v` timing (a cache is
+a new architectural block, not in the faithful RTL).
 
 ---
 

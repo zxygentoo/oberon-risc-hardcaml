@@ -59,8 +59,14 @@ module I : sig
     (** a fetch/load bound for PSRAM: [mem_pend & ~wr & ~cpu_internal] (ROM/MMIO excluded) *)
     ; write : 'a
     (** a store bound for PSRAM: [wr & ~cpu_internal] — snooped for coherence *)
+    ; ben : 'a
+    (** the core's byte-access flag: 1 = byte store — write-update can't merge one lane,
+        so a byte store-hit always invalidates *)
     ; ce : 'a (** [Cellram.ce]: the access-retire pulse — a read miss fills on it *)
     ; fill_data : 'a (** [Cellram.rdata]: the fetched word, valid at [ce] on a miss *)
+    ; wdata : 'a
+    (** the core's store data ([outbus]) — the word a write-update writes into a hit line
+        (exact for word stores; byte stores never update) *)
     }
   [@@deriving hardcaml]
 end
@@ -73,7 +79,17 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create ?lines_log2 i] builds the cache. [lines_log2] (default 10 = 1024 lines = 4 KiB
-    of data) is log2 of the number of direct-mapped lines; the tag is [18 - lines_log2]
-    bits. *)
-val create : ?lines_log2:int -> Signal.t I.t -> Signal.t O.t
+(** [create ?lines_log2 ?write_update i] builds the cache. [lines_log2] (default 10 = 1024
+    lines = 4 KiB of data) is log2 of the number of direct-mapped lines; the tag is
+    [18 - lines_log2] bits.
+
+    [write_update] (default [false] = the proven Phase-10a snoop-invalidate) switches the
+    store-hit snoop from {e invalidate} to {e update-in-place} for {b word} stores: the
+    line is rewritten with the store data through the same single write port, in the same
+    write-through transaction that lands the word in PSRAM — so the coherence invariant (a
+    valid line equals PSRAM) is untouched. Byte stores still invalidate (merging one lane
+    needs read-modify). Why: the Phase-10b miss autopsy (test/bench/bench_boot.ml)
+    measured {b 96.1% of running-OS load misses} to be snoop-invalidate self-inflicted —
+    Oberon's store-then-load stack discipline kills the hot lines — capping load hit-rate
+    at ~59% no matter the capacity; update-in-place lifts it to ~98%. *)
+val create : ?lines_log2:int -> ?write_update:bool -> Signal.t I.t -> Signal.t O.t

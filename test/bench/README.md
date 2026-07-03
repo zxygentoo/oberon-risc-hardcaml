@@ -80,6 +80,36 @@ there, and they took the multiply *off the critical path*, which is what let the
 60 MHz) — but as an end-to-end *throughput* play they're Amdahl-bound. See AGENT.md §5 for
 the Phase-9 log and the deferred Newton-Raphson divider.
 
+## The Phase-10 gauges (all in `bench_boot`, same alias)
+
+Phase 10 turned `bench_boot` into the memory-arc measurement bench. Everything below runs
+the running OS (cache on, boot to the handoff, then a 2M-instruction window) unless noted:
+
+- **10a same-work compare** — instruction-lockstep the icache-off and icache-on SoCs over
+  the identical post-handoff instruction stream (the honest number; a fixed-cycle window
+  conflates program phases): **5.94×**, 93.5% hit-rate on the 28.8K-instr aligned prefix.
+- **Stall profile** — every system clock bucketed (retire / exec / compute / fetchW /
+  loadW / storeW) with a video-contention overlay, segmented per 250k instructions.
+  Verdict at 10a: CPI 2.16, 39.3% of clocks frozen on PSRAM — loadW 21.6%, storeW 16.1%,
+  video overlay 9.0% (22.7% port occupancy). Plus the write-buffer ceiling (storeW fully
+  hidden = **1.19×**, ≥2.9× bus-free headroom).
+- **`?video` A/B** — gating `vidreq` at elaboration removes video from the PSRAM port =
+  the framebuffer-in-BRAM counterfactual: same-work **1.228×** ceiling.
+- **Miss autopsy** — an OCaml (valid, tag) mirror of the cache, validated **0-mismatch
+  against the RTL's own `cache_hit` over boot + 2M instructions**, classifies every miss
+  and replays counterfactual snoop policies on the same access stream. Verdict: **96.1%
+  of load misses were snoop-invalidate self-inflicted** (store-then-load stack traffic) —
+  which became Phase-10b write-update (landed: load hit 58.7→98.4%, same-work **1.305×**,
+  measured by the lockstep A/B in the same run). Write-allocate measured not worth it.
+- **Load-locality sweep** — per-size fetch/load hit-rates, 1 KB→256 KB: capacity-flat
+  (+1.6 pt), which is what pointed at policy rather than size.
+
+Two harness lessons, so they're not relearned: **video DMA is live in every board sim**
+(Cyclesim's one-domain semantics advance the pclk raster 1:1 regardless of the `pclk`
+input level — hold-pclk-low does *not* quiet it; use the `?video` seam), and **make probe
+lookups loud** — `cr_busy`/`cr_op_vid` are registers, invisible to `lookup_node_by_name`,
+and the silent `None` zeroed the contention overlay on its first run.
+
 ## Notes
 
 - All three are opt-in (built by `@check` so they can't rot; run by alias). `@bench_boot`

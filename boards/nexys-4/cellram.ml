@@ -69,7 +69,7 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) (i : _ I.t) : _ O.t =
   let viddata_reg = Always.Variable.reg spec ~width:32 in
   let vid_pending = Always.Variable.reg spec ~width:1 in
   let busy_v = busy.value -- "cr_busy" in
-  let op_vid_v = op_vid.value in
+  let op_vid_v = op_vid.value -- "cr_op_vid" in
   let op_wr_v = op_wr.value in
   let half_v = half.value in
   let cnt_v = cnt.value in

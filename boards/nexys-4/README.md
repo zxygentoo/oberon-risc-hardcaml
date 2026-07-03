@@ -80,6 +80,16 @@ cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
   up all-invalid, so no reset sequence is needed.
 - Default 1024 one-word lines = 4 KB; **optional** (`?icache`, default off — the board emit turns
   it on). ~6× on running-OS code, 93% hit-rate; 60 MHz still closes.
+- **Write-update snoop (Phase-10b, `?write_update` — board emit on):** the plain snoop-invalidate
+  left the load hit-rate at 58.7% because 96.1% of load misses were its own doing — Oberon's
+  store-then-load stack discipline killed the hot lines (measured by the miss autopsy,
+  `test/bench/bench_boot.ml`). A **word** store that hits now rewrites the line in place with the
+  store data — same single write port, and the same write-through transaction lands the identical
+  word in PSRAM, so the coherence invariant is untouched; **byte** stores still invalidate. Load
+  hit 58.7→98.4%, **1.305× same-work** on running-OS code; WNS +0.708 ns at 60 MHz (the cache-write
+  path, one mux deeper, is now the critical path). Proven by the same layers as 10a: the autopsy
+  mirror 0-mismatch vs the RTL hit bit, the pc-lockstep A/B, and the byte-identical visual golden
+  (`WRITE_UPDATE=1 dune build @visual_golden_board`).
 
 Full detail (incl. the coherence argument) in `icache.mli`.
 

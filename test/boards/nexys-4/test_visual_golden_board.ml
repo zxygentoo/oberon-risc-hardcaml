@@ -129,12 +129,12 @@ let fb_fnv fb =
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
    cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
-let boot_soc_board ~icache ~cap ~chunk ~settle =
+let boot_soc_board ~icache ~write_update ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache i)
+      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache ~write_update i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -204,22 +204,32 @@ let () =
     | Some "0" -> false
     | _ -> true
   in
+  (* opt-in (Phase-10b): WRITE_UPDATE=1 runs the golden with the write-update snoop policy
+     — the byte-identical desktop is its coherence proof, like Phase-10a's *)
+  let write_update =
+    match Sys.getenv_opt "WRITE_UPDATE" with
+    | Some "1" -> true
+    | _ -> false
+  in
   let oracle_fb, oracle_hash = boot_oracle 40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
     (popcount oracle_fb);
   Printf.printf
-    "booting BOARD SoC (Cellram PSRAM, icache=%b) past the handoff — cache makes this \
-     feasible...\n\
+    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b) past the handoff — \
+     cache makes this feasible...\n\
      %!"
-    icache;
+    icache
+    write_update;
   let cap =
     match Sys.getenv_opt "SOC_CAP" with
     | Some s -> int_of_string s
     | None -> 160_000_000
   in
-  let soc_fb, settled = boot_soc_board ~icache ~cap ~chunk:2_000_000 ~settle:3 in
+  let soc_fb, settled =
+    boot_soc_board ~icache ~write_update ~cap ~chunk:2_000_000 ~settle:3
+  in
   let soc_hash = fb_fnv soc_fb in
   Printf.printf
     "soc (icache=%b): hash=0x%Lx  %d set px  settled=%b\n%!"
