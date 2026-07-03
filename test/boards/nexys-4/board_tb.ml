@@ -46,6 +46,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
+  ?(write_buffer = false)
   ?(fast_mul = false)
   ?(mul_stages = 0)
   ?(contents = Risc5.Rom.bootloader)
@@ -63,6 +64,7 @@ let create
       ~write_update
       ~video
       ~fb_bram
+      ~write_buffer
       ~fast_mul
       ~mul_stages
       { Soc.I.clock = i.clock
