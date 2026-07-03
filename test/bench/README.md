@@ -45,7 +45,7 @@ So the 17× per-op win rides on ops that are ~1-in-1000. Amdahl caps the *comput
 ~3%.
 
 ### `bench_boot` — the whole machine (`@bench_boot`, in `test/boards/nexys-4/`)
-Boots the real memory path — `Soc_board` (core on a clock-enable, main memory behind
+Boots the real memory path — the board `Soc` (core on a clock-enable, main memory behind
 `Cellram` inserting `read_cycles`/`write_cycles` wait-states, driven from the real disk via
 the SD bridge) — to the OS handoff, counting total cycles. Two probes:
 

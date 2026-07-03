@@ -1,7 +1,7 @@
 (* Public API and behaviour spec live in [soc.mli].
 
-   Implementation note. Wires the core to [Prom] + [Sram] with RISC5Top's decode. The
-   core's [adr] / [codebus] / [inbus] form a loop broken by the core's registers: [adr] is
+   Implementation note. Wires the core to [Rom] + [Ram] with RISC5Top's decode. The core's
+   [adr] / [codebus] / [inbus] form a loop broken by the core's registers: [adr] is
    combinational from registered state ([pc], the regfile, [ir]), the memories read
    combinationally, and [codebus]/[inbus] only reach [ir] on the next edge — no
    combinational cycle. So [codebus]/[inbus] are Hardcaml wires, assigned after the core
@@ -11,9 +11,13 @@
    [data_rx]/[rdy]. Word 1 reads [{btn, sw}] and latches the LEDs ([lreg]) on a store; the
    read mux is an [iowadr]-indexed [mux] with one labelled slot per MMIO word. *)
 
+(* bind the machine's RAM (lib/ram.ml) before the opens — [open Hardcaml] shadows the bare
+   sibling name with [Hardcaml.Ram] (the BRAM primitive helpers) — and rebind after *)
+module Machine_ram = Ram
 open! Base
 open Hardcaml
 open Signal
+module Ram = Machine_ram
 
 module I = struct
   type 'a t =
@@ -96,9 +100,9 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
      cycle-steal. Because [wr ⇒ ~vidreq], the unconditional RAM write can never land at
      [vidadr]. *)
   let core =
-    Risc5_core.create
+    Cpu.create
       ~fast_mul
-      { Risc5_core.I.clock = i.clock
+      { Cpu.I.clock = i.clock
       ; rst_n = i.rst_n
       ; irq = limit
       ; stall_x = vidreq
@@ -106,16 +110,16 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
       ; codebus
       }
   in
-  let prom = Prom.create ~contents { Prom.I.adr = select core.adr ~high:10 ~low:2 } in
+  let prom = Rom.create ~contents { Rom.I.adr = select core.adr ~high:10 ~low:2 } in
   (* SRAM address arbitration ([SRadr = vidreq ? vidadr : adr[19:2]]). [vidadr] is an
-     18-bit word address; our [Sram] takes a 20-bit byte address, so shift in two zero
+     18-bit word address; our [Ram] takes a 20-bit byte address, so shift in two zero
      bits. *)
   let sram_adr =
     mux2 vidreq (vidadr @: zero 2) (select core.adr ~high:19 ~low:0) -- "sram_adr"
   in
   let ram =
-    Sram.create
-      { Sram.I.clock = i.clock
+    Ram.create
+      { Ram.I.clock = i.clock
       ; adr = sram_adr
       ; wr = core.wr
       ; ben = core.ben
@@ -166,8 +170,8 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
               (mux2 (core.wr &: ioenb &: (iowadr ==:. 3)) (lsb core.outbus) bitrate.value)
       ]);
   let uart_rx =
-    Rs232r.create
-      { Rs232r.I.clock = i.clock
+    Uart_rx.create
+      { Uart_rx.I.clock = i.clock
       ; rst_n = i.rst_n
       ; rxd = i.rxd
       ; fsel = bitrate.value
@@ -175,8 +179,8 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
       }
   in
   let uart_tx =
-    Rs232t.create
-      { Rs232t.I.clock = i.clock
+    Uart_tx.create
+      { Uart_tx.I.clock = i.clock
       ; rst_n = i.rst_n
       ; start = core.wr &: ioenb &: (iowadr ==:. 2)
       ; fsel = bitrate.value

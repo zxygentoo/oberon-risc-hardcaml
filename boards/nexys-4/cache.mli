@@ -1,23 +1,23 @@
-(** [Icache] — Phase-10a: a direct-mapped, write-through instruction/read cache in front
-    of {!Cellram} (AGENT.md §5). The Phase-9 benchmark showed the machine is memory-bound
-    — the running OS fetches every instruction from PSRAM — so this cuts fetch/load
-    latency: a hit is served combinationally from on-chip distributed RAM instead of a
-    multi-cycle PSRAM read (measured ~6x on running-OS code, 93% hit-rate;
+(** [Cache] — Phase-10a: a direct-mapped, write-through instruction/read cache in front of
+    {!Cellram} (AGENT.md §5). The Phase-9 benchmark showed the machine is memory-bound —
+    the running OS fetches every instruction from PSRAM — so this cuts fetch/load latency:
+    a hit is served combinationally from on-chip distributed RAM instead of a multi-cycle
+    PSRAM read (measured ~6x on running-OS code, 93% hit-rate;
     test/boards/nexys-4/bench_boot.ml).
 
     {1 Placement & the 0-stall hit}
 
     The cache lives in the board layer, never [lib/], so the core stays byte-identical and
     its Phase-8 equivalence to [RISC5.v] is untouched (§2/§3); the latency it fights is a
-    board phenomenon (the [lib/] sim has single-cycle memory). {!Soc_board} wires it
-    between the core's memory port and {!Cellram}: on a hit it drops [mem_pend] to
-    Cellram, whose [ce] is [~mem_pend | …], so [ce] rises the same cycle — a {b 0-stall}
-    hit — and the word is muxed from here in place of [Cellram.rdata]. Misses and stores
-    flow through Cellram unchanged. The read is {b asynchronous} (combinational): that is
-    what makes the hit 0-stall and what forces the tag/data arrays to synthesise as
-    {b distributed RAM} (LUTRAM — BRAM cannot read combinationally), the same
-    [multiport_memory] async-read idiom as the register file (§8). On the Nexys 4 this
-    closes 60 MHz with the fill path as the critical path.
+    board phenomenon (the [lib/] sim has single-cycle memory). {!Soc} wires it between the
+    core's memory port and {!Cellram}: on a hit it drops [mem_pend] to Cellram, whose [ce]
+    is [~mem_pend | …], so [ce] rises the same cycle — a {b 0-stall} hit — and the word is
+    muxed from here in place of [Cellram.rdata]. Misses and stores flow through Cellram
+    unchanged. The read is {b asynchronous} (combinational): that is what makes the hit
+    0-stall and what forces the tag/data arrays to synthesise as {b distributed RAM}
+    (LUTRAM — BRAM cannot read combinationally), the same [multiport_memory] async-read
+    idiom as the register file (§8). On the Nexys 4 this closes 60 MHz with the fill path
+    as the critical path.
 
     {1 Coherence — transparent by construction, no flush instruction}
 

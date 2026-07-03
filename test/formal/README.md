@@ -66,7 +66,7 @@ distributed-RAM inference), not ours.
 ```
 RISC5.v (gold) ──────┐  8 units = black boxes on both sides (core_stubs.v)
                      ├─ equiv_make (merge units, check inputs) → cutpoint -blackbox
-Risc5_core (gate) ───┘     → equiv_simple + equiv_induct → all $equiv proven
+Cpu (gate) ──────────┘     → equiv_simple + equiv_induct → all $equiv proven
   via create_with_units (Core_blackbox.units = Instantiation stubs)
 ```
 
@@ -77,7 +77,7 @@ the **inline ALU (`aluRes` — no standalone `.v`, finally proven in-situ)**, th
 (`pcmux`/`cond`), the flag logic, and the 13 state registers (`PC`/`IR`/flags/`H`/`stallL1`/
 interrupt state).
 
-The seam is `Risc5_core.create_with_units`: `Core_blackbox` passes `Instantiation` stubs whose
+The seam is `Cpu.create_with_units`: `Core_blackbox` passes `Instantiation` stubs whose
 module / instance / port / **output-wire** names match `RISC5.v` (so `equiv_make` pairs them).
 The flow (`proofs/core.ys.template`): rename our registers to the RTL's → `equiv_make` (pairs the top
 flip-flops and *merges* the matched black-box cells, checking their **inputs** via the `$equiv`
@@ -150,7 +150,7 @@ In `formal_run.ml`:
 Each one-off is its own runner (not a list row) + its own `proofs/<name>.ys.template`:
 
 - **In-situ core** (whole core, submodules black-boxed): see `core_blackbox.ml` (the gate, via
-  `Risc5_core.create_with_units`), `proofs/core_stubs.v` (the stubs), and `run_core` +
+  `Cpu.create_with_units`), `proofs/core_stubs.v` (the stubs), and `run_core` +
   `proofs/core.ys.template` (the `cutpoint`-based flow).
 - **Open-drain shim** (a unit whose RTL has bidirectional `inout` pins our port splits into
   `*_oe`+resolved-input — so far only the Mouse): see `proofs/mouse_shim.v` (the two wrappers) and

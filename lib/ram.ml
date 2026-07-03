@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [sram.mli].
+(* Public API and behaviour spec live in [ram.mli].
 
    Implementation note. The OberonStation main memory is external asynchronous SRAM, wired
    in RISC5Top through tri-state IOBUFs with per-byte write-enables ([SRbe0]/[SRbe1],

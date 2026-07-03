@@ -2,14 +2,14 @@
 
    The Phase-6b visual golden (test_visual_golden.ml) renders the idle Oberon desktop on
    the flat-BRAM {!Risc5.Soc} and asserts it is byte-identical to the oracle. This variant
-   runs the *board* SoC ({!Nexys4_board.Soc_board} + the {!Nexys4_board.Cellram_model}
-   PSRAM double, via the shared {!Board_tb}) with the Phase-10a I-cache ON, past the
-   handoff, and asserts the *same* framebuffer against the oracle. That is the strong
-   coherence test: if the cache ever served stale code/data — the module loader writing
-   code the cache holds, or a framebuffer word the CPU cached being overwritten — the
-   desktop would render wrong and the hash would differ. Byte-identical ⇒ the cache is
-   transparent through the whole boot + module load + desktop render, not just the
-   boot-to-handoff prefix the lockstep bench covers.
+   runs the *board* SoC ({!Nexys4_board.Soc} + the {!Nexys4_board.Cellram_model} PSRAM
+   double, via the shared {!Board_tb}) with the Phase-10a I-cache ON, past the handoff,
+   and asserts the *same* framebuffer against the oracle. That is the strong coherence
+   test: if the cache ever served stale code/data — the module loader writing code the
+   cache holds, or a framebuffer word the CPU cached being overwritten — the desktop would
+   render wrong and the hash would differ. Byte-identical ⇒ the cache is transparent
+   through the whole boot + module load + desktop render, not just the boot-to-handoff
+   prefix the lockstep bench covers.
 
    Feasibility note: this is practical *only* with the cache. Cache-off the board runs OS
    code at ~26 cyc/instr, so drawing the desktop would take hundreds of millions of
@@ -129,7 +129,7 @@ let fb_fnv fb =
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
    cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
-let boot_soc_board ~icache ~write_update ~cap ~chunk ~settle =
+let boot_board ~icache ~write_update ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
@@ -228,7 +228,7 @@ let () =
     | None -> 160_000_000
   in
   let soc_fb, settled =
-    boot_soc_board ~icache ~write_update ~cap ~chunk:2_000_000 ~settle:3
+    boot_board ~icache ~write_update ~cap ~chunk:2_000_000 ~settle:3
   in
   let soc_hash = fb_fnv soc_fb in
   Printf.printf

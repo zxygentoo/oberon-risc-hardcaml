@@ -1,4 +1,4 @@
-(** SoC top — the RISC5 core wired to the boot ROM ([Prom]), main memory ([Sram]) and the
+(** SoC top — the RISC5 core wired to the boot ROM ([Rom]), main memory ([Ram]) and the
     peripherals, reproducing RISC5Top's address decode and MMIO map. This is the Phase-6b
     integration target, and the design the boot-handoff checkpoint (AGENT.md §6) runs on
     the plain Cyclesim interpreter, where [lookup_reg]/[lookup_mem] reach this state
@@ -12,8 +12,8 @@
       the boot ROM, the rest to RAM.
     - {b load}: [inbus = adr[23:6] = 0x3FFFF ? io : ram] — the top 64 B is the MMIO
       window.
-    - {b store}: [Sram] takes the core's write port directly. The SRAM has no [ioenb]
-      gate, so it aliases MMIO/ROM-region stores harmlessly (the lockstep filters those by
+    - {b store}: [Ram] takes the core's write port directly. The SRAM has no [ioenb] gate,
+      so it aliases MMIO/ROM-region stores harmlessly (the lockstep filters those by
       address).
 
     {1 Video, timer, interrupts}
@@ -33,7 +33,7 @@
     - {b 0} — millisecond counter ([cnt1]).
     - {b 1} — read [{btn, sw}] (buttons/switches, logical/active-high; default 0 = all-off
       = disk boot); a store latches the LEDs ([leds]).
-    - {b 2/3} — UART ({!Rs232r}/{!Rs232t}): word 2 reads / transmits a byte on
+    - {b 2/3} — UART ({!Uart_rx}/{!Uart_tx}): word 2 reads / transmits a byte on
       [rxd]/[txd]; word 3 carries the [{rdyTx, rdyRx}] status and the 1-bit [bitrate]
       select.
     - {b 4/5} — {!Spi} master (the one peripheral boot needs): word 4 = data (read =
@@ -52,7 +52,7 @@
 
     [~contents] is the boot ROM image (keeping the design library free of [prom.mem]);
     [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz; [?fast_mul] (default [false],
-    Phase 9) selects the core's DSP-backed multipliers ({!Risc5_core.create} — see there). *)
+    Phase 9) selects the core's DSP-backed multipliers ({!Cpu.create} — see there). *)
 
 open Hardcaml
 

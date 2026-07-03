@@ -121,14 +121,14 @@ let fp_divider () =
 let rs232t () =
   let open Signal in
   let i =
-    { Risc5.Rs232t.I.clock = input "clk" 1
+    { Risc5.Uart_tx.I.clock = input "clk" 1
     ; rst_n = input "rst" 1
     ; start = input "start" 1
     ; fsel = input "fsel" 1
     ; data = input "data" 8
     }
   in
-  let { Risc5.Rs232t.O.rdy; txd } = Risc5.Rs232t.create i in
+  let { Risc5.Uart_tx.O.rdy; txd } = Risc5.Uart_tx.create i in
   (* run/tick/bitcnt/shreg already match RS232T.v — no renames needed. *)
   Circuit.create_exn ~name:"rs232t_ours" [ output "rdy" rdy; output "TxD" txd ]
 ;;
@@ -136,14 +136,14 @@ let rs232t () =
 let rs232r () =
   let open Signal in
   let i =
-    { Risc5.Rs232r.I.clock = input "clk" 1
+    { Risc5.Uart_rx.I.clock = input "clk" 1
     ; rst_n = input "rst" 1
     ; rxd = input "RxD" 1
     ; fsel = input "fsel" 1
     ; done_ = input "done" 1
     }
   in
-  let { Risc5.Rs232r.O.rdy; data } = Risc5.Rs232r.create i in
+  let { Risc5.Uart_rx.O.rdy; data } = Risc5.Uart_rx.create i in
   (* run/stat/tick/bitcnt/shreg match RS232R.v; only the synchronizer FFs differ in case. *)
   Circuit.create_exn ~name:"rs232r_ours" [ output "rdy" rdy; output "data" data ]
 ;;

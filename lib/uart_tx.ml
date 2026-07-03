@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [rs232t.mli].
+(* Public API and behaviour spec live in [uart_tx.mli].
 
    Port of [RS232T.v]. The hardware idea: a baud-rate divider ([tick]) plus a 9-bit shift
    register ([shreg]) serialise one byte as a UART frame on [txd] — start bit, 8 data bits
@@ -17,7 +17,7 @@
 
    [rst] is active-low and synchronous — woven into each register's next-state as in the
    RTL, so a plain clock-only [Reg_spec] with no separate reset port (matches [Spi] /
-   [risc5_core]). *)
+   [Cpu]). *)
 
 open! Base
 open Hardcaml

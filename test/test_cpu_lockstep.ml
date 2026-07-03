@@ -19,7 +19,7 @@
    tests). See [steered] below. *)
 
 open Hardcaml
-module Core = Risc5.Risc5_core
+module Core = Risc5.Cpu
 module R = Oracle.Risc
 module Sim = Cyclesim.With_interface (Core.I) (Core.O)
 
@@ -508,7 +508,7 @@ let () =
           agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane));
   Printf.printf "cpu lockstep (stores): 50000 QCheck cases, passed\n";
   (* Phase-9 fast_mul, pipelined variant — re-run the register-op lockstep on a core with
-     the 2-cycle *pipelined* DSP multipliers swapped in (Risc5_core.create ~fast_mul:true
+     the 2-cycle *pipelined* DSP multipliers swapped in (Cpu.create ~fast_mul:true
      ~mul_stages:2). The units' z + stall are already proven bit-identical to the faithful
      multipliers by the co-located differential qcheck (lib/multiplier.ml,
      fp_multiplier.ml), which rides the Phase-8 proof transitively; that check drives the

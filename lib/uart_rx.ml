@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [rs232r.mli].
+(* Public API and behaviour spec live in [uart_rx.mli].
 
    Port of [RS232R.v]. The receiver's job, and its three ideas beyond the transmitter:
 
@@ -21,7 +21,7 @@
 
    [rst] is active-low and synchronous; per the RTL only [run] and [stat] carry a reset
    term (the datapath regs follow from [run]=0), so a plain clock-only [Reg_spec] like
-   [Spi] / [Rs232t]. *)
+   [Spi] / [Uart_tx]. *)
 
 open! Base
 open Hardcaml
@@ -105,7 +105,7 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
    receiver is input-driven, so the testbench plays the sender: drive a UART frame on
    [rxd] at the baud timing and check the recovered [data] + the [rdy]/[done_] handshake.
-   As with [Rs232t] a whole frame is too long for a frozen waveform (clk/217 per bit), so
+   As with [Uart_tx] a whole frame is too long for a frozen waveform (clk/217 per bit), so
    the living doc is a functional decode + qcheck round-trip, plus a tight waveform of the
    distinctive front end (synchronizer + start-edge → [run]). The exhaustive bit-for-bit
    fidelity check vs [RS232R.v] is the Verilator co-sim (layer 3). *)

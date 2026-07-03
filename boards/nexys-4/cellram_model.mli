@@ -6,10 +6,10 @@
     asynchronous (combinational) 16-bit read of the addressed halfword onto [mem_dq_i],
     and a per-byte synchronous write on the clock edge while [ce_n] and [we_n] are low
     (the lanes gated by [lb_n]/[ub_n]). Two 8-bit lanes share the halfword address (named
-    [cram_lo] / [cram_hi]) so a byte store touches only its lane — the same shape as
-    [Sram] (lib/). A 1 MB window (2^19 halfwords) starting zeroed; the controller's
-    wait-state FSM runs unchanged around it, so sim exercises the real control flow
-    against an instantly-responding chip. *)
+    [cram_lo] / [cram_hi]) so a byte store touches only its lane — the same shape as [Ram]
+    (lib/). A 1 MB window (2^19 halfwords) starting zeroed; the controller's wait-state
+    FSM runs unchanged around it, so sim exercises the real control flow against an
+    instantly-responding chip. *)
 
 open Hardcaml
 

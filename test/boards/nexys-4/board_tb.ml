@@ -1,13 +1,13 @@
-(* Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
-   PSRAM double {!Nexys4_board.Cellram_model} on its memory pins. Both board integration
-   tests here (the boot-handoff checkpoint and the visual golden) — and the board gauge
+(* Shared board-SoC test harness: {!Nexys4_board.Soc} closed with the behavioural PSRAM
+   double {!Nexys4_board.Cellram_model} on its memory pins. Both board integration tests
+   here (the boot-handoff checkpoint and the visual golden) — and the board gauge
    bench_boot (this dir) — wire the SoC to the model identically and reconstruct 32-bit
    words from its two byte lanes the same way; this factors that out. The
    [fast_mul]/[mul_stages] knobs exist for the bench's DSP-multiplier sweep (the tests
-   leave them at the Soc_board defaults). The public contract is in board_tb.mli. *)
+   leave them at the Soc defaults). The public contract is in board_tb.mli. *)
 
 open Hardcaml
-module Soc_board = Nexys4_board.Soc_board
+module Soc = Nexys4_board.Soc
 module Cellram_model = Nexys4_board.Cellram_model
 
 module I = struct
@@ -47,7 +47,7 @@ let create
   =
   let dq = Signal.wire 16 in
   let soc =
-    Soc_board.create
+    Soc.create
       ~contents
       ~read_cycles
       ~write_cycles
@@ -57,7 +57,7 @@ let create
       ~video
       ~fast_mul
       ~mul_stages
-      { Soc_board.I.clock = i.clock
+      { Soc.I.clock = i.clock
       ; pclk = i.pclk
       ; rst_n = i.rst_n
       ; miso = i.miso

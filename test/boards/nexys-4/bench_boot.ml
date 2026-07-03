@@ -4,9 +4,9 @@
 
    The other two gauges look at compute in isolation — bench_core times one op
    (memoryless), profile_boot counts MUL/DIV density on the oracle (no memory model). This
-   one runs {!Nexys4_board.Soc_board}: the core on a clock-enable, main memory behind
-   {!Cellram} inserting [read_cycles]/[write_cycles] wait-states per access, driven from
-   the real disk through the SD bridge. Two questions:
+   one runs {!Nexys4_board.Soc}: the core on a clock-enable, main memory behind {!Cellram}
+   inserting [read_cycles]/[write_cycles] wait-states per access, driven from the real
+   disk through the SD bridge. Two questions:
 
    1. Does the DSP multiplier move end-to-end cycles? Boot faithful vs [fast_mul] at the
       board's read_cycles=5. Expect ~nil — boot is 0.1% MUL (profile_boot), dominated by
@@ -113,7 +113,7 @@ let must = function
    closures keep the [Sim.t] type private. *)
 (* one CPU PSRAM access retiring this cycle, with its address — the raw material for the
    miss-autopsy cache mirrors (Phase-10b). [wa] is the 18-bit word address of the 1 MB
-   window ([adr[19:2]], exactly {!Icache}'s cached address). *)
+   window ([adr[19:2]], exactly {!Cache}'s cached address). *)
 type mem_ev =
   | Read of
       { wa : int
@@ -347,8 +347,8 @@ let compare_os ~max_instrs ~lines_log2 =
 
    The mirrors track (valid, tag) only — policy hit-rates need no data. Mirror A is
    validated against the RTL's own [cache_hit] on every read (a mismatch = harness bug,
-   reported loudly; note [multiport_memory]'s post-write async read, icache.ml — events
-   are applied at retire, which matches it). Events feed the mirrors from RESET (the boot
+   reported loudly; note [multiport_memory]'s post-write async read, cache.ml — events are
+   applied at retire, which matches it). Events feed the mirrors from RESET (the boot
    warms the cache); stats collect past the OS handoff only. Caveat: the stream is the one
    the RTL policy produced — a different policy shifts poll-loop timing slightly; fine for
    a ceiling. *)

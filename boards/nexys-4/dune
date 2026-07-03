@@ -8,7 +8,7 @@
 (library
  (name nexys4_board)
  (modules
-  (:standard \ emit_board_verilog))
+  (:standard \ emit_verilog))
  (libraries risc5 hardcaml hardcaml_waveterm qcheck-core)
  (inline_tests)
  (preprocess
@@ -19,6 +19,6 @@
 ; which nexys4_top.v wraps with the vendor primitives. Built by @check so it can't rot.
 
 (executable
- (name emit_board_verilog)
- (modules emit_board_verilog)
+ (name emit_verilog)
+ (modules emit_verilog)
  (libraries hardcaml nexys4_board risc5))

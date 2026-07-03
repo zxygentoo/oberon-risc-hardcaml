@@ -1,15 +1,38 @@
-(** The 512-word boot ROM image — the RISC5 machine's boot loader (a port of the
-    OberonStation [PROM.v] / [prom.mem], §1). This is design data: [risc5] is a complete,
-    self-contained port of the machine, so its boot image lives here, not borrowed from
-    the software oracle. The 383-word PROM proper is zero-filled to the 512-word depth
-    [Prom] maps.
+(* Public API and behaviour spec live in [rom.mli].
 
-    [Oracle.Boot_rom] carries its own transcription (from the C [risc-boot.inc]) for the
-    emulator's internal boot; a guard test (test/test_rom.ml) asserts the two are
-    identical, so the design and the oracle can never boot different ROMs (§8's "why we
-    have the oracle" applied to an immutable artifact). *)
+   Implementation note. Two halves of one artifact in one module: the ROM {b circuit} (the
+   port of [PROM.v] -- a [reg [31:0] mem[511:0]] read on the inverted clock; the .mli
+   explains why the asynchronous-read model is edge-equivalent) and the boot {b image} it
+   ships ([bootloader], transcribed from [prom.mem]). The circuit takes its image as
+   [~contents] so tests can feed hand-assembled programs; the canonical image lives
+   alongside so the [risc5] library is a self-contained port of the machine. *)
 
 open! Base
+open Hardcaml
+open Signal
+
+let depth = 512 (* 2^9 words; adr is [@bits 9] below *)
+let data_width = 32
+
+module I = struct
+  type 'a t = { adr : 'a [@bits 9] } [@@deriving hardcaml]
+end
+
+module O = struct
+  type 'a t = { data : 'a [@bits 32] } [@@deriving hardcaml]
+end
+
+let create ~contents (i : _ I.t) : _ O.t =
+  if Array.length contents > depth
+  then failwith "Rom: contents exceed the 512-word ROM depth";
+  let image =
+    Array.init depth ~f:(fun k ->
+      let w = if k < Array.length contents then contents.(k) else 0 in
+      Bits.of_unsigned_int ~width:data_width w)
+  in
+  let reads = rom ~read_addresses:[| i.adr |] image in
+  { O.data = reads.(0) }
+;;
 
 (* The 383-word PROM image proper, transcribed from [PROM.v]/[prom.mem] (verbatim-equal to
    the C [risc-boot.inc]); [bootloader] zero-fills to 512. *)
@@ -400,7 +423,69 @@ let image =
   |]
 ;;
 
-(** The boot image [Prom] maps: the 383-word PROM proper, zero-filled to 512 words. *)
+(** The boot image [Rom] maps: the 383-word PROM proper, zero-filled to 512 words. *)
 let bootloader =
   Array.init 512 ~f:(fun i -> if i < Array.length image then image.(i) else 0)
+;;
+
+(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
+   Correctness: load a recognisable image and read back all 512 words — deterministic, so
+   a plain loop, not qcheck; the image array is its own spec, no oracle. Behaviour: a
+   frozen waveform of a few reads showing the asynchronous read (data tracks adr within
+   the cycle). *)
+
+let test_image = Array.init depth ~f:(fun k -> 0xC0DE0000 lor k)
+
+let%expect_test "rom reads back its image [exhaustive, 512 words]" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create (create ~contents:test_image) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let ok = ref true in
+  for a = 0 to depth - 1 do
+    inp.adr := Bits.of_unsigned_int ~width:9 a;
+    Cyclesim.cycle sim;
+    if not (Bits.equal !(outp.data) (Bits.of_unsigned_int ~width:32 test_image.(a)))
+    then ok := false
+  done;
+  Stdlib.Printf.printf "all %d words read back correctly: %b\n" depth !ok;
+  [%expect {| all 512 words read back correctly: true |}]
+;;
+
+let%expect_test "rom — asynchronous read, data tracks adr [waveform]" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module D = Hardcaml_waveterm.Display_rule in
+  let sim = Sim.create (create ~contents:test_image) in
+  let waves, sim = Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let read a =
+    inp.adr := Bits.of_unsigned_int ~width:9 a;
+    Cyclesim.cycle sim
+  in
+  read 0;
+  read 1;
+  read 5;
+  read 0x1FF;
+  read 0x100;
+  Waveform.print
+    ~display_rules:
+      D.
+        [ port_name_is ~wave_format:Wave_format.Unsigned_int "adr"
+        ; port_name_is ~wave_format:Wave_format.Hex "data"
+        ]
+    ~wave_width:4
+    ~display_width:70
+    waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
+    │adr            ││ 0        │1        │5        │511      │256       │
+    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
+    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
+    │data           ││ C0DE0000 │C0DE0001 │C0DE0005 │C0DE01FF │C0DE0100  │
+    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
 ;;

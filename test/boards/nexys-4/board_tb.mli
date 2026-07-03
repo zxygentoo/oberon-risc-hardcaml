@@ -1,6 +1,6 @@
-(** Shared board-SoC test harness: {!Nexys4_board.Soc_board} closed with the behavioural
-    PSRAM double {!Nexys4_board.Cellram_model} on its memory pins — the common wiring of
-    the board boot checkpoint, the board visual golden, and bench_boot (all this dir). *)
+(** Shared board-SoC test harness: {!Nexys4_board.Soc} closed with the behavioural PSRAM
+    double {!Nexys4_board.Cellram_model} on its memory pins — the common wiring of the
+    board boot checkpoint, the board visual golden, and bench_boot (all this dir). *)
 
 open Hardcaml
 
@@ -34,8 +34,8 @@ end
     answers at once, so small waits exercise only the controller FSM — the checkpoint's
     regime; the visual golden passes 5 to match the board). The cache knobs ([icache] /
     [lines_log2] / [write_update]) and [fast_mul] / [mul_stages] (all default off) forward
-    to {!Nexys4_board.Soc_board.create} — for the bench's sweeps; the tests leave them
-    off. [sclk] is the only output read directly; everything else is reached by name under
+    to {!Nexys4_board.Soc.create} — for the bench's sweeps; the tests leave them off.
+    [sclk] is the only output read directly; everything else is reached by name under
     [Cyclesim.Config.trace_all]. *)
 val create
   :  ?read_cycles:int
@@ -44,10 +44,10 @@ val create
   -> ?lines_log2:int
   -> ?write_update:bool
        (** default [false]; [true] = the Phase-10b write-update snoop policy (word
-           store-hits refresh the cached line in place — see {!Nexys4_board.Icache}) *)
+           store-hits refresh the cached line in place — see {!Nexys4_board.Cache}) *)
   -> ?video:bool
        (** default [true]; [false] gates the video DMA off the PSRAM port — the
-           framebuffer-in-BRAM counterfactual (see {!Nexys4_board.Soc_board.create}) *)
+           framebuffer-in-BRAM counterfactual (see {!Nexys4_board.Soc.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
   -> ?contents:int array

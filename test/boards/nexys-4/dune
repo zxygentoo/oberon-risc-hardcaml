@@ -13,7 +13,7 @@
   (pps ppx_hardcaml)))
 
 ; Phase 7: board boot-handoff checkpoint — the same boot proven through the PSRAM board SoC
-; (Soc_board + cellram_model), the SoC-independent half shared with the BRAM checkpoint via
+; (the board Soc + cellram_model), the SoC-independent half shared with the BRAM checkpoint via
 ; boot_checkpoint_common. Run: dune build @boot_checkpoint_board
 
 (executable
@@ -51,14 +51,14 @@
 
 ; Phase-9/10 board gauge (a report, not a pass/fail test): end-to-end boot cycles on the
 ; PSRAM board SoC + the running-OS stall profile / video A/B / cache sweeps. It lives here
-; (not test/bench/) because it is board-specific through and through — it drives Soc_board's
+; (not test/bench/) because it is board-specific through and through — it drives the board Soc's
 ; full knob surface via board_tb and probes board signal names — while test/bench/ keeps the
 ; target-independent gauges. The gauge index is test/bench/README.md.
 
 (executable
  (name bench_boot)
  (modules bench_boot)
- ; board_tb brings the Soc_board+Cellram_model wiring — and risc5 / nexys4_board
+ ; board_tb brings the board Soc + Cellram_model wiring — and risc5 / nexys4_board
  ; transitively; the bench itself derives no interfaces, so no ppx.
  (libraries board_tb oracle hardcaml sd_bridge boot_checkpoint_common))
 

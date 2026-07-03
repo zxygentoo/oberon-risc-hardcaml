@@ -14,11 +14,11 @@ how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/
 
 | file | what |
 |---|---|
-| `soc_board.{ml,mli}` | the board SoC — the top-level Hardcaml design that synthesizes |
+| `soc.{ml,mli}` | the board SoC — the top-level Hardcaml design that synthesizes |
 | `cellram.{ml,mli}` | PSRAM memory controller + CPU/video arbiter (the memory path) |
-| `icache.{ml,mli}` | Phase-10a direct-mapped instruction/read cache in front of Cellram |
+| `cache.{ml,mli}` | Phase-10a/b direct-mapped instruction/read cache in front of Cellram |
 | `cellram_model.{ml,mli}` | behavioural sim double of the external PSRAM chip (**test-only**) |
-| `emit_board_verilog.ml` | emit `soc_board` as Verilog, boot ROM baked in from `Risc5.Rom` |
+| `emit_verilog.ml` | emit the board SoC as Verilog (module name `soc_board`), boot ROM from `Risc5.Rom` |
 | `nexys4_top.v` | hand-written vendor shim: MMCM / IOBUF / POR — the **only** vendor code |
 | `nexys4.xdc` | pin + clock/CDC constraints (from the Digilent master XDC) |
 | `gen_verilog.sh`, `*.tcl` | the emit → synth → program / flash flow (below) |
@@ -27,7 +27,7 @@ Board integration tests (boot checkpoint, visual golden) live in `test/boards/ne
 
 ## How the board SoC works
 
-`soc_board` is `lib/`'s `Soc` with one thing swapped: main memory moves from single-cycle
+`soc.ml` (the board `Soc`) is `lib/`'s `Soc` with one thing swapped: main memory moves from single-cycle
 on-chip BRAM to the external **PSRAM behind `Cellram`**, and the CPU core runs on a
 **clock-enable**. Everything else — the MMIO map, peripherals (UART, SPI/SD, PS/2 keyboard +
 mouse, GPIO), the video controller — is identical to `lib/soc.ml`.
@@ -63,14 +63,14 @@ expect:
 Full detail in `cellram.mli`. `cellram_model.ml` is a behavioural double of the chip, wired to
 Cellram's pins only in simulation (the board tests); it never synthesizes.
 
-## Icache — the Phase-10a cache
+## Cache — the Phase-10a/b cache
 
 The running OS fetches every instruction from PSRAM, so the machine is **memory-bound** (the
-Phase-9 benchmark's verdict). `Icache` is a small direct-mapped, write-through instruction/read
+Phase-9 benchmark's verdict). `Cache` is a small direct-mapped, write-through instruction/read
 cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
 
 - **0-stall hit:** the tag/data array is **async-read distributed RAM** (LUTRAM — the register
-  file's idiom; BRAM can't read combinationally). On a hit, `soc_board` drops `mem_pend` to
+  file's idiom; BRAM can't read combinationally). On a hit, the board `Soc` drops `mem_pend` to
   Cellram, whose `ce = ~mem_pend | …` therefore rises the *same* cycle — the word comes from the
   cache with zero wait and no extra pipeline stage.
 - **Coherence, no flush op** (the real machine has no cache, so Oberon has no flush instruction):
@@ -91,7 +91,7 @@ cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
   mirror 0-mismatch vs the RTL hit bit, the pc-lockstep A/B, and the byte-identical visual golden
   (`WRITE_UPDATE=1 dune build @visual_golden_board`).
 
-Full detail (incl. the coherence argument) in `icache.mli`.
+Full detail (incl. the coherence argument) in `cache.mli`.
 
 ## Build & program
 
@@ -112,5 +112,5 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
 and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache:true` — live in `emit_board_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+`icache:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
 outputs land in the git-ignored `boards/_build/nexys-4/`.

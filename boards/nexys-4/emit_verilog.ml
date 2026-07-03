@@ -1,5 +1,5 @@
-(* Phase 7 — emit the synthesizable board SoC ({!Nexys4_board.Soc_board}) as Verilog, with
-   the real boot ROM baked in. The hand-written nexys4_top.v (same dir) wraps the emitted
+(* Phase 7 — emit the synthesizable board SoC ({!Nexys4_board.Soc}) as Verilog, with the
+   real boot ROM baked in. The hand-written nexys4_top.v (same dir) wraps the emitted
    [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
    gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
 
@@ -20,14 +20,18 @@
    MULT 6.5), CLKOUT1_DIVIDE 10. *)
 
 open Hardcaml
-module Soc_board = Nexys4_board.Soc_board
-module Circ = Circuit.With_interface (Soc_board.I) (Soc_board.O)
+module Soc = Nexys4_board.Soc
+module Circ = Circuit.With_interface (Soc.I) (Soc.O)
 
 let () =
   let circuit =
     Circ.create_exn
+    (* the EMITTED Verilog module keeps the name "soc_board" (decoupled from the OCaml
+       module, now [Soc]): nexys4_top.v instantiates it by this name and the whole Vivado
+       flow reads boards/_generated/nexys-4/soc_board.v — renaming the artifact would
+       churn the board flow for nothing. *)
       ~name:"soc_board"
-      (Soc_board.create
+      (Soc.create
          ~contents:Risc5.Rom.bootloader
          ~clocks_per_ms:60000
            (* 5 cycles/phase = 83 ns at 60 MHz (16.67 ns) > the chip's 70 ns (in spec). 4
@@ -58,7 +62,7 @@ let () =
            (* Phase-10b: write-update snoop — a word store-hit refreshes the cached line
               in place instead of dropping it (96% of running-OS load misses were
               snoop-invalidate self-inflicted; load hit 59% -> 98%, same-work 1.305x in
-              sim — see Icache + test/boards/nexys-4/bench_boot.ml). Timing watch: the wd
+              sim — see Cache + test/boards/nexys-4/bench_boot.ml). Timing watch: the wd
               mux gained a level (fill_data vs wdata) on the cache-write path, which was
               already the 60 MHz critical path — check WNS still closes. *)
          ~write_update:true

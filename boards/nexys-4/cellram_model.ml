@@ -1,5 +1,5 @@
 (* Public API and behaviour spec live in [cellram_model.mli]. A two-byte-lane memory (twin
-   of lib/[sram.ml], but 16-bit) modelling the external cellular PSRAM for Cyclesim
+   of lib/[ram.ml], but 16-bit) modelling the external cellular PSRAM for Cyclesim
    testbenches. *)
 
 open! Base

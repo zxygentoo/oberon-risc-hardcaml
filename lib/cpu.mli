@@ -1,5 +1,5 @@
-(** [Risc5_core] — the RISC5 CPU core ([RISC5.v]): the single-issue, mostly-one-cycle
-    processor at the heart of the machine (AGENT.md §2's "crown jewel").
+(** [Cpu] — the RISC5 CPU core ([RISC5.v]): the single-issue, mostly-one-cycle processor
+    at the heart of the machine (AGENT.md §2's "crown jewel").
 
     The whole CPU is a handful of registers — [PC], [IR], the flags [N]/[Z]/[C]/[OV], the
     aux register [H], the load/store [stallL1], and the interrupt state — updated in a

@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [soc_board.mli].
+(* Public API and behaviour spec live in [soc.mli].
 
    Implementation note. This is [Soc] (lib/soc.ml) with the memory layer swapped for the
    PSRAM controller {!Cellram} and the core run on its clock-enable. The peripheral / MMIO
@@ -129,17 +129,11 @@ let create
   Always.(compile [ irq_pend <-- (i.rst_n &: ~:core_ce &: (limit |: irq_pend_v)) ]);
   let irq = (limit |: irq_pend_v) -- "irq" in
   let core =
-    Risc5_core.create
+    Cpu.create
       ~ce:core_ce
       ~fast_mul
       ~mul_stages
-      { Risc5_core.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; irq
-      ; stall_x = gnd
-      ; inbus
-      ; codebus
-      }
+      { Cpu.I.clock = i.clock; rst_n = i.rst_n; irq; stall_x = gnd; inbus; codebus }
   in
   (* ── Address decode ── (same constants as soc.ml / RISC5Top) *)
   let core_adr = core.adr -- "core_adr" in
@@ -161,7 +155,7 @@ let create
   (* Phase-10a: an optional direct-mapped read/I-cache in front of Cellram. On a hit we
      drop [mem_pend] to Cellram — its [ce] is [~mem_pend | …], so it rises this cycle (a
      0-stall hit) — and serve the word from the cache; misses and stores flow through
-     unchanged (write-through), the cache snooping stores to stay coherent ({!Icache}).
+     unchanged (write-through), the cache snooping stores to stay coherent ({!Cache}).
      [cache_hit] is driven below (after Cellram, whose [ce]/[rdata] the cache needs); the
      loop is not combinational — [hit] reads the cache array, not Cellram. *)
   let cache_hit = wire 1 in
@@ -196,10 +190,10 @@ let create
       let cacheable_read = core.mem_pend &: ~:(core.wr) &: ~:cpu_internal in
       let cacheable_read = cacheable_read -- "cache_read" in
       let cache =
-        Icache.create
+        Cache.create
           ?lines_log2
           ~write_update
-          { Icache.I.clock = i.clock
+          { Cache.I.clock = i.clock
           ; adr = core_adr
           ; cacheable_read
           ; write = core.wr &: ~:cpu_internal
@@ -215,7 +209,7 @@ let create
       assign cache_hit gnd;
       cellram.rdata)
   in
-  let prom = Prom.create ~contents { Prom.I.adr = select core_adr ~high:10 ~low:2 } in
+  let prom = Rom.create ~contents { Rom.I.adr = select core_adr ~high:10 ~low:2 } in
   (* ── SPI master (words 4/5) ── *)
   let spi_ctrl = Always.Variable.reg spec ~width:4 in
   Always.(
@@ -253,10 +247,10 @@ let create
               (mux2 (core.wr &: ioenb &: (iowadr ==:. 3)) (lsb core.outbus) bitrate.value)
       ]);
   let uart_rx =
-    Rs232r.create
+    Uart_rx.create
       ~baud_slow:uart_baud_slow
       ~baud_fast:uart_baud_fast
-      { Rs232r.I.clock = i.clock
+      { Uart_rx.I.clock = i.clock
       ; rst_n = i.rst_n
       ; rxd = i.rxd
       ; fsel = bitrate.value
@@ -264,10 +258,10 @@ let create
       }
   in
   let uart_tx =
-    Rs232t.create
+    Uart_tx.create
       ~baud_slow:uart_baud_slow
       ~baud_fast:uart_baud_fast
-      { Rs232t.I.clock = i.clock
+      { Uart_tx.I.clock = i.clock
       ; rst_n = i.rst_n
       ; start = core.wr &: ioenb &: (iowadr ==:. 2)
       ; fsel = bitrate.value
@@ -371,12 +365,12 @@ let create
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   [Soc_board] is [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the
-   core on a clock-enable — a hand-copy of soc.ml's peripheral block that can drift from
-   it. These mirror soc.ml's own co-located integration tests (a hand-assembled boot stub
-   in the boot ROM, run on the interpreter, read back through the core's named [regfile] —
-   no oracle, so the board library stays oracle-free, §3/§6), here closed with the
+(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── [Soc] is
+   [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the core on a
+   clock-enable — a hand-copy of soc.ml's peripheral block that can drift from it. These
+   mirror soc.ml's own co-located integration tests (a hand-assembled boot stub in the
+   boot ROM, run on the interpreter, read back through the core's named [regfile] — no
+   oracle, so the board library stays oracle-free, §3/§6), here closed with the
    behavioural {!Cellram_model} on the PSRAM pins. They guard the board-specific paths:
    the Cellram memory round-trip, the free-running (non-ce-gated) timer under wait-states,
    and the MMIO read/write path through the on-chip fast path. (The full boot through this
@@ -472,7 +466,7 @@ let drive_idle (inp : _ Tb.I.t) =
   inp.gpio_in := Bits.of_unsigned_int ~width:8 0
 ;;
 
-let%expect_test "soc_board — fetch ROM, store + load round-trip through PSRAM" =
+let%expect_test "board soc — fetch ROM, store + load round-trip through PSRAM" =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let nop = 0x40080000 (* ADD R0,R0,#0 *) in
   let prog =
@@ -506,7 +500,7 @@ let%expect_test "soc_board — fetch ROM, store + load round-trip through PSRAM"
   [%expect {| R1=0x55  R2=0x55 |}]
 ;;
 
-let%expect_test "soc_board — ms timer counts clocks, not ce cycles (free-running under \
+let%expect_test "board soc — ms timer counts clocks, not ce cycles (free-running under \
                  wait-states)"
   =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
@@ -529,7 +523,7 @@ let%expect_test "soc_board — ms timer counts clocks, not ce cycles (free-runni
   let core_ce =
     match Cyclesim.lookup_node_or_reg_by_name sim "core_ce" with
     | Some n -> n
-    | None -> failwith "soc_board timer test: no traced node core_ce"
+    | None -> failwith "board soc timer test: no traced node core_ce"
   in
   drive_idle inp;
   inp.rst_n := Bits.of_unsigned_int ~width:1 0;
@@ -552,7 +546,7 @@ let%expect_test "soc_board — ms timer counts clocks, not ce cycles (free-runni
     {| after 1000 clocks @ 50 clk/ms: cnt1 = 20   (CPU advanced on only 373 ce cycles — wait-stated: true) |}]
 ;;
 
-let%expect_test "soc_board — a ms tick landing in a frozen (ce=0) cycle still reaches \
+let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still reaches \
                  the core [irq stretch]"
   =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
@@ -600,7 +594,7 @@ let%expect_test "soc_board — a ms tick landing in a frozen (ce=0) cycle still 
     {| after 2000 clocks @ 50 clk/ms: ticks (cnt1) = 40   delivered (irq1 rises) = 40   every tick delivered (<=1 in flight): true |}]
 ;;
 
-let%expect_test "soc_board — MMIO word 1: read {btn, sw}; store latches the LEDs" =
+let%expect_test "board soc — MMIO word 1: read {btn, sw}; store latches the LEDs" =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let nop = 0x40080000 in
   let prog =

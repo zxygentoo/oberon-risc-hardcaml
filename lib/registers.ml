@@ -80,7 +80,7 @@ let%expect_test "registers = 16×32 array model [qcheck, 500 sequences]" =
   let w32 v = Bits.of_unsigned_int ~width:32 v in
   (* one sim for all 500 sequences (hoisted out of the property, §6); each sequence starts
      by zeroing the 16 registers so the fresh-zeros model stays aligned — the same hoist +
-     zeroing pattern as sram.ml's round-trip qcheck *)
+     zeroing pattern as ram.ml's round-trip qcheck *)
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in

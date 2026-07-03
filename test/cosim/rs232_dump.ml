@@ -20,10 +20,10 @@
 
 open Hardcaml
 open Cosim_dump
-module Rs232t = Risc5.Rs232t
-module Rs232r = Risc5.Rs232r
-module Sim_t = Cyclesim.With_interface (Rs232t.I) (Rs232t.O)
-module Sim_r = Cyclesim.With_interface (Rs232r.I) (Rs232r.O)
+module Uart_tx = Risc5.Uart_tx
+module Uart_rx = Risc5.Uart_rx
+module Sim_t = Cyclesim.With_interface (Uart_tx.I) (Uart_tx.O)
+module Sim_r = Cyclesim.With_interface (Uart_rx.I) (Uart_rx.O)
 
 (* shared stimulus: the 8 corner bytes in both rates, then a fuzz pass biased to the cheap
    fast rate (fsel=1) over the slow rate (fsel=0). The framing is data-independent in
@@ -50,9 +50,9 @@ let drive ~emit ~fast_n ~slow_n =
 let tx_cap = 14000 (* safety: the slow frame is ~13030 cycles (10 bits x clk/1302) *)
 
 let tx () =
-  let sim = Sim_t.create Rs232t.create in
-  let inp = (Cyclesim.inputs sim : _ Rs232t.I.t) in
-  let outp = (Cyclesim.outputs sim : _ Rs232t.O.t) in
+  let sim = Sim_t.create Uart_tx.create in
+  let inp = (Cyclesim.inputs sim : _ Uart_tx.I.t) in
+  let outp = (Cyclesim.outputs sim : _ Uart_tx.O.t) in
   (* reset (rst_n active-low, synchronous), then frames back-to-back: after each one the
      unit returns to rdy=1 / tick=0, so [start] re-arms it cleanly — exactly as the .cpp
      does. *)
@@ -100,9 +100,9 @@ let tx () =
 let rx_cap = 30000 (* safety: the slow frame is ~10 x 1303 cycles *)
 
 let rx () =
-  let sim = Sim_r.create Rs232r.create in
-  let inp = (Cyclesim.inputs sim : _ Rs232r.I.t) in
-  let outp = (Cyclesim.outputs sim : _ Rs232r.O.t) in
+  let sim = Sim_r.create Uart_rx.create in
+  let inp = (Cyclesim.inputs sim : _ Uart_rx.I.t) in
+  let outp = (Cyclesim.outputs sim : _ Uart_rx.O.t) in
   (* reset, line idle high; then frames back-to-back, each ending with a [done_] ack. *)
   set inp.rst_n 0;
   set inp.rxd 1;

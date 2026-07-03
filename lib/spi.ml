@@ -11,9 +11,9 @@
    [slow_div_log2] (default 6) sets the slow-divider depth. 6 = clk÷64 = [SPI.v] exactly —
    the value the @formal proof and the cosim pin, and 390.6 kHz at 25 MHz (just under the
    SD 400 kHz init ceiling). The 60 MHz board overrides to 8 (clk÷256 = 234 kHz; ÷128
-   would be 469 kHz, over the ceiling — see emit_board_verilog.ml). FAST is untouched:
-   clk÷3 = 20 MHz at 60 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needs
-   retuning per clock.
+   would be 469 kHz, over the ceiling — see emit_verilog.ml). FAST is untouched: clk÷3 =
+   20 MHz at 60 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needs retuning
+   per clock.
 
    [mosi] taps [shreg] bit 7 (bytes leave MSbit first); [miso] is sampled into the
    register on [endtick]. The shift is NOT a plain [shreg<<1]: it is four byte-lanes
@@ -24,8 +24,8 @@
    §2).
 
    [rst] is active-low and synchronous — woven into each register's next-state as in the
-   RTL, so a plain clock-only [Reg_spec] with no separate reset port (matches
-   [risc5_core]'s reset style). *)
+   RTL, so a plain clock-only [Reg_spec] with no separate reset port (matches [Cpu]'s
+   reset style). *)
 
 open! Base
 open Hardcaml

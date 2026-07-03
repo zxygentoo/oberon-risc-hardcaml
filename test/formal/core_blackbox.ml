@@ -1,6 +1,6 @@
 open! Base
 open Hardcaml
-module Core = Risc5.Risc5_core
+module Core = Risc5.Cpu
 
 (* Each stub instantiates the same module RISC5.v does, with the same instance and port
    names — and the output WIRES named to match RISC5.v's (lshout / product / A / …). That

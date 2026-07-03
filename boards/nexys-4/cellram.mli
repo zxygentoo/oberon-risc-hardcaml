@@ -8,13 +8,13 @@
 
     {1 How the wait-states reach the CPU}
 
-    [Risc5_core] assumes single-cycle memory: every cycle it presents [adr] and consumes
+    [Cpu] assumes single-cycle memory: every cycle it presents [adr] and consumes
     [codebus]/[inbus] combinationally. We cannot do that with 70 ns memory, so we freeze
-    the whole CPU with its clock-enable ([Risc5_core]'s [?ce]) while an access is in
-    flight: the machine pauses and resumes, so each {e enabled} cycle still sees the
-    single-cycle memory it was built for (AGENT.md §3). [ce] is asserted (CPU advances)
-    only on the cycle a CPU access completes — or continuously during a compute
-    (MUL/DIV/FP) stall, when the core needs no memory (signalled by [mem_pend] = 0).
+    the whole CPU with its clock-enable ([Cpu]'s [?ce]) while an access is in flight: the
+    machine pauses and resumes, so each {e enabled} cycle still sees the single-cycle
+    memory it was built for (AGENT.md §3). [ce] is asserted (CPU advances) only on the
+    cycle a CPU access completes — or continuously during a compute (MUL/DIV/FP) stall,
+    when the core needs no memory (signalled by [mem_pend] = 0).
 
     {1 Clients & arbitration}
 
@@ -43,8 +43,8 @@
     {1 The on-chip fast path}
 
     [cpu_internal] marks a CPU access whose data is {e on-chip}, not in PSRAM — a boot-ROM
-    fetch (codebus from [Prom]) or any MMIO load/store (top 64 B). Such an access
-    completes in a {b single} [ce] cycle and touches no PSRAM pins. This is not just an
+    fetch (codebus from [Rom]) or any MMIO load/store (top 64 B). Such an access completes
+    in a {b single} [ce] cycle and touches no PSRAM pins. This is not just an
     optimization: it keeps every MMIO access one CPU-cycle long, so the SoC's write
     strobes (spiStart/startTx/…) and the peripheral register writes still fire exactly
     once per logical store even though the core is otherwise stretched across many clocks.
@@ -57,7 +57,7 @@ open Hardcaml
 module I : sig
   type 'a t =
     { clock : 'a
-    ; mem_pend : 'a (** core wants the bus this cycle (= [Risc5_core]'s [mem_pend]) *)
+    ; mem_pend : 'a (** core wants the bus this cycle (= [Cpu]'s [mem_pend]) *)
     ; cpu_internal : 'a
     (** the CPU access is served on-chip (ROM fetch / MMIO) — 1 cycle *)
     ; adr : 'a (** core byte address [adr[23:0]] (fetch or load/store data) *)
@@ -73,7 +73,7 @@ end
 
 module O : sig
   type 'a t =
-    { ce : 'a (** clock-enable to [Risc5_core] (1 = the CPU advances this cycle) *)
+    { ce : 'a (** clock-enable to [Cpu] (1 = the CPU advances this cycle) *)
     ; rdata : 'a
     (** assembled 32-bit CPU read word (→ codebus/inbus); valid when [ce] for a PSRAM read *)
     ; viddata : 'a (** assembled 32-bit framebuffer word (→ [Vid]'s [viddata]) *)
@@ -97,5 +97,5 @@ end
     cycles each 16-bit phase holds the async pins. The default 2 is the {e sim/test} value
     (the behavioural model responds at once — only the FSM control flow is under test);
     the board synthesizes 5 (83 ns per phase at 60 MHz, in spec for the 70 ns chip; see
-    emit_board_verilog.ml and the PSRAM I/O budget in nexys4.xdc). *)
+    emit_verilog.ml and the PSRAM I/O budget in nexys4.xdc). *)
 val create : ?read_cycles:int -> ?write_cycles:int -> Signal.t I.t -> Signal.t O.t

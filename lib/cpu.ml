@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [risc5_core.mli].
+(* Public API and behaviour spec live in [cpu.mli].
 
    Implementation note. This is the CPU core — the port of Wirth's RISC5.v, the module
    AGENT.md §2 calls the crown jewel. The whole processor is a handful of registers

@@ -85,7 +85,7 @@
   (run ./test_visual_golden.exe)))
 
 ; The board (PSRAM) SoC integration tests — boot checkpoint + visual golden through
-; Soc_board + cellram_model — moved to test/boards/nexys-4/ (mirroring boards/nexys-4/),
+; the board Soc + cellram_model — moved to test/boards/nexys-4/ (mirroring boards/nexys-4/),
 ; where they share the board_tb harness. Same aliases: @boot_checkpoint_board / @visual_golden_board.
 
 ; Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3) — capture half: records the core's

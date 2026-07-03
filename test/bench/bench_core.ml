@@ -16,7 +16,7 @@
    ADD=0x01280003, MUL=0x012A0003, MUL'(u=1)=0x212A0003, DIV=0x012B0003. *)
 
 open Hardcaml
-module Core = Risc5.Risc5_core
+module Core = Risc5.Cpu
 module Mul = Risc5.Multiplier
 module Sim = Cyclesim.With_interface (Core.I) (Core.O)
 

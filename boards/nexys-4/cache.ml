@@ -1,4 +1,4 @@
-(* Public API + the placement/coherence/geometry rationale live in [icache.mli].
+(* Public API + the placement/coherence/geometry rationale live in [cache.mli].
 
    Implementation note. The line is packed into one [multiport_memory] word:
    {valid[1]; tag[tag_w]; data[32]}, read asynchronously (combinational hit). One synchronous
@@ -46,7 +46,7 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
   then
     failwith
       (Stdlib.Printf.sprintf
-         "Icache.create: lines_log2 = %d out of range (valid 1..17)"
+         "Cache.create: lines_log2 = %d out of range (valid 1..17)"
          lines_log2);
   let lines = 1 lsl lines_log2 in
   let tag_w = 18 - lines_log2 in

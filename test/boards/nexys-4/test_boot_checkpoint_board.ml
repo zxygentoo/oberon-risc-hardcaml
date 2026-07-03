@@ -101,7 +101,7 @@ let () =
   run
     ~run_soc_to_handoff
     ~pass_msg:
-      "CHECKPOINT (BOARD/PSRAM) PASS — Soc_board boots the real disk to the OS handoff \
-       through the Cellram controller; loaded image + architectural state match the \
-       oracle, modulo the §8 code-address skew."
+      "CHECKPOINT (BOARD/PSRAM) PASS — Soc boots the real disk to the OS handoff through \
+       the Cellram controller; loaded image + architectural state match the oracle, \
+       modulo the §8 code-address skew."
 ;;
