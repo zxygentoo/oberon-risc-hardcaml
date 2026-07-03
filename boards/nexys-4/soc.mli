@@ -114,6 +114,13 @@ val create
            the bench. NB holding the [pclk] {e input} low does not do this: in Cyclesim's
            one-domain sim the pclk raster advances 1:1 with [clk] regardless, so video is
            live in every board sim unless gated here. *)
+  -> ?fb_bram:bool
+       (** Phase-10c (default [false] = the proven PSRAM video path): serve the video DMA
+           from the {!Framebuf} BRAM shadow — a 1-cycle on-chip read — and tie
+           {!Cellram}'s [vidreq] low, taking video off the PSRAM port entirely (the
+           synthesizer then prunes the arbiter's video FSM and read-preemption logic). The
+           shadow mirrors the same PSRAM-bound stores the cache snoops, so it equals the
+           PSRAM framebuffer window at every instant — see {!Framebuf}. *)
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

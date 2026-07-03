@@ -24,7 +24,16 @@ end
 
 module O : sig
   type 'a t =
-    { sclk : 'a (** SPI clock — the one output the harness drives the SD bridge from *) }
+    { sclk : 'a (** SPI clock — the output the harness drives the SD bridge from *)
+    ; hsync : 'a (** VGA horizontal sync *)
+    ; vsync : 'a (** VGA vertical sync *)
+    ; rgb : 'a
+    (** the 1 bpp pixel on the RGB pins. [hsync]/[vsync]/[rgb] are exposed to keep the
+        whole video pixel path — {!Nexys4_board.Framebuf}'s shadow BRAMs included —
+        {e live} under Cyclesim's dead-code elimination: with only [sclk] observable the
+        fetched-word path drives no output and is pruned, and the visual golden's
+        [lookup_mem_by_name "fb0".."fb3"] shadow readback finds nothing. *)
+    }
   [@@deriving hardcaml]
 end
 
@@ -48,6 +57,10 @@ val create
   -> ?video:bool
        (** default [true]; [false] gates the video DMA off the PSRAM port — the
            framebuffer-in-BRAM counterfactual (see {!Nexys4_board.Soc.create}) *)
+  -> ?fb_bram:bool
+       (** default [false]; [true] = Phase-10c: video served from the
+           {!Nexys4_board.Framebuf} BRAM shadow, PSRAM video port tied off (see
+           {!Nexys4_board.Soc.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
   -> ?contents:int array

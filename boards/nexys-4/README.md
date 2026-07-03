@@ -17,6 +17,7 @@ how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/
 | `soc.{ml,mli}` | the board SoC — the top-level Hardcaml design that synthesizes |
 | `cellram.{ml,mli}` | PSRAM memory controller + CPU/video arbiter (the memory path) |
 | `cache.{ml,mli}` | Phase-10a/b direct-mapped instruction/read cache in front of Cellram |
+| `framebuf.{ml,mli}` | Phase-10c framebuffer BRAM shadow — video DMA served on-chip, off the PSRAM port |
 | `cellram_model.{ml,mli}` | behavioural sim double of the external PSRAM chip (**test-only**) |
 | `emit_verilog.ml` | emit the board SoC as Verilog (module name `soc_board`), boot ROM from `Risc5.Rom` |
 | `nexys4_top.v` | hand-written vendor shim: MMCM / IOBUF / POR — the **only** vendor code |
@@ -55,7 +56,9 @@ expect:
   real-time and wins the bus — it can even *preempt* an in-flight CPU **read** (idempotent; the
   frozen CPU never saw it retire and just restarts). CPU **writes** are never preempted (a
   half-written word would corrupt RAM). This keeps the framebuffer fetch inside its ~477 ns
-  raster deadline under load.
+  raster deadline under load. *(Phase-10c note: the shipped board serves video from the
+  `Framebuf` shadow instead and ties `vidreq` low, so the video FSM + preemption logic prune
+  away at synthesis; the arbiter remains the proven path for `fb_bram:false` builds.)*
 - **On-chip fast path (`cpu_internal`):** boot-ROM fetches and MMIO accesses never touch PSRAM —
   served in a single `ce` cycle, which also keeps each MMIO store one CPU-cycle long so the
   peripheral write strobes fire exactly once.
@@ -93,6 +96,37 @@ cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
 
 Full detail (incl. the coherence argument) in `cache.mli`.
 
+## Framebuf — the Phase-10c framebuffer shadow
+
+With write-update in, the true residual (measured by the write-update stall profile,
+`test/boards/nexys-4/bench_boot.ml`) was CPI 1.75 with 25% of clocks frozen — and the video DMA
+still occupied the PSRAM port **22.8% of all clocks**, freezing the CPU behind it 5% (measured
+same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at the source:
+
+- **A write-through shadow; PSRAM keeps the truth.** Every PSRAM-bound store whose word address
+  falls in the DMA-addressable span `[Vid.org, Vid.org + 0x8000)` also writes a BRAM shadow — in
+  the same write-through transaction that lands the word in PSRAM, so **shadow ≡ PSRAM window at
+  every instant** (both power up zeroed). CPU *loads* are untouched (they read PSRAM/cache as
+  before); **video reads the shadow** — a 1-cycle synchronous BRAM read (`vid_ack` the next
+  clock, vs the ~11-cycle arbitrated PSRAM read), through `Vid`'s existing
+  `?viddata_valid`/`?viddata_par` seams. `Vid` itself is unchanged.
+- **Geometry:** four byte-lane 32768×8 sync-read BRAMs (the `lib/ram.ml` byte-enable idiom; sync
+  read is what makes them infer as *block* RAM — **32 RAMB36**, the design's first BRAM use,
+  23.7% of the 135 tiles). The span is the full 32768 words `Vid.lookahead` can address, so no
+  assumption is needed about blanking-time fetches.
+- **Result:** same-work **1.180×** — exactly the `?video` gating ceiling, because the shadow read
+  never touches the CPU's clock-enable — long-window CPI 1.75 → **1.64**, video port
+  occupancy/contention → 0. The residual is now store-wait (18.3% of clocks, 92% of frozen);
+  the write-buffer ceiling from here is 1.22× with 4.4× bus-free headroom. 60 MHz closes at
+  WNS +0.213 ns (the critical path is still the cache write). **Boots clean on hardware, desktop
+  smooth.**
+- **Proof:** `Framebuf`'s co-located tests (fill/byte-lane/window edges + read timing); the
+  same-work pc-lockstep A/B; and `FB_BRAM=1 WRITE_UPDATE=1 dune build @visual_golden_board` —
+  byte-identical desktop *read from the shadow*, plus a direct check that all 32768 shadow words
+  equal the PSRAM window (the coherence invariant, asserted rather than inferred).
+
+Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board emit turns it on).
+
 ## Build & program
 
 ```sh
@@ -112,5 +146,5 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
 and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+`icache`/`write_update`/`fb_bram:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
 outputs land in the git-ignored `boards/_build/nexys-4/`.

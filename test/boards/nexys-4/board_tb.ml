@@ -29,7 +29,13 @@ module I = struct
 end
 
 module O = struct
-  type 'a t = { sclk : 'a [@bits 1] } [@@deriving hardcaml]
+  type 'a t =
+    { sclk : 'a [@bits 1]
+    ; hsync : 'a [@bits 1]
+    ; vsync : 'a [@bits 1]
+    ; rgb : 'a [@bits 6]
+    }
+  [@@deriving hardcaml]
 end
 
 let create
@@ -39,6 +45,7 @@ let create
   ?lines_log2
   ?(write_update = false)
   ?(video = true)
+  ?(fb_bram = false)
   ?(fast_mul = false)
   ?(mul_stages = 0)
   ?(contents = Risc5.Rom.bootloader)
@@ -55,6 +62,7 @@ let create
       ?lines_log2
       ~write_update
       ~video
+      ~fb_bram
       ~fast_mul
       ~mul_stages
       { Soc.I.clock = i.clock
@@ -84,7 +92,7 @@ let create
       }
   in
   Signal.assign dq m.mem_dq_i;
-  { O.sclk = soc.sclk }
+  { O.sclk = soc.sclk; hsync = soc.hsync; vsync = soc.vsync; rgb = soc.rgb }
 ;;
 
 let read_word ~cram_lo ~cram_hi w =
