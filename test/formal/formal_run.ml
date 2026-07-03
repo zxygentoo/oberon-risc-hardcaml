@@ -219,13 +219,13 @@ let mouse () =
 let vid () =
   let open Signal in
   let i =
-    { Risc5.Vid.I.clk = input "clk" 1
+    { Risc5.Video.I.clk = input "clk" 1
     ; pclk = input "pclk" 1
     ; inv = input "inv" 1
     ; viddata = input "viddata" 32
     }
   in
-  let { Risc5.Vid.O.req; vidadr; hsync; vsync; rgb } = Risc5.Vid.create i in
+  let { Risc5.Video.O.req; vidadr; hsync; vsync; rgb } = Risc5.Video.create i in
   Circuit.create_exn
     ~name:"vid_ours"
     [ output "req" req
@@ -237,7 +237,7 @@ let vid () =
 ;;
 
 (* The VID fetch-CDC invariant (the part run_vid cuts): the toggle pulse synchroniser
-   [Vid.pulse_sync], isolated with [req0] as an input, so the property harness
+   [Video.pulse_sync], isolated with [req0] as an input, so the property harness
    ([vid_invariant.v]) can drive it and assert one-req-per-req0. Proven by BMC, not equiv
    (it's a protocol property, not a cycle-equivalence). *)
 let pulse_sync () =
@@ -246,7 +246,7 @@ let pulse_sync () =
   let pclk = input "pclk" 1 in
   let req0 = input "req0" 1 in
   let req =
-    Risc5.Vid.pulse_sync
+    Risc5.Video.pulse_sync
       ~src_spec:(Reg_spec.create () ~clock:pclk)
       ~dst_spec:(Reg_spec.create () ~clock:clk)
       ~pulse:req0
@@ -255,14 +255,14 @@ let pulse_sync () =
 ;;
 
 (* VID prefetch addressing (the [vidadr] departure the [vid] equiv excludes): the real
-   look-ahead logic [Vid.lookahead], with the raster counters as free inputs so it is a
+   look-ahead logic [Video.lookahead], with the raster counters as free inputs so it is a
    pure combinational function of (hcnt, vcnt). Proven ≡ [vid_addr_spec] below by Sec/z3. *)
 let vid_addr_ours () =
   let open Signal in
   let hcnt = input "hcnt" 11 in
   let vcnt = input "vcnt" 10 in
-  let { Risc5.Vid.Lookahead.next_col; next_vcnt; vidadr; wpar } =
-    Risc5.Vid.lookahead ~hcnt ~vcnt
+  let { Risc5.Video.Lookahead.next_col; next_vcnt; vidadr; wpar } =
+    Risc5.Video.lookahead ~hcnt ~vcnt
   in
   Circuit.create_exn
     ~name:"vid_addr_ours"
@@ -274,8 +274,8 @@ let vid_addr_ours () =
 ;;
 
 (* Independent geometry spec for the look-ahead address — written from the screen geometry
-   directly and in a deliberately DIFFERENT style from lib/vid.ml, so the equivalence is a
-   real cross-check, not a restatement:
+   directly and in a deliberately DIFFERENT style from lib/video.ml, so the equivalence is
+   a real cross-check, not a restatement:
    - next column by natural 5-bit wrap ([col + 1] mod 32) vs vid.ml's explicit [col==31]
      mux
    - address by shift/add packing vs vid.ml's [concat_msb]
@@ -539,13 +539,13 @@ let run_vid ~work_dir =
           CDC+prefetch cut · yosys equiv_induct)"
 ;;
 
-(* The VID fetch-CDC invariant — the property the vid proof cuts. Proves [Vid.pulse_sync]
-   is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase interleavings and
-   ALL reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) — unbounded, the part the
-   single-phase Cyclesim test can't reach. [k] is the induction length: threshold ~38 (k
-   must span a fetch cycle so the k-step history forces a reachable state); 48 leaves
-   margin. [proofs/vid_invariant.ys.template] only emits the SMT problem; run_proof's
-   [~smtbmc] runs the k-induction. *)
+(* The VID fetch-CDC invariant — the property the vid proof cuts. Proves
+   [Video.pulse_sync] is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
+   interleavings and ALL reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) —
+   unbounded, the part the single-phase Cyclesim test can't reach. [k] is the induction
+   length: threshold ~38 (k must span a fetch cycle so the k-step history forces a
+   reachable state); 48 leaves margin. [proofs/vid_invariant.ys.template] only emits the
+   SMT problem; run_proof's [~smtbmc] runs the k-induction. *)
 let vid_invariant_k = 48
 
 let run_vid_invariant ~work_dir =
@@ -572,10 +572,10 @@ let run_vid_invariant ~work_dir =
 (* C — the addressing half of prefetch DELIVERY (test/formal/README "VID prefetch"). The
    [vid] equiv excludes [vidadr] (our look-ahead departs from VID60.v's current-group
    address), so this proves — combinationally, exhaustively over ALL (hcnt, vcnt) — that
-   [Vid.lookahead] computes Org + [{~next_vcnt, next_col}] for the correct next group and
-   routes it to the [lsb next_col] bank: i.e. ≡ an independent geometry spec. Pure Sec/z3
-   on two in-process Hardcaml circuits, no .v import (there is no reference .v for the
-   look-ahead address — VID60.v's is the current group). Together with [vid_invariant]
+   [Video.lookahead] computes Org + [{~next_vcnt, next_col}] for the correct next group
+   and routes it to the [lsb next_col] bank: i.e. ≡ an independent geometry spec. Pure
+   Sec/z3 on two in-process Hardcaml circuits, no .v import (there is no reference .v for
+   the look-ahead address — VID60.v's is the current group). Together with [vid_invariant]
    (the timing/CDC half) and the ping-pong margin, this closes the prefetch by
    decomposition (the composition lemma is in the README). [work_dir] is unused — Sec
    manages its own z3. *)

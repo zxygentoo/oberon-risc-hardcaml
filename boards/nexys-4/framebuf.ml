@@ -2,7 +2,7 @@
 
    Implementation note. The window compare and index subtract run combinationally off the
    core's store signals into the BRAM write port (registered inside the RAM primitive) —
-   the same shape as {!Cache}'s snoop path. [Vid.org] is not span-aligned (0x37FC0 mod
+   the same shape as {!Cache}'s snoop path. [Video.org] is not span-aligned (0x37FC0 mod
    0x8000 <> 0), so the index is a genuine 15-bit subtract, not a bit-slice. The read side
    registers [vid_ack]/[vidpar] alongside the RAM's own address register, so the three
    outputs change together on the cycle after [vidreq]. *)
@@ -11,7 +11,7 @@ open! Base
 open Hardcaml
 open Signal
 
-let base = Risc5.Vid.org
+let base = Risc5.Video.org
 let span_log2 = 15
 let size = 1 lsl span_log2
 

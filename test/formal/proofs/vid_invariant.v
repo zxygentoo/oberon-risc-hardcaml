@@ -6,7 +6,7 @@
 // *protocol* — every req0 yields exactly one req, no loss, no duplication — for ALL
 // clk/pclk phase interleavings, which the (single-phase) Cyclesim invariant test can't.
 //
-// It wraps the REAL emitted synchroniser (pulse_sync_ours = lib/vid.ml's pulse_sync, the DUT)
+// It wraps the REAL emitted synchroniser (pulse_sync_ours = lib/video.ml's pulse_sync, the DUT)
 // with a req0 generator + a clock-fairness assumption + a balance monitor, and is discharged
 // by yosys-smtbmc (the engine SymbiYosys wraps) over z3: clk2fflogic models the two clocks,
 // BMC explores every fair phase relationship to the configured depth. See

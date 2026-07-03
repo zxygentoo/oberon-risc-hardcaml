@@ -1,5 +1,5 @@
 # VID fetch-CDC invariant (AGENT.md §6, README Tier 2) — the property the vid proof cuts.
-# Proves Vid.pulse_sync is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
+# Proves Video.pulse_sync is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
 # interleavings and ALL reachable states, by k-induction (yosys-smtbmc -i / z3) — unbounded.
 # This script is only the yosys PREP that emits the SMT problem; Yosys_equiv.run_proof then
 # runs `yosys-smtbmc -i -s z3 -t <depth>` on the result (the ~smtbmc step). Placeholders (named

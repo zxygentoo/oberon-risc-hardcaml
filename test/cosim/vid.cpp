@@ -1,11 +1,11 @@
-// RTL-fidelity co-sim for Vid: replay the per-tick trace dumped by test/cosim/vid_dump through
+// RTL-fidelity co-sim for Video: replay the per-tick trace dumped by test/cosim/vid_dump through
 // the reference test/_po/verilog/src/VID60.v (wrapped by vid_cosim.v) under Verilator, and assert —
 // every base tick — that RTL (hsync, vsync, RGB) == the Hardcaml port's. [req] is checked by pulse
 // COUNT and [vidadr] is NOT compared — both are DELIBERATE departures (see below). Exit 0 iff the
 // port is bit- and cycle-exact to VID60.v on the raster + pixels over the stimulus.
 //   usage:  cosim <port_dump_path>   (lines: "inv viddata req vidadr hsync vsync rgb")
 //
-// TWO deliberate departures from VID60.v (see lib/vid.ml):
+// TWO deliberate departures from VID60.v (see lib/video.ml):
 //  1. [req] CDC — our toggle pulse-synchroniser fires the framebuffer-fetch request ~2 clk later
 //     than VID60.v's async-set [req1] (a metastability-safe substitute the RTL's async idiom can't
 //     be in Cyclesim/on silicon). So [req] is NOT compared cycle-exact — the formal layer does the
@@ -14,7 +14,7 @@
 //     pulses over the run (+-1, for the one fetch a synchroniser may hold in flight at the boundary).
 //  2. [vidadr] PREFETCH — our 2-group prefetch issues the read one group EARLY, so our [vidadr]
 //     leads VID60.v's by one column every tick. So [vidadr] is NOT compared (the equiv excludes it
-//     too); that the look-ahead DELIVERS the right word is the lib/vid.ml prefetch test's job.
+//     too); that the look-ahead DELIVERS the right word is the lib/video.ml prefetch test's job.
 //
 // Identity-echo framebuffer. Because the prefetch makes our address and VID60.v's differ every
 // tick, a single replayed [viddata] stream can't be correct for both. Instead BOTH sides read an
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   // from a ping-pong buffer fetched a group early; column 0 of the very FIRST frame would have been
   // fetched at the end of the (nonexistent) previous frame, so it reads a cold buffer — a one-group
   // frame-top gap that self-heals after one line. VID60.v has no such gap (its address tracks the
-  // current group), so the two differ ONLY here. (Same alignment the lib/vid.ml prefetch test makes
+  // current group), so the two differ ONLY here. (Same alignment the lib/video.ml prefetch test makes
   // with vcnt>=2.) Raster (hsync/vsync) and the req protocol are checked from t=0.
   const long RGB_WARMUP_TICKS = 1344 * 5; // one scanline
 
@@ -99,9 +99,9 @@ int main(int argc, char** argv) {
   printf("vid co-sim: %ld ticks, %ld mismatch (raster+pixels); req pulses RTL=%ld PORT=%ld%s\n", n,
          mismatch, req_rtl_pulses, req_port_pulses, req_ok ? "" : "  <-- REQ COUNT MISMATCH");
   if (mismatch == 0 && req_ok)
-    printf("==> Hardcaml Vid: raster bit/cycle-exact to VID60.v and pixels match on an identity "
+    printf("==> Hardcaml Video: raster bit/cycle-exact to VID60.v and pixels match on an identity "
            "framebuffer; req + vidadr deliberately depart (CDC synchroniser + 2-group prefetch — "
-           "see lib/vid.ml, test/formal vid_invariant, and the prefetch look-ahead lib test).\n");
+           "see lib/video.ml, test/formal vid_invariant, and the prefetch look-ahead lib test).\n");
   delete dut;
   return (mismatch == 0 && req_ok) ? 0 : 1;
 }

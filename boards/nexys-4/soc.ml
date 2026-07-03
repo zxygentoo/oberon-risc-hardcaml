@@ -100,10 +100,10 @@ let create
   let vid_ack = wire 1 in
   let vidpar = wire 1 in
   let vid =
-    Vid.create
+    Video.create
       ~viddata_valid:vid_ack
       ~viddata_par:vidpar
-      { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
+      { Video.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
   (* [?video] is a sim-only A/B seam: gating [vidreq] takes the video DMA off the PSRAM
      port entirely — the framebuffer-in-BRAM counterfactual (bench_boot). Elaboration-time

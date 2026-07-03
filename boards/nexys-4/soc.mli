@@ -13,7 +13,7 @@
       writes them into the aliased RAM word (soc.ml: "stores go to RAM unconditionally"),
       the board never sends an MMIO store to PSRAM. Benign (Oberon never reads the aliased
       top-64-B words back) and load-bearing for the one-pulse write strobes;
-    - the framebuffer word is latched into [Vid] on the controller's [vid_ack];
+    - the framebuffer word is latched into [Video] on the controller's [vid_ack];
     - the ms-timer IRQ is {e stretched}: [RISC5.v] latches its interrupt capture every
       clock (even under stallX), but here the core's [irq1]/[int_pnd] flops are ce-gated,
       so a 1-clock tick landing in a frozen (ce=0) cycle would be lost. The board holds

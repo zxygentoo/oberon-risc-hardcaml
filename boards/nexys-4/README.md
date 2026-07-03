@@ -122,15 +122,15 @@ still occupied the PSRAM port **22.8% of all clocks**, freezing the CPU behind i
 same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at the source:
 
 - **A write-through shadow; PSRAM keeps the truth.** Every PSRAM-bound store whose word address
-  falls in the DMA-addressable span `[Vid.org, Vid.org + 0x8000)` also writes a BRAM shadow — in
+  falls in the DMA-addressable span `[Video.org, Video.org + 0x8000)` also writes a BRAM shadow — in
   the same write-through transaction that lands the word in PSRAM, so **shadow ≡ PSRAM window at
   every instant** (both power up zeroed). CPU *loads* are untouched (they read PSRAM/cache as
   before); **video reads the shadow** — a 1-cycle synchronous BRAM read (`vid_ack` the next
-  clock, vs the ~11-cycle arbitrated PSRAM read), through `Vid`'s existing
-  `?viddata_valid`/`?viddata_par` seams. `Vid` itself is unchanged.
+  clock, vs the ~11-cycle arbitrated PSRAM read), through `Video`'s existing
+  `?viddata_valid`/`?viddata_par` seams. `Video` itself is unchanged.
 - **Geometry:** four byte-lane 32768×8 sync-read BRAMs (the `lib/ram.ml` byte-enable idiom; sync
   read is what makes them infer as *block* RAM — **32 RAMB36**, the design's first BRAM use,
-  23.7% of the 135 tiles). The span is the full 32768 words `Vid.lookahead` can address, so no
+  23.7% of the 135 tiles). The span is the full 32768 words `Video.lookahead` can address, so no
   assumption is needed about blanking-time fetches.
 - **Result:** same-work **1.180×** — exactly the `?video` gating ceiling, because the shadow read
   never touches the CPU's clock-enable — long-window CPI 1.75 → **1.64**, video port

@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [vid.mli].
+(* Public API and behaviour spec live in [video.mli].
 
    Port of [VID60.v]. Two clock domains — and per AGENT.md §3 the clock *generation* (the
    Xilinx [DCM]/[BUFG]) is the Phase-7 board shim, so they are dropped and [pclk] is an
@@ -12,7 +12,7 @@
      at [xfer]. The request is issued ONE GROUP EARLY (a prefetch —
      [next_col]/[next_vcnt]) so the read has ~2 group-times to land; this is a deliberate
      departure from [VID60.v]'s single-[vidbuf], 31-px-deadline fetch, added to kill
-     PSRAM-contention flicker on the board (see [vid.mli]). The pixel/sync datapath
+     PSRAM-contention flicker on the board (see [video.mli]). The pixel/sync datapath
      downstream of the buffer is unchanged.
 
    Comparator-free range tests, straight from the RTL: [vcnt >= 768] is
@@ -23,7 +23,7 @@
    [start], hold, clear at [stop]. The sync offsets ([1032+31], [1176+31] etc.) delay the
    pulses to track the pixel-pipeline latency ([xfer] lands at [hcnt[4:0] = 31]).
 
-   CDC — the one structural departure from the RTL (see [vid.mli]). [req0] is a 1-[pclk]
+   CDC — the one structural departure from the RTL (see [video.mli]). [req0] is a 1-[pclk]
    pulse at the start of each 32-px group; the DMA consumes it in the [clk] domain. The
    RTL catches it with a clk-domain async-set flop ([req1],
    [always @(posedge req0, posedge clk)]), which Cyclesim can't represent. We use the
@@ -72,7 +72,7 @@ let org = 0x37FC0
    SETTLED flops regenerates exactly one [dst_spec] pulse. Safe by construction provided
    [pulse] recurs slower than the synchroniser depth (in [vid], every 32 px ≈ 12 [clk] ≫
    3). The metastability-safe substitute for VID60.v's async-set capture [req1]
-   (unrepresentable in Cyclesim — see [vid.mli]); proven no-loss/no-spurious for all
+   (unrepresentable in Cyclesim — see [video.mli]); proven no-loss/no-spurious for all
    clk/pclk phases in test/formal (the [vid_invariant] @formal check). The [sync0]/[sync1]
    flops want an ASYNC_REG / CDC constraint in the board [.xdc]. *)
 let pulse_sync ~src_spec ~dst_spec ~pulse =
@@ -131,8 +131,8 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   let vblank = (bit vcnt ~pos:8 &: bit vcnt ~pos:9) -- "vblank" in
   let hblank = bit hcnt ~pos:10 in
   (* look-ahead framebuffer addressing (the prefetch's address departure from [VID60.v] —
-     see [lookahead] above and [vid.mli]): the request targets the NEXT consumed group, so
-     [la.vidadr] is the look-ahead word address and [la.wpar] the ping-pong write bank. *)
+     see [lookahead] above and [video.mli]): the request targets the NEXT consumed group,
+     so [la.vidadr] is the look-ahead word address and [la.wpar] the ping-pong write bank. *)
   let la = lookahead ~hcnt ~vcnt in
   (* request the next word at the start of each visible 32-px group; transfer it 31 px on *)
   let req0 = (sel_bottom hcnt ~width:5 ==:. 0 &: ~:hblank &: ~:vblank) -- "req0" in

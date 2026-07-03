@@ -17,7 +17,7 @@ expose -input {top}/w:pclk
 # cut the framebuffer word to a shared free input on BOTH sides, so the pixel datapath proves
 # bit-exact GIVEN the same fetched word, without comparing the (departed) fetch timing/address.
 # Gold: VID60.v's vidbuf register. Ours: the ping-pong read mux, NAMED vidbuf for this pairing
-# (lib/vid.ml) — same role (the word pixbuf loads); the prefetch banks buf0/buf1 feed only it,
+# (lib/video.ml) — same role (the word pixbuf loads); the prefetch banks buf0/buf1 feed only it,
 # so cutting it makes the whole prefetch front-end (banks, parity, look-ahead) irrelevant here.
 expose -input {top}/w:vidbuf
 expose -input {gate}/w:vidbuf

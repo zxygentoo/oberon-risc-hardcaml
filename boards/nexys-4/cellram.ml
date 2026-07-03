@@ -151,7 +151,7 @@ let create
     &: if write_buffer then ~:(i.wr) &: ~:wb_nonempty else vdd
   in
   (* Preemptible CPU reads. A framebuffer fetch has a hard ~477 ns raster deadline
-     ([Vid]'s [req0]→[xfer]); the worst case is it arriving just after a CPU access
+     ([Video]'s [req0]→[xfer]); the worst case is it arriving just after a CPU access
      grabbed the port and having to wait the whole access out. So if a video request lands
      while a CPU READ is mid-flight (and not already completing this cycle), abort the
      read and let video go at once — the core is frozen on [ce] and never saw it retire,
@@ -316,7 +316,7 @@ let create
   ; viddata = mux2 vid_complete new_word viddata_reg_v
   ; vid_ack = vid_complete
   ; (* parity (column LSB) of the video word being returned — the latched fetch address,
-       meaningful when [vid_ack]. [Vid] uses it to pick the ping-pong buffer, so a slow
+       meaningful when [vid_ack]. [Video] uses it to pick the ping-pong buffer, so a slow
        (contended) completion lands in the right one regardless of the live raster phase. *)
     vidpar = lsb req_word_v
   ; mem_adr

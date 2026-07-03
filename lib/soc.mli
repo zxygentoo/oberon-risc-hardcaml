@@ -18,7 +18,7 @@
 
     {1 Video, timer, interrupts}
 
-    The video controller ({!Vid}) drives the core's [stall_x]: a DMA request steals one
+    The video controller ({!Video}) drives the core's [stall_x]: a DMA request steals one
     SRAM cycle every 32 px ([sram_adr = vidreq ? vidadr : adr]) to read the framebuffer,
     which scans out on [hsync]/[vsync]/[rgb] off the pixel clock [pclk].
 
@@ -65,7 +65,7 @@ module I : sig
     ; btn : 'a (** buttons (RISC5Top [btn]); read-only via MMIO word 1 *)
     ; sw : 'a (** switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
     ; gpio_in : 'a (** resolved GPIO pad inputs (RISC5Top [gpin]) *)
-    ; pclk : 'a (** 65 MHz pixel clock for {!Vid} (DCM/MMCM; a Phase-7 board input) *)
+    ; pclk : 'a (** 65 MHz pixel clock for {!Video} (DCM/MMCM; a Phase-7 board input) *)
     ; ps2c : 'a (** PS/2 keyboard clock *)
     ; ps2d : 'a (** PS/2 keyboard data *)
     ; msclk : 'a (** PS/2 mouse clock — resolved open-drain line in *)

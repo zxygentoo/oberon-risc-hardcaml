@@ -62,7 +62,7 @@ stimulus (expect `0 value-mismatch, 0 cycle-mismatch`):
   `By_input_clocks`. Replays **~3 scanlines** + an `inv` toggle, and asserts, **every base tick**,
   `RTL (hsync, vsync, RGB) == port's` (`0 mismatch`): visible pixels, the 32-word/line DMA, `hblank`
   + the `hsync` pulse, the `hcnt` wrap + `vcnt` advance. **Two outputs are excluded from the
-  cycle-exact compare — the two deliberate departures from `VID60.v`** (see `lib/vid.ml`):
+  cycle-exact compare — the two deliberate departures from `VID60.v`** (see `lib/video.ml`):
   - **`req`** (the CDC) — our toggle pulse-synchroniser fires the fetch request ~2 clk later than
     `VID60.v`'s async-set `req1` (a metastability-safe substitute). Instead the cosim checks its
     *protocol*: both sides emit the same number of `req` pulses (±1 for the in-flight fetch at the
@@ -70,7 +70,7 @@ stimulus (expect `0 value-mismatch, 0 cycle-mismatch`):
     `test/formal`'s `vid_invariant` (one req per req0, no loss, all phases).
   - **`vidadr`** (the 2-group prefetch) — our look-ahead issues the read one group early, so our
     `vidadr` leads `VID60.v`'s by one column every tick. Not compared (the formal equiv excludes it
-    too); that the look-ahead *delivers* the right word is the co-located `lib/vid.ml` prefetch test.
+    too); that the look-ahead *delivers* the right word is the co-located `lib/video.ml` prefetch test.
 
   **Identity-echo framebuffer.** Because the prefetch makes the two addresses differ every tick, a
   single replayed `viddata` stream can't be correct for both sides. Instead **both sides read an
@@ -82,7 +82,7 @@ stimulus (expect `0 value-mismatch, 0 cycle-mismatch`):
   shared free input and comparing the pixel datapath given the same word.) `RGB` is compared from the
   **second scanline on**: the prefetch sources col 0 of the first frame from the (nonexistent)
   previous frame, a one-group frame-top gap that self-heals after a line (the same alignment
-  `lib/vid.ml`'s prefetch test makes with `vcnt>=2`). `vblank`/`vsync` (`vcnt>=768`) need a whole
+  `lib/video.ml`'s prefetch test makes with `vcnt>=2`). `vblank`/`vsync` (`vcnt>=768`) need a whole
   frame to reach (the Phase-6 visual golden) and are the same comparator-free / SR-latch idiom as
   their `h` counterparts.
 - **PS/2 mouse** — bidirectional open-drain `msclk`/`msdat` (RTL `inout`, `line = drive ? 0 : z`).

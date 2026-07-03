@@ -76,11 +76,11 @@ module O : sig
     { ce : 'a (** clock-enable to [Cpu] (1 = the CPU advances this cycle) *)
     ; rdata : 'a
     (** assembled 32-bit CPU read word (→ codebus/inbus); valid when [ce] for a PSRAM read *)
-    ; viddata : 'a (** assembled 32-bit framebuffer word (→ [Vid]'s [viddata]) *)
+    ; viddata : 'a (** assembled 32-bit framebuffer word (→ [Video]'s [viddata]) *)
     ; vid_ack : 'a (** pulse: a video read just completed and [viddata] is valid *)
     ; vidpar : 'a
     (** parity (column LSB) of the completing video word, valid with [vid_ack] — picks
-        [Vid]'s ping-pong prefetch buffer (→ [Vid]'s [?viddata_par]) *)
+        [Video]'s ping-pong prefetch buffer (→ [Video]'s [?viddata_par]) *)
     ; mem_adr : 'a (** PSRAM address [MemAdr[22:0]] (halfword address) *)
     ; mem_dq_o : 'a (** PSRAM write data [16] (driven when [~mem_dq_t]) *)
     ; mem_dq_t : 'a (** PSRAM data tristate: 1 = hi-Z (read), 0 = drive (write) *)

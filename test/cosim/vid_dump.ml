@@ -34,8 +34,8 @@
 
 open Hardcaml
 open Cosim_dump
-module Vid = Risc5.Vid
-module Sim = Cyclesim.With_interface (Vid.I) (Vid.O)
+module Video = Risc5.Video
+module Sim = Cyclesim.With_interface (Video.I) (Video.O)
 
 let () =
   let config =
@@ -45,9 +45,9 @@ let () =
           (Cyclesim_clock_domain.create_list [ "clk", 13; "pclk", 5 ])
     }
   in
-  let sim = Sim.create ~config Vid.create in
-  let inp = (Cyclesim.inputs sim : _ Vid.I.t) in
-  let outp = (Cyclesim.outputs sim : _ Vid.O.t) in
+  let sim = Sim.create ~config Video.create in
+  let inp = (Cyclesim.inputs sim : _ Video.I.t) in
+  let outp = (Cyclesim.outputs sim : _ Video.O.t) in
   let ticks = 3 * 1344 * 5 in
   for t = 0 to ticks - 1 do
     let inv = if t >= 8000 && t < 14000 then 1 else 0 in

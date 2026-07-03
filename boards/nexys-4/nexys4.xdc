@@ -16,10 +16,10 @@ set_clock_groups -asynchronous \
   -group [get_clocks -of_objects [get_pins bufg_25/O]] \
   -group [get_clocks -of_objects [get_pins bufg_65/O]]
 
-## VID's pclk->clk request synchroniser (lib/vid.ml pulse_sync: req_toggle -> sync0/sync1/
+## VID's pclk->clk request synchroniser (lib/video.ml pulse_sync: req_toggle -> sync0/sync1/
 ## sync2): mark the synchroniser flops ASYNC_REG so the tools pack them tightly (maximising
 ## metastability MTBF) and never retime/optimise them away — the silicon-robustness half of
-## the flicker fix (the CDC redesign itself is in vid.ml; AGENT.md §8).
+## the flicker fix (the CDC redesign itself is in video.ml; AGENT.md §8).
 set_property ASYNC_REG true \
   [get_cells -hierarchical -filter {NAME =~ "*sync0*" || NAME =~ "*sync1*" || NAME =~ "*sync2*"}]
 

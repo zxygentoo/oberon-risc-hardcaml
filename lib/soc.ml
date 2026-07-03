@@ -89,7 +89,7 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
      [viddata] is the shared SRAM read bus, assigned once [ram] exists below. *)
   let viddata = wire 32 in
   let vid =
-    Vid.create { Vid.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
+    Video.create { Video.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
   let vidreq = vid.req -- "vidreq" in
   let vidadr = vid.vidadr -- "vidadr" in

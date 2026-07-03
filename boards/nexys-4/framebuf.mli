@@ -12,17 +12,17 @@
     Same shape as {!Cache}'s coherence argument, applied to the framebuffer window:
 
     - {b CPU stores are mirrored.} Every PSRAM-bound store whose word address falls in the
-      DMA-addressable span [[Vid.org, Vid.org + 0x8000)] also writes the shadow — in the
+      DMA-addressable span [[Video.org, Video.org + 0x8000)] also writes the shadow — in the
       same write-through transaction that lands the word in PSRAM, so shadow and PSRAM
       window stay equal at every instant (both power up zeroed: BRAM [INIT=0] at
       configuration, and the OS paints the whole screen before showing it).
     - {b CPU loads are untouched.} They read PSRAM/cache exactly as today (PSRAM has the
       truth), so nothing changes on the CPU read path — no new read port, no mux.
-    - {b Video reads the shadow.} A {!Vid} fetch ([vidreq]/[vidadr]) becomes a 1-cycle
+    - {b Video reads the shadow.} A {!Video} fetch ([vidreq]/[vidadr]) becomes a 1-cycle
       synchronous BRAM read: [vid_ack] the next clock, trivially inside the prefetch's
       ~2-group-time budget — vs the ~11-cycle arbitrated PSRAM read it replaces.
 
-    The span is the {e full} 32768 words {!Vid.lookahead} can address ([org + {~vcnt,
+    The span is the {e full} 32768 words {!Video.lookahead} can address ([org + {~vcnt,
     col}], 128 KB ≈ 32 of the 135 unused BRAM tiles), not just the visible 24576 — so no
     assumption is needed about which rows the raster fetches during blanking.
 
@@ -36,7 +36,7 @@
 open Hardcaml
 
 (** The shadow's window in 18-bit word addresses: [[base, base + size)]. [base] is
-    {!Risc5.Vid.org}; [size] is the full 32768-word DMA-addressable span. Exported for
+    {!Risc5.Video.org}; [size] is the full 32768-word DMA-addressable span. Exported for
     harnesses that read the shadow back (the board visual golden's shadow-vs-PSRAM
     equality check). *)
 val base : int
@@ -52,8 +52,8 @@ module I : sig
         address falls in the framebuffer span *)
     ; ben : 'a (** the core's byte-access flag: 1 = byte store (one lane written) *)
     ; wdata : 'a (** the core's store data ([outbus], already byte-replicated) *)
-    ; vidreq : 'a (** video fetch request (1-cycle pulse; {!Vid}'s [req]) *)
-    ; vidadr : 'a (** framebuffer word address of the fetch ({!Vid}'s [vidadr]) *)
+    ; vidreq : 'a (** video fetch request (1-cycle pulse; {!Video}'s [req]) *)
+    ; vidadr : 'a (** framebuffer word address of the fetch ({!Video}'s [vidadr]) *)
     }
   [@@deriving hardcaml]
 end
@@ -64,8 +64,8 @@ module O : sig
     ; vid_ack : 'a
     (** pulse: the read issued at [vidreq] completed (the following clock) *)
     ; vidpar : 'a
-    (** parity (column LSB) of the completing fetch, valid with [vid_ack] — picks {!Vid}'s
-        ping-pong prefetch buffer, same contract as [Cellram.vidpar] *)
+    (** parity (column LSB) of the completing fetch, valid with [vid_ack] — picks
+        {!Video}'s ping-pong prefetch buffer, same contract as [Cellram.vidpar] *)
     }
   [@@deriving hardcaml]
 end

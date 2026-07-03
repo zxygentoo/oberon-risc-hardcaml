@@ -247,7 +247,7 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   pieces + one composition lemma**:
 
   1. **Addressing** — `vid_addr`, combinational Sec/z3, *all* `(hcnt,vcnt)`. The look-ahead logic
-     `Vid.lookahead` ≡ an independent geometry spec: the request that targets the consume of `(v,c)` —
+     `Video.lookahead` ≡ an independent geometry spec: the request that targets the consume of `(v,c)` —
      issued at the previous group's `req0` (display-col `c-1`, or the prior line's col 31 when `c=0`) —
      computes `vidadr = Org+{~v,c}` and write-bank `lsb next_col = c[0]`. (`run_vid_addr`; the *new* check.
      There is no reference `.v` for the look-ahead — `VID60.v`'s address is the *current* group — so it is
@@ -277,7 +277,7 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   **Status / honesty.** This is a *weaker* tier than the core's assume-guarantee, whose side-condition (no
   combinational path crosses a submodule boundary) is essentially mechanical; here the glue is a
   counting/correspondence argument. The co-located sim test "vid — prefetch look-ahead: every column
-  delivers its own word, across rows" (`lib/vid.ml`) cross-validates the *assembled* property at one
+  delivers its own word, across rows" (`lib/video.ml`) cross-validates the *assembled* property at one
   clk/pclk phase — address-echoing memory, all 32 columns over two consecutive rows (so each row's `c=0`
   exercises the cross-line wrap), plus a frame-top-gap test showing the one-group transient self-heals.
   Phase is irrelevant to the pclk-domain addressing (which is why one phase suffices there, and `vid_addr`
@@ -297,7 +297,7 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
 - [x] `vid_invariant` — the fetch CDC's protocol, **formally** (`run_vid_invariant` +
   `proofs/vid_invariant.ys.template`, `proofs/vid_invariant.v`). The CDC is *not* a cycle-equivalence (our toggle
   synchroniser vs the async-set `req1`), so equiv can't touch it — but the *protocol* is provable:
-  **one `req` per `req0`, no loss, no duplication**. `vid.ml`'s `pulse_sync` is extracted as a
+  **one `req` per `req0`, no loss, no duplication**. `video.ml`'s `pulse_sync` is extracted as a
   reusable primitive; the harness isolates it (`req0` an input), wraps it with a `req0` generator +
   a clock-fairness assumption + a balance monitor, and discharges no-loss + no-spurious by
   `yosys-smtbmc -i`/z3 **k-induction** (k=48) over **all fair clk/pclk phase interleavings** — the
@@ -307,4 +307,4 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
 
   *This proof's "correct failure" at the CDC was not academic: the `pclk`-domain `caught` one-shot it
   flagged turned out to be a real metastability bug on silicon (horizontal flicker on the Nexys 4). The
-  fix — a textbook toggle pulse-synchroniser — is what `vid.ml` now ships, and what this proves around.*
+  fix — a textbook toggle pulse-synchroniser — is what `video.ml` now ships, and what this proves around.*
