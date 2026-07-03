@@ -32,6 +32,48 @@ set_property ASYNC_REG true \
 ## clock_groups above and constrain *every* crossing (both directions) with per-path
 ## set_max_delay -datapath_only instead — only then does max_delay actually apply.
 
+## ── PSRAM async-interface I/O budget ─────────────────────────────────────────────────
+## Cellram holds each 16-bit phase for read_cycles = 5 clk = 83.3 ns at 60 MHz and samples
+## MemDB at the phase-end edge. The M45W8MW16-70 needs address/CE valid 70 ns AT THE CHIP
+## (tAA/tCO), so the FPGA round trip must fit the remainder:
+##   t_out(reg -> addr/ctl pad) + board flight + t_in(MemDB pad -> deepest consumer FF)
+##     <= 83.3 - 70 = 13.3 ns.
+## Three groups (an unconstrained I/O path is never timed at all — before this block the
+## margin was hand arithmetic only):
+##   1. Read-critical OUTPUTS <= 6.7 ns: MemAdr (tAA), RamCEn (tCO) and RamLBn/UBn
+##      (tBA = 70 ns too, and they DO transition on the first read after a byte store).
+##      NOT RamOEn (tOE = 20 ns only) or RamWEn (write-path) — those sit in group 3.
+##      Needs the FAST/16 drivers below; at default drive the strobes alone are ~7.4 ns
+##      and the two groups cannot both fit 13.3.
+##   2. MemDB INPUT <= 6.6 ns. NB the budget must cover the DEEPEST same-edge consumer,
+##      not just Cellram's lo/rdata capture flop: on the load-retire cycle the raw pad
+##      value flows pad -> rdata -> inbus -> regmux -> flags/SPC in one cycle (~5.7 ns
+##      routed), and all of it sits inside the data-valid-to-capture-edge window.
+##   3. Loose sanity group <= 12.0 ns: MemDB out + tristate (write-path — tDW = 20 ns
+##      before WEn rise, ~67 ns after launch — plus turnaround), RamOEn (tOE = 20 ns:
+##      ~63 ns of real budget) and RamWEn (write pulse geometry, whole-cycle margins).
+##      Keeping any of these in group 1 over-constrains the router for nothing (it cost
+##      -0.7 ns of fake violations and pressured the real clk25 paths).
+## 1 + 2 = 13.3 exactly — the demand is genuinely knife-edge at the slow corner (the
+## routed halves land within ~0.3 ns of their bounds); board flight (~0.3 ns round trip, the chip sits next to the
+## FPGA) eats into slack rather than being reserved. If either group ever misses:
+## rebalance the split, or bump read_cycles to 6 in emit_board_verilog.ml (100 ns window
+## -> ~30 ns budget). tWP is comfortable by construction (WEn low 4 of 5 cycles = 67 ns
+## >> 45 ns, a full cycle of data hold past WEn rise).
+## Fast/strong drivers on the whole PSRAM interface: the OBUF is the dominant t_out
+## term (~3 ns of the strobes' ~4.4 ns logic at the default DRIVE 12 / SLOW slew), and
+## the traces are short point-to-point to the adjacent chip (no connector), so FAST/16
+## is SI-comfortable and shaves ~1 ns off every read-critical output.
+set_property SLEW FAST [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLBn RamUBn}]
+set_property DRIVE 16  [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLBn RamUBn}]
+
+set clk_sys [get_clocks -of_objects [get_pins bufg_25/O]]
+set_max_delay 6.700 -datapath_only -from $clk_sys \
+  -to [get_ports {MemAdr[*] RamCEn RamLBn RamUBn}]
+set_max_delay 6.600 -datapath_only -from [get_ports {MemDB[*]}] -to $clk_sys
+set_max_delay 12.000 -datapath_only -from $clk_sys \
+  -to [get_ports {MemDB[*] RamOEn RamWEn}]
+
 ## ── Reset button (active-low) ────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN C12 IOSTANDARD LVCMOS33} [get_ports btnCpuReset]
 

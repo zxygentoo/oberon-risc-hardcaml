@@ -9,7 +9,12 @@
     - reads/writes of main memory, and the video framebuffer DMA, go through {!Cellram},
       which drives the external chip pins exposed here ([mem_adr]/[mem_dq_*]/[ram_*_n]).
       Boot-ROM fetches and MMIO accesses take the controller's on-chip fast path;
-    - the framebuffer word is latched into [Vid] on the controller's [vid_ack].
+    - the framebuffer word is latched into [Vid] on the controller's [vid_ack];
+    - the ms-timer IRQ is {e stretched}: [RISC5.v] latches its interrupt capture every
+      clock (even under stallX), but here the core's [irq1]/[int_pnd] flops are ce-gated,
+      so a 1-clock tick landing in a frozen (ce=0) cycle would be lost. The board holds
+      the request until a ce=1 cycle samples it — one edge per tick, and identical to
+      [irq = limit] whenever the core is not frozen (so the lib [Soc] is unaffected).
 
     The chip itself is off-FPGA: in simulation a {!Cellram_model} is wired to these pins
     (the board boot checkpoint); on the board the Verilog top wires IOBUFs. The

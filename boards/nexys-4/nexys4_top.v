@@ -112,7 +112,15 @@ module nexys4_top (
     if (!mmcm_locked)   por_cnt <= 26'h3FFFFFF;
     else if (!por_done) por_cnt <= por_cnt - 26'd1;
   end
-  wire rst_n = mmcm_locked & por_done & btnCpuReset;
+  // Deassert rst_n synchronously: btnCpuReset and mmcm_locked change asynchronously to
+  // the system clock, and rst_n fans out to every synchronous clear in the SoC — a
+  // marginal mid-run button release could exit reset a cycle apart across that tree.
+  // Two flops give a clean edge (cold start is unchanged: por_done, a clk25 flop, is
+  // still the last term to rise; the 2-cycle assert delay is immaterial).
+  (* ASYNC_REG = "TRUE" *) reg [1:0] rstn_sync = 2'b00;
+  always @(posedge clk25)
+    rstn_sync <= {rstn_sync[0], mmcm_locked & por_done & btnCpuReset};
+  wire rst_n = rstn_sync[1];
 
   // ── Cellular RAM bidirectional data bus (16 IOBUFs) ──────────────────────────────
   wire [15:0] mem_dq_o, mem_dq_i;

@@ -9,6 +9,10 @@ set build [file normalize $here/../_build/nexys-4]
 set part  xc7a100tcsg324-1
 set top   nexys4_top
 file mkdir $build
+# Remove the previous bitstream up front: the timing gate below refuses to write a new
+# one on violation, and program.tcl/flash.tcl must never pick up a stale .bit believing
+# it's fresh. (The .bit is regenerable in ~2 min; staleness is the worse failure.)
+file delete -force $build/oberon.bit
 
 # ── Read sources ────────────────────────────────────────────────────────────────────
 read_verilog $gen/soc_board.v
@@ -30,11 +34,18 @@ write_checkpoint -force $build/post_route.dcp
 report_timing_summary -file $build/timing.rpt -warn_on_violation
 report_utilization    -file $build/util.rpt
 report_drc            -file $build/drc.rpt
+report_datasheet      -file $build/datasheet.rpt   ;# measured per-pin clk->out / setup (PSRAM I/O budget)
+
+# ── Timing gate ─────────────────────────────────────────────────────────────────────
+# Refuse to ship a bitstream that missed timing (setup or hold) — a violated build must
+# not masquerade as deliverable. This also gives the nexys4.xdc PSRAM I/O budget teeth.
+set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+set whs [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -hold]]
+puts "=== setup WNS = $wns ns / hold WHS = $whs ns (>= 0 means met) ==="
+if {$wns eq "" || $whs eq "" || $wns < 0 || $whs < 0} {
+  error "timing NOT met (WNS=$wns WHS=$whs) — no bitstream written"
+}
 
 # ── Bitstream ───────────────────────────────────────────────────────────────────────
 write_bitstream -force $build/oberon.bit
 puts "=== wrote $build/oberon.bit ==="
-
-# Surface the worst-case slack so a headless run reports closure at a glance.
-set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
-puts "=== setup WNS = $wns ns (>= 0 means timing met) ==="

@@ -115,6 +115,19 @@ let create
      core's registers, not its combinational [adr]/[mem_pend] — so [core_ce] is a forward
      wire. *)
   let core_ce = wire 1 in
+  (* ── IRQ stretch (board-only) ── RISC5.v clocks its interrupt capture every cycle
+     ([irq1]/[intPnd] latch even under stallX), but this board freezes those flops with
+     [ce] — a 1-clock [limit] tick landing in a PSRAM/video wait (ce=0) would vanish (~39%
+     of running-OS cycles are frozen; bench_boot). Hold the request across frozen cycles
+     and drop it once a ce=1 cycle has sampled it: the wire stays continuously high from
+     tick to delivery, so the core's edge-detect sees exactly one edge per tick — and with
+     [ce] always 1 the hold term is identically 0, reducing this to [irq = limit], the lib
+     [Soc] semantics. Inert to Oberon (never runs STI, so [int_enb] stays 0); the
+     co-located [irq stretch] test pins the delivery count. *)
+  let irq_pend = Always.Variable.reg spec ~width:1 in
+  let irq_pend_v = irq_pend.value -- "irq_pend" in
+  Always.(compile [ irq_pend <-- (i.rst_n &: ~:core_ce &: (limit |: irq_pend_v)) ]);
+  let irq = (limit |: irq_pend_v) -- "irq" in
   let core =
     Risc5_core.create
       ~ce:core_ce
@@ -122,7 +135,7 @@ let create
       ~mul_stages
       { Risc5_core.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; irq = limit
+      ; irq
       ; stall_x = gnd
       ; inbus
       ; codebus
@@ -537,6 +550,54 @@ let%expect_test "soc_board — ms timer counts clocks, not ce cycles (free-runni
     (!ce_high < total);
   [%expect
     {| after 1000 clocks @ 50 clk/ms: cnt1 = 20   (CPU advanced on only 373 ce cycles — wait-stated: true) |}]
+;;
+
+let%expect_test "soc_board — a ms tick landing in a frozen (ce=0) cycle still reaches \
+                 the core [irq stretch]"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* the timer test's freeze-heavy load loop again — most cycles have [ce]=0, so most
+     1-clock [limit] ticks land while the core's ce-gated [irq1]/[int_pnd] flops are
+     frozen. The board-layer IRQ stretch must deliver every tick anyway: each tick makes
+     the (stretched) [irq] wire rise and stay high until a ce=1 cycle samples it, so the
+     core's [irq1] (which follows [irq] on enabled cycles, independent of [int_enb]) rises
+     exactly once per tick. Without the stretch, ticks in frozen cycles vanish and [irq1]
+     rises far fewer times than [cnt1]. *)
+  let prog =
+    [| 0x41000100 (* MOV R1, #0x100 *)
+     ; 0x82100000 (* LD R2, [R1] : PSRAM read (multi-cycle) *)
+     ; 0xE7FFFFFE (* B -2 : loop back to the LD *)
+    |]
+  in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:prog ~clocks_per_ms:50)
+  in
+  let inp = Cyclesim.inputs sim in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  let irq1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "irq1") in
+  drive_idle inp;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  let rises = ref 0
+  and prev = ref 0 in
+  for _ = 1 to 2000 do
+    Cyclesim.cycle sim;
+    let now = Cyclesim.Reg.to_int irq1 in
+    if now = 1 && !prev = 0 then Int.incr rises;
+    prev := now
+  done;
+  let ticks = Cyclesim.Reg.to_int cnt1 in
+  Stdlib.Printf.printf
+    "after 2000 clocks @ 50 clk/ms: ticks (cnt1) = %d   delivered (irq1 rises) = %d   \
+     every tick delivered (<=1 in flight): %b\n"
+    ticks
+    !rises
+    (!rises >= ticks - 1);
+  [%expect
+    {| after 2000 clocks @ 50 clk/ms: ticks (cnt1) = 40   delivered (irq1 rises) = 40   every tick delivered (<=1 in flight): true |}]
 ;;
 
 let%expect_test "soc_board — MMIO word 1: read {btn, sw}; store latches the LEDs" =
