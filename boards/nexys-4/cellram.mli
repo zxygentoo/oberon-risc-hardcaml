@@ -93,9 +93,36 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create ?read_cycles ?write_cycles i] builds the controller. The cycle counts are the
-    cycles each 16-bit phase holds the async pins. The default 2 is the {e sim/test} value
-    (the behavioural model responds at once — only the FSM control flow is under test);
-    the board synthesizes 5 (83 ns per phase at 60 MHz, in spec for the 70 ns chip; see
-    emit_verilog.ml and the PSRAM I/O budget in nexys4.xdc). *)
-val create : ?read_cycles:int -> ?write_cycles:int -> Signal.t I.t -> Signal.t O.t
+(** [create ?read_cycles ?write_cycles ?write_buffer i] builds the controller. The cycle
+    counts are the cycles each 16-bit phase holds the async pins. The default 2 is the
+    {e sim/test} value (the behavioural model responds at once — only the FSM control flow
+    is under test); the board synthesizes 5 (83 ns per phase at 60 MHz, in spec for the 70
+    ns chip; see emit_verilog.ml and the PSRAM I/O budget in nexys4.xdc).
+
+    [write_buffer] (Phase-10d, default [false] = the proven synchronous write path) adds a
+    {b 1-entry write buffer}: a PSRAM-bound store retires in a {e single} [ce] cycle — the
+    slot captures [{adr, ben, wdata}] whenever it is free, even mid-video-op — and the
+    write transaction {e drains} to the chip in the background while the CPU runs on. The
+    hazards are closed conservatively:
+    - {b drain-before-read}: a PSRAM read (a cache miss) waits until the slot is empty, so
+      every PSRAM read sees fully-drained memory — no forwarding or address compare;
+    - a second store while the slot is full waits frozen (the burst cost the bench's stall
+      profile measures — the depth-vs-payoff data);
+    - the drain is a write, so the video preemption rule already exempts it; a video
+      request landing mid-drain waits it out, exactly as it waits a synchronous store
+      today (same ~477 ns deadline margin);
+    - MMIO / ROM accesses still complete in one cycle {e during} a drain — an MMIO store
+      can therefore become externally visible before an earlier buffered RAM store lands
+      in PSRAM. Benign on this SoC: no peripheral reads RAM (video reads the framebuffer,
+      but the board pairs this knob with [Soc]'s [fb_bram], which takes video off PSRAM;
+      without [fb_bram] a not-yet-drained framebuffer word could reach the raster one
+      frame stale). Coherence is untouched: the cache snoop/update and the [Framebuf]
+      shadow write happen at store {e retire} (the accept cycle), and PSRAM catches up
+      before anyone can read it (drain-before-read; video via [fb_bram] never reads
+      PSRAM). *)
+val create
+  :  ?read_cycles:int
+  -> ?write_cycles:int
+  -> ?write_buffer:bool
+  -> Signal.t I.t
+  -> Signal.t O.t
