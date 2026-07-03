@@ -36,6 +36,13 @@ module O : sig
   [@@deriving hardcaml]
 end
 
+(** Framebuffer base [Org] (a word address; byte 0xDFF00, = [DFF00H >> 2]). The DMA's
+    [vidadr] is [org + {~vcnt(10), col(5)}], so every fetch lands in the 32768-word span
+    [[org, org + 0x8000)] (rows 0..255 of it sit off-screen above the visible 768).
+    Exported so a board layer shadowing the framebuffer (Phase 10c) covers exactly the
+    span this module can address, with no second copy of the constant. *)
+val org : int
+
 (** [pulse_sync ~src_spec ~dst_spec ~pulse] crosses a 1-cycle [pulse] in the [src_spec]
     clock domain into the [dst_spec] domain as a 1-cycle pulse, metastability-safe: a
     toggle flop in the source domain turns the pulse into a level, a 3-FF [dst_spec]

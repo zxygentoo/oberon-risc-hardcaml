@@ -18,7 +18,10 @@
    10.)
 
    Opt-in: dune build @visual_golden_board. Env: SOC_CAP overrides the cycle cap, ICACHE=0
-   runs the (much slower) cache-off control, DISK_IMG the image. *)
+   runs the (much slower) cache-off control, WRITE_UPDATE=1 the Phase-10b snoop policy,
+   FB_BRAM=1 the Phase-10c framebuffer shadow (the golden then reads the *shadow* — the
+   words the screen actually shows — and additionally asserts shadow ≡ PSRAM framebuffer
+   window over the full span, the shadow's own coherence invariant), DISK_IMG the image. *)
 
 module R = Oracle.Risc
 open Hardcaml
@@ -129,12 +132,12 @@ let fb_fnv fb =
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
    cycles. read/write_cycles = 5 to match the board timing the golden is defending. *)
-let boot_board ~icache ~write_update ~cap ~chunk ~settle =
+let boot_board ~icache ~write_update ~fb_bram ~cap ~chunk ~settle =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache ~write_update i)
+      Board_tb.create ~read_cycles:5 ~write_cycles:5 ~icache ~write_update ~fb_bram i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -149,8 +152,29 @@ let boot_board ~icache ~write_update ~cap ~chunk ~settle =
   and spi_ctrl = reg "spi_ctrl" in
   let cram_lo = some "cram_lo" (Cyclesim.lookup_mem_by_name sim "cram_lo") in
   let cram_hi = some "cram_hi" (Cyclesim.lookup_mem_by_name sim "cram_hi") in
+  (* under FB_BRAM the golden reads the *shadow* — the words the raster actually fetches;
+     the PSRAM window stays readable for the shadow-equality check below *)
+  let fb_lanes =
+    if fb_bram
+    then
+      Some
+        (Array.init 4 (fun k ->
+           let n = Printf.sprintf "fb%d" k in
+           some n (Cyclesim.lookup_mem_by_name sim n)))
+    else None
+  in
+  let shadow_word lanes idx =
+    let b k = Cyclesim.Memory.to_int lanes.(k) ~address:idx in
+    b 0 lor (b 1 lsl 8) lor (b 2 lsl 16) lor (b 3 lsl 24)
+  in
   let read_fb () =
-    Array.init fb_words (fun i -> Board_tb.read_word ~cram_lo ~cram_hi (fb_base_word + i))
+    match fb_lanes with
+    | Some lanes ->
+      Array.init fb_words (fun i ->
+        shadow_word lanes (fb_base_word - Nexys4_board.Framebuf.base + i))
+    | None ->
+      Array.init fb_words (fun i ->
+        Board_tb.read_word ~cram_lo ~cram_hi (fb_base_word + i))
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
@@ -193,9 +217,24 @@ let boot_board ~icache ~write_update ~cap ~chunk ~settle =
       (Sd_bridge.nbytes bridge)
       pop
   done;
+  (* the shadow's own invariant, checked over the FULL span at the settled (quiet) point:
+     every shadow word equals its PSRAM word — both zero-initialised, and every in-window
+     store wrote both, so any mismatch is a shadow write-path bug *)
+  let shadow_mismatches =
+    match fb_lanes with
+    | None -> None
+    | Some lanes ->
+      let m = ref 0 in
+      for idx = 0 to Nexys4_board.Framebuf.size - 1 do
+        if shadow_word lanes idx
+           <> Board_tb.read_word ~cram_lo ~cram_hi (Nexys4_board.Framebuf.base + idx)
+        then incr m
+      done;
+      Some !m
+  in
   (try Sys.remove tmp with
    | Sys_error _ -> ());
-  !prev, !stable >= settle
+  !prev, !stable >= settle, shadow_mismatches
 ;;
 
 let () =
@@ -211,25 +250,45 @@ let () =
     | Some "1" -> true
     | _ -> false
   in
+  (* opt-in (Phase-10c): FB_BRAM=1 serves video from the Framebuf BRAM shadow; the golden
+     then hashes the shadow (what the screen shows) and asserts shadow ≡ PSRAM window *)
+  let fb_bram =
+    match Sys.getenv_opt "FB_BRAM" with
+    | Some "1" -> true
+    | _ -> false
+  in
   let oracle_fb, oracle_hash = boot_oracle 40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
     (popcount oracle_fb);
   Printf.printf
-    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b) past the handoff — \
-     cache makes this feasible...\n\
+    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b) past the \
+     handoff — cache makes this feasible...\n\
      %!"
     icache
-    write_update;
+    write_update
+    fb_bram;
   let cap =
     match Sys.getenv_opt "SOC_CAP" with
     | Some s -> int_of_string s
     | None -> 160_000_000
   in
-  let soc_fb, settled =
-    boot_board ~icache ~write_update ~cap ~chunk:2_000_000 ~settle:3
+  let soc_fb, settled, shadow_mismatches =
+    boot_board ~icache ~write_update ~fb_bram ~cap ~chunk:2_000_000 ~settle:3
   in
+  (match shadow_mismatches with
+   | None -> ()
+   | Some 0 ->
+     Printf.printf
+       "shadow check: all %d shadow words = PSRAM framebuffer window (coherent)\n%!"
+       Nexys4_board.Framebuf.size
+   | Some m ->
+     Printf.printf
+       "shadow check FAIL: %d/%d shadow words differ from the PSRAM window\n%!"
+       m
+       Nexys4_board.Framebuf.size;
+     exit 1);
   let soc_hash = fb_fnv soc_fb in
   Printf.printf
     "soc (icache=%b): hash=0x%Lx  %d set px  settled=%b\n%!"

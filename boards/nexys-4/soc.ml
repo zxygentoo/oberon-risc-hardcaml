@@ -69,6 +69,7 @@ let create
   ?lines_log2
   ?(write_update = false)
   ?(video = true)
+  ?(fb_bram = false)
   ?(uart_baud_slow = 1302)
   ?(uart_baud_fast = 217)
   (i : _ I.t)
@@ -171,15 +172,37 @@ let create
       ; wr = core.wr
       ; ben = core_ben
       ; wdata = core.outbus
-      ; vidreq
+      ; vidreq = (if fb_bram then gnd else vidreq)
       ; vidadr
       ; mem_dq_i = i.mem_dq_i
       }
   in
   assign core_ce (cellram.ce -- "core_ce");
-  assign viddata cellram.viddata;
-  assign vid_ack cellram.vid_ack;
-  assign vidpar cellram.vidpar;
+  (* Phase-10c: [fb_bram] serves the video DMA from the {!Framebuf} BRAM shadow (a 1-cycle
+     on-chip read) instead of the PSRAM port — Cellram's [vidreq] is tied low above, so
+     its video FSM + read-preemption logic go dead (pruned at synthesis). The shadow's
+     write port taps exactly the store the cache snoops ([wr & ~cpu_internal]) in the same
+     write-through transaction, so shadow ≡ PSRAM framebuffer window at every instant. *)
+  if fb_bram
+  then (
+    let fb =
+      Framebuf.create
+        { Framebuf.I.clock = i.clock
+        ; adr = core_adr
+        ; write = core.wr &: ~:cpu_internal
+        ; ben = core_ben
+        ; wdata = core.outbus
+        ; vidreq
+        ; vidadr
+        }
+    in
+    assign viddata fb.viddata;
+    assign vid_ack fb.vid_ack;
+    assign vidpar fb.vidpar)
+  else (
+    assign viddata cellram.viddata;
+    assign vid_ack cellram.vid_ack;
+    assign vidpar cellram.vidpar);
   (* Phase-10a: drive [cache_hit] and pick the CPU read word. When on, a fetch/load to
      PSRAM (not ROM/MMIO — [cpu_internal] takes the 1-cycle path) can hit the cache; a
      store to PSRAM snoops. When off, [cache_hit] is tied low and the word is Cellram's,

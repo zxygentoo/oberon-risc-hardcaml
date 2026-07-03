@@ -140,7 +140,15 @@ type os_inst =
   ; cleanup : unit -> unit
   }
 
-let make_os ?(video = true) ?(write_update = false) ~write_cycles ~icache ~lines_log2 () =
+let make_os
+  ?(video = true)
+  ?(write_update = false)
+  ?(fb_bram = false)
+  ~write_cycles
+  ~icache
+  ~lines_log2
+  ()
+  =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
   let sim =
@@ -152,6 +160,7 @@ let make_os ?(video = true) ?(write_update = false) ~write_cycles ~icache ~lines
         ~lines_log2
         ~write_update
         ~video
+        ~fb_bram
         ~read_cycles:5
         ~write_cycles
         i)
@@ -733,6 +742,7 @@ let () =
 let stall_profile
   ?(video = true)
   ?(write_update = false)
+  ?(fb_bram = false)
   ~lines_log2
   ~write_cycles
   ~instr_budget
@@ -740,7 +750,9 @@ let stall_profile
   ~seg
   ()
   =
-  let t = make_os ~video ~write_update ~icache:true ~lines_log2 ~write_cycles () in
+  let t =
+    make_os ~video ~write_update ~fb_bram ~icache:true ~lines_log2 ~write_cycles ()
+  in
   boot_to_handoff t;
   let names = [| "retire"; "exec"; "compute"; "fetchW"; "loadW"; "storeW" |] in
   let tot = Array.make 6 0
@@ -1022,6 +1034,54 @@ let () =
     (f c_on /. f (max 1 aligned))
     (f c_off /. f (max 1 aligned))
     (f c_on /. f (max 1 c_off));
+  (* ── Phase-10c: the BUILT framebuffer-in-BRAM, measured the same way ── video stays
+     live on both sides; only where its fetches are served differs (PSRAM port vs the
+     Framebuf shadow). Should land at the gating ceiling above — the shadow read is
+     1-cycle and never touches the PSRAM port. *)
+  Printf.printf
+    "\n\
+    \  FRAMEBUFFER-IN-BRAM (Phase-10c) — same-work instruction lockstep, video via the\n\
+    \  PSRAM port vs via the Framebuf BRAM shadow (cache on, 4KB, write-update): the\n\
+    \  honest measured win, to compare against the gating ceiling above.\n\
+     %!";
+  let aligned, _diverged, c_psram, c_fb, _, _ =
+    compare_pair
+      ~max_instrs:200_000
+      (make_os ~write_update:true ~write_cycles:5 ~icache:true ~lines_log2:10 ())
+      (make_os
+         ~fb_bram:true
+         ~write_update:true
+         ~write_cycles:5
+         ~icache:true
+         ~lines_log2:10
+         ())
+  in
+  Printf.printf
+    "    aligned OS instructions : %d\n\
+    \    cycles over that prefix : psram-video %d   fb-bram %d\n\
+    \    cycles / instruction    : psram-video %.2f   fb-bram %.2f\n\
+    \    same-work speedup       : %.3fx\n\
+     %!"
+    aligned
+    c_psram
+    c_fb
+    (f c_psram /. f (max 1 aligned))
+    (f c_fb /. f (max 1 aligned))
+    (f c_psram /. f (max 1 c_fb));
+  Printf.printf
+    "\n\
+    \  Stall profile with the shadow ON (write-update + fb_bram — the Phase-10c config):\n\
+    \  the 10c residual, and the write-buffer ceiling/headroom for the next lever.\n\
+     %!";
+  stall_profile
+    ~fb_bram:true
+    ~write_update:true
+    ~lines_log2:10
+    ~write_cycles:5
+    ~instr_budget:2_000_000
+    ~cycle_cap:20_000_000
+    ~seg:250_000
+    ();
   Printf.printf
     "\n\
     \  Load-locality sweep (cache on, video live, per-size fetch vs LOAD hit-rate, long \
