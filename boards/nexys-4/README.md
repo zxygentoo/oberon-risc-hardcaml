@@ -62,6 +62,17 @@ expect:
 - **On-chip fast path (`cpu_internal`):** boot-ROM fetches and MMIO accesses never touch PSRAM —
   served in a single `ce` cycle, which also keeps each MMIO store one CPU-cycle long so the
   peripheral write strobes fire exactly once.
+- **Write buffer (Phase-10d, `?write_buffer` — board emit on):** a 1-entry buffer in front of the
+  write path — a PSRAM store retires in **one `ce` cycle** (the slot captures `{adr, ben, wdata}`
+  whenever it is free, even mid-video-op) and the write **drains in the background** as an
+  `op_wb`-tagged op on the same machinery (excluded from the CPU's `ce` like a video op; never
+  preempted, because it is a write). PSRAM reads wait out a pending drain (**drain-before-read**,
+  measured +0.4% of clocks), so every read sees fully-drained memory and coherence needs no
+  forwarding logic; a second store while the slot is full waits frozen (measured 7.5% of clocks —
+  a deeper FIFO's whole remaining ceiling is 1.08×, deferred). One ordering relaxation, documented
+  in `cellram.mli`: an MMIO store can become visible before an earlier buffered RAM store lands in
+  PSRAM — benign here (no peripheral reads RAM; video reads the `Framebuf` shadow). Landed
+  **1.237× same-work** (CPI 1.90→1.53), long-window CPI 1.64→**1.45**, frozen clocks 19.9→9.5%.
 
 Full detail in `cellram.mli`. `cellram_model.ml` is a behavioural double of the chip, wired to
 Cellram's pins only in simulation (the board tests); it never synthesizes.
@@ -146,5 +157,8 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
 and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache`/`write_update`/`fb_bram:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+`icache`/`write_update`/`fb_bram`/`write_buffer:true` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+(One synthesis note, Phase-10d: the default implementation effort left the `RamUBn` output 0.163 ns
+over the PSRAM I/O budget — placement, not logic — so `build.tcl` runs Explore-class directives;
+the structural fallback if that margin ever flakes is registering the byte-enable pins.)
 outputs land in the git-ignored `boards/_build/nexys-4/`.

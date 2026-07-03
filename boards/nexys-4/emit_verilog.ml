@@ -76,6 +76,13 @@ let () =
               -> BRAM write port) must not disturb the cache-write critical path at 60
               MHz. *)
          ~fb_bram:true
+           (* Phase-10d: the 1-entry write buffer — a PSRAM store retires in one ce cycle
+              and drains in the background; reads wait out a pending drain
+              (drain-before-read). Sim: same-work + profile in bench_boot; golden proves
+              coherence with WBUF=1. Timing watch: [wb_accept] joins the [ce] equation
+              (high-fanout — it gates every core register); check WNS still closes at 60
+              MHz and where the critical path lands. *)
+         ~write_buffer:true
            (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and
               deliberately 521/521: BOTH [fsel] settings ship ~115200 (60e6/522, −0.2%).
               Serial reads are wire-limited, so 115200 is ~5x the throughput of 19200, and

@@ -26,9 +26,15 @@ report_utilization -file $build/util_synth.rpt
 
 # ── Implementation ──────────────────────────────────────────────────────────────────
 opt_design
-place_design
-phys_opt_design
-route_design
+# Explore-class directives (Phase-10d): the default effort left the RamUBn output missing
+# its 6.7 ns PSRAM I/O budget by 0.163 ns — pure placement (3.3 ns of route to the pad,
+# the byte-enable cone itself is unchanged); Explore recovers it (WNS +0.130). If this
+# margin ever flakes again, the structural fix is registering the byte-enable pins (or
+# re-splitting the 6.7/6.6 out/in budget against the measured input-path use), not more
+# placer effort.
+place_design -directive Explore
+phys_opt_design -directive AggressiveExplore
+route_design -directive Explore
 
 write_checkpoint -force $build/post_route.dcp
 report_timing_summary -file $build/timing.rpt -warn_on_violation
