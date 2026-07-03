@@ -48,9 +48,16 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _ I.t)
+let create
+  ?(read_cycles = 2)
+  ?(write_cycles = 2)
+  ?(write_buffer = false)
+  ?(wbuf_depth = 1)
+  (i : _ I.t)
   : _ O.t
   =
+  if wbuf_depth < 1 || wbuf_depth > 4
+  then failwith (Printf.sprintf "Cellram: wbuf_depth must be in 1..4, got %d" wbuf_depth);
   let spec = Reg_spec.create () ~clock:i.clock in
   let cval n = of_unsigned_int ~width:cnt_width n in
   (* ── State ── a transaction in progress ([busy]), whether it is a video read ([op_vid])
@@ -70,16 +77,22 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
   let req_wdata = Always.Variable.reg spec ~width:32 in
   let viddata_reg = Always.Variable.reg spec ~width:32 in
   let vid_pending = Always.Variable.reg spec ~width:1 in
-  (* ── Write buffer (Phase-10d, [?write_buffer]) ── one slot [{word, ben, lane, wdata}] +
-     [wb_valid], and [op_wb] tagging the in-flight op as a background drain. Constructed
-     unconditionally, but every read of their values is behind [if write_buffer] — with
-     the seam off nothing reaches an output, so the registers fall out of the output cone
-     and the default netlist is untouched. *)
-  let wb_valid = Always.Variable.reg spec ~width:1 in
-  let wb_word = Always.Variable.reg spec ~width:18 in
-  let wb_ben = Always.Variable.reg spec ~width:1 in
-  let wb_lane = Always.Variable.reg spec ~width:2 in
-  let wb_wdata = Always.Variable.reg spec ~width:32 in
+  (* ── Write buffer (Phase-10d, [?write_buffer] × [?wbuf_depth]) ── a [wbuf_depth]-entry
+     FIFO of pending stores [{word, ben, lane, wdata}]. Slot 0 is the drain source (the
+     OLDEST store — total store order preserved); a completing drain shifts the queue down
+     one; [wb_cnt] counts occupied slots {e including} the one mid-drain, so [wb_cnt = 0]
+     means "nothing pending anywhere" (the drain-before-read condition). [op_wb] tags the
+     in-flight op as a background drain. Constructed unconditionally, but every read of
+     their values is behind [if write_buffer] — with the seam off nothing reaches an
+     output, so the registers fall out of the output cone and the default netlist is
+     untouched. Depth 1 reduces cycle-for-cycle to the proven single slot
+     ([~full = empty], no shift, accept and completion can never coincide). *)
+  let wb_cnt_w = Int.ceil_log2 (wbuf_depth + 1) in
+  let wb_word = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:18) in
+  let wb_ben = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:1) in
+  let wb_lane = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:2) in
+  let wb_wdata = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:32) in
+  let wb_cnt = Always.Variable.reg spec ~width:wb_cnt_w in
   let op_wb = Always.Variable.reg spec ~width:1 in
   let busy_v = busy.value -- "cr_busy" in
   let op_vid_v = op_vid.value -- "cr_op_vid" in
@@ -93,7 +106,9 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
   let req_wdata_v = req_wdata.value in
   let viddata_reg_v = viddata_reg.value in
   let vid_pending_v = vid_pending.value in
-  let wb_valid_v = if write_buffer then wb_valid.value -- "wb_valid" else gnd in
+  let wb_cnt_v = if write_buffer then wb_cnt.value -- "wb_cnt" else zero wb_cnt_w in
+  let wb_nonempty = if write_buffer then wb_cnt_v <>:. 0 else gnd in
+  let wb_full = wb_cnt_v ==:. wbuf_depth in
   let op_wb_v = if write_buffer then op_wb.value else gnd in
   (* ── Combinational status ── *)
   let is_write = op_wr_v &: ~:op_vid_v in
@@ -107,11 +122,12 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
   (* an on-chip access (ROM/MMIO) needs no PSRAM and finishes the cycle it is requested *)
   let cpu_complete_internal = i.mem_pend &: i.cpu_internal in
   (* a PSRAM store retires the cycle the buffer captures it (0-stall, like a cache hit) —
-     whenever the slot is free, even mid-video-op (capture needs no port). While the slot
-     is full a second store just waits frozen: the classic 1-deep write buffer. *)
+     whenever a slot is free, even mid-video-op or mid-drain (capture needs no port). With
+     the FIFO full a further store waits frozen: the burst cost the stall profile prices
+     per depth. *)
   let wb_accept =
     if write_buffer
-    then (i.mem_pend &: i.wr &: ~:(i.cpu_internal) &: ~:wb_valid_v) -- "wb_accept"
+    then (i.mem_pend &: i.wr &: ~:(i.cpu_internal) &: ~:wb_full) -- "wb_accept"
     else gnd
   in
   (* the CPU advances when it wants no memory (compute stall), or its access just
@@ -125,14 +141,14 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
      noise — measured, not guessed: bench_boot). *)
   let start_vid = ~:busy_v &: vid_pending_v in
   let start_wb =
-    if write_buffer then ~:busy_v &: ~:vid_pending_v &: wb_valid_v else gnd
+    if write_buffer then ~:busy_v &: ~:vid_pending_v &: wb_nonempty else gnd
   in
   let start_cpu =
     ~:busy_v
     &: ~:vid_pending_v
     &: i.mem_pend
     &: ~:(i.cpu_internal)
-    &: if write_buffer then ~:(i.wr) &: ~:wb_valid_v else vdd
+    &: if write_buffer then ~:(i.wr) &: ~:wb_nonempty else vdd
   in
   (* Preemptible CPU reads. A framebuffer fetch has a hard ~477 ns raster deadline
      ([Vid]'s [req0]→[xfer]); the worst case is it arriving just after a CPU access
@@ -177,19 +193,20 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
       ; cnt <-- half_cnt_init i.wr
       ]
   in
-  (* the drain: an ordinary write transaction sourced from the buffer slot instead of the
-     live CPU pins (which have long since moved on). [op_wb] keeps it out of the CPU's
-     [ce]; [op_wr]=1 keeps it out of video preemption (writes are never preempted). *)
+  (* the drain: an ordinary write transaction sourced from FIFO slot 0 (the oldest store)
+     instead of the live CPU pins (which have long since moved on). [op_wb] keeps it out
+     of the CPU's [ce]; [op_wr]=1 keeps it out of video preemption (writes are never
+     preempted). *)
   let launch_wb =
     Always.
       [ busy <--. 1
       ; op_vid <--. 0
       ; op_wr <--. 1
       ; op_wb <--. 1
-      ; req_word <-- wb_word.value
-      ; req_ben <-- wb_ben.value
-      ; req_lane <-- wb_lane.value
-      ; req_wdata <-- wb_wdata.value
+      ; req_word <-- wb_word.(0).value
+      ; req_ben <-- wb_ben.(0).value
+      ; req_lane <-- wb_lane.(0).value
+      ; req_wdata <-- wb_wdata.(0).value
       ; half <--. 0
       ; cnt <-- cval (write_cycles - 1)
       ]
@@ -233,19 +250,46 @@ let create ?(read_cycles = 2) ?(write_cycles = 2) ?(write_buffer = false) (i : _
        ]
        @
        if write_buffer
-       then
-         [ (* capture at accept; free at drain completion. Never the same cycle: while the
-              drain is in flight [wb_valid] holds 1, so [wb_accept] is 0. *)
-           when_
-             wb_accept
-             [ wb_valid <--. 1
-             ; wb_word <-- select i.adr ~high:19 ~low:2
-             ; wb_ben <-- i.ben
-             ; wb_lane <-- select i.adr ~high:1 ~low:0
-             ; wb_wdata <-- i.wdata
-             ]
-         ; when_ drain_complete [ wb_valid <--. 0 ]
-         ]
+       then (
+         (* FIFO maintenance. A completing drain shifts the queue down one; an accepted
+            store lands at the tail — position [wb_cnt], or [wb_cnt - 1] when a drain
+            completes the same cycle (the queue is about to shift under it). Both can fire
+            together (slot freed and refilled in one edge); all right-hand sides read
+            pre-edge values, so the shift copies the OLD tail even as the new store
+            overwrites it. Per slot the accept has priority over the shift (the [if_] arms
+            are exclusive), which is exactly the [pos = wb_cnt - 1] case. *)
+         let pos = mux2 drain_complete (wb_cnt_v -:. 1) wb_cnt_v in
+         let slot_stmts k =
+           let capture =
+             Always.
+               [ wb_word.(k) <-- select i.adr ~high:19 ~low:2
+               ; wb_ben.(k) <-- i.ben
+               ; wb_lane.(k) <-- select i.adr ~high:1 ~low:0
+               ; wb_wdata.(k) <-- i.wdata
+               ]
+           in
+           let shift =
+             if k < wbuf_depth - 1
+             then
+               Always.
+                 [ when_
+                     drain_complete
+                     [ wb_word.(k) <-- wb_word.(k + 1).value
+                     ; wb_ben.(k) <-- wb_ben.(k + 1).value
+                     ; wb_lane.(k) <-- wb_lane.(k + 1).value
+                     ; wb_wdata.(k) <-- wb_wdata.(k + 1).value
+                     ]
+                 ]
+             else []
+           in
+           Always.[ if_ (wb_accept &: (pos ==:. k)) capture shift ]
+         in
+         List.concat (List.init wbuf_depth ~f:slot_stmts)
+         @ [ wb_cnt
+             <-- wb_cnt_v
+                 +: uresize wb_accept ~width:wb_cnt_w
+                 -: uresize drain_complete ~width:wb_cnt_w
+           ])
        else []));
   (* ── PSRAM pins ── address [{req_word, half}]; data the current half of the store word;
      control active during [busy]: CE always, OE on reads, WE pulsed on writes (high at
@@ -333,13 +377,14 @@ module Tb = struct
     [@@deriving hardcaml]
   end
 
-  let create ?read_cycles ?write_cycles ?write_buffer (i : _ I.t) : _ O.t =
+  let create ?read_cycles ?write_cycles ?write_buffer ?wbuf_depth (i : _ I.t) : _ O.t =
     let dq_i = wire 16 in
     let c =
       cr_create
         ?read_cycles
         ?write_cycles
         ?write_buffer
+        ?wbuf_depth
         { Cr_I.clock = i.clock
         ; mem_pend = i.mem_pend
         ; cpu_internal = i.cpu_internal
@@ -1013,7 +1058,7 @@ let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write dra
       D.
         [ port_name_is ~wave_format:Wave_format.Bit "wr"
         ; port_name_is ~wave_format:Wave_format.Bit "ce"
-        ; port_name_is ~wave_format:Wave_format.Bit "wb_valid"
+        ; port_name_is ~wave_format:Wave_format.Unsigned_int "wb_cnt"
         ; port_name_is ~wave_format:Wave_format.Bit "cr_busy"
         ; port_name_is ~wave_format:Wave_format.Hex "rdata"
         ]
@@ -1027,8 +1072,9 @@ let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write dra
     │                  ││          └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
     │ce                ││──────────┐                                                                                         ┌─────────┐                 │
     │                  ││          └─────────────────────────────────────────────────────────────────────────────────────────┘         └─────────────────│
-    │wb_valid          ││          ┌─────────────────────────────────────────────────┐                                                                   │
-    │                  ││──────────┘                                                 └───────────────────────────────────────────────────────────────────│
+    │                  ││──────────┬─────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────│
+    │wb_cnt            ││ 0        │1                                                │0                                                                  │
+    │                  ││──────────┴─────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────│
     │cr_busy           ││                    ┌───────────────────────────────────────┐         ┌───────────────────────────────────────┐         ┌───────│
     │                  ││────────────────────┘                                       └─────────┘                                       └─────────┘       │
     │                  ││──────────────────────────────┬─────────┬─────────┬───────────────────┬───────────────────┬─────────────────────────────┬───────│
@@ -1197,4 +1243,115 @@ let%expect_test "cellram/wbuf — a store is accepted 0-stall even while the por
     store retired after 1 cycle(s)
     video word 0xFEEDF00D   stored word 0x00DDBA11
     |}]
+;;
+
+(* ── Depth-2 FIFO tests ([?wbuf_depth]) ────────────────────────────────────── The
+   depth-1 contract is pinned above (and depth 1 is cycle-identical to the proven
+   Phase-10d slot — the frozen expects there did not move when the slot became a FIFO).
+   Here: a burst of two stores retires back-to-back 0-stall, the third waits; same-address
+   stores land in FIFO order (the younger wins); and the depth-2 qcheck round-trip. *)
+
+let%expect_test "cellram/wbuf depth-2 — two stores retire back-to-back, the third waits; \
+                 same-address order preserved"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let sim =
+    Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:2)
+  in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs ~clock_edge:Before sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.cpu_internal := b1 false;
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  let store_cost ~adr ~wdata =
+    inp.mem_pend := b1 true;
+    inp.wr := b1 true;
+    inp.ben := b1 false;
+    inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    inp.wdata := Bits.of_unsigned_int ~width:32 wdata;
+    let k = ref 0
+    and retired = ref false in
+    while (not !retired) && !k < 60 do
+      Cyclesim.cycle sim;
+      Int.incr k;
+      if Bits.to_int_trunc !(outp.ce) = 1 then retired := true
+    done;
+    !k
+  in
+  let a = store_cost ~adr:0x40 ~wdata:0x11111111 in
+  let b = store_cost ~adr:0x44 ~wdata:0x22222222 in
+  let c = store_cost ~adr:0x48 ~wdata:0x33333333 in
+  (* same-address pair through the FIFO: the younger store must win *)
+  let d = store_cost ~adr:0x4C ~wdata:0xAAAAAAAA in
+  let e = store_cost ~adr:0x4C ~wdata:0xBBBBBBBB in
+  inp.mem_pend := b1 false;
+  for _ = 1 to 24 do
+    Cyclesim.cycle sim
+  done;
+  let rd adr =
+    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
+  in
+  Stdlib.Printf.printf
+    "store costs: 1st %d  2nd %d  3rd %d  (then same-addr pair %d, %d)\n"
+    a
+    b
+    c
+    d
+    e;
+  Stdlib.Printf.printf
+    "readback: 0x%08X 0x%08X 0x%08X   same-addr final 0x%08X\n"
+    (rd 0x40)
+    (rd 0x44)
+    (rd 0x48)
+    (rd 0x4C);
+  [%expect
+    {|
+    store costs: 1st 1  2nd 1  3rd 5  (then same-addr pair 5, 5)
+    readback: 0x11111111 0x22222222 0x33333333   same-addr final 0xBBBBBBBB
+    |}]
+;;
+
+let%expect_test "cellram/wbuf depth-2 — 32-bit round-trip: word + byte stores [qcheck]" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let sim =
+    Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:2)
+  in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs ~clock_edge:Before sim in
+  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  let win = 16 in
+  let store ~adr ~ben ~wdata =
+    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben ~wdata : int)
+  in
+  let load_word w =
+    cpu_access sim inp outp ~internal:false ~adr:(w * 4) ~wr:false ~ben:false ~wdata:0
+  in
+  let check_seq ops =
+    for w = 0 to win - 1 do
+      store ~adr:(w * 4) ~ben:false ~wdata:0
+    done;
+    let model = Array.create ~len:win 0 in
+    List.for_all ops ~f:(fun (ben, adr, wdata) ->
+      store ~adr ~ben ~wdata;
+      let w = adr lsr 2 in
+      let l = adr land 3 in
+      if ben
+      then (
+        let byte = (wdata lsr (8 * l)) land 0xFF in
+        model.(w) <- model.(w) land lnot (0xFF lsl (8 * l)) lor (byte lsl (8 * l)))
+      else model.(w) <- wdata;
+      load_word w = model.(w))
+  in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:250
+       ~name:"cellram-wbuf2-roundtrip"
+       QCheck.(
+         list_size
+           (Gen.int_range 1 16)
+           (triple bool (int_range 0 ((win * 4) - 1)) (int_bound 0xFFFF_FFFF)))
+       check_seq);
+  [%expect {| |}]
 ;;
