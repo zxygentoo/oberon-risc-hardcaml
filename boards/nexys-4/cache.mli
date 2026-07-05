@@ -44,10 +44,10 @@
 
     {1 Geometry}
 
-    Direct-mapped, one 32-bit word per line, over the 1 MB window: [adr[19:2]] is the
-    18-bit word address, its low [lines_log2] bits the index, the rest the tag. A store
-    and a read never occur in the same core cycle (single-issue), so one write port serves
-    both fill (read-miss retire) and invalidate (snooped store). *)
+    Direct-mapped, one 32-bit word per line, over the full 16 MiB space: [adr[23:2]] is
+    the 22-bit word address, its low [lines_log2] bits the index, the rest the tag. A
+    store and a read never occur in the same core cycle (single-issue), so one write port
+    serves both fill (read-miss retire) and invalidate (snooped store). *)
 
 open Hardcaml
 
@@ -80,8 +80,8 @@ module O : sig
 end
 
 (** [create ?lines_log2 ?write_update i] builds the cache. [lines_log2] (default 10 = 1024
-    lines = 4 KiB of data) is log2 of the number of direct-mapped lines, valid 1..17
-    (checked; 18 would need a degenerate 0-bit tag); the tag is [18 - lines_log2] bits.
+    lines = 4 KiB of data) is log2 of the number of direct-mapped lines, valid 1..21
+    (checked; 22 would need a degenerate 0-bit tag); the tag is [22 - lines_log2] bits.
 
     [write_update] (default [false] = the proven Phase-10a snoop-invalidate) switches the
     store-hit snoop from {e invalidate} to {e update-in-place} for {b word} stores: the

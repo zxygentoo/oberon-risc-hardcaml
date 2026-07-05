@@ -74,7 +74,7 @@ let () =
               PSRAM port entirely; the golden proves shadow ≡ PSRAM window +
               byte-identical desktop (FB_BRAM=1). Synth watch: the four fb* arrays must
               infer as BLOCK RAM (~32 RAMB36, first BRAM use in the design — check the
-              util report), and the shadow write path (core_adr -> 18-bit window compare
+              util report), and the shadow write path (core_adr -> 22-bit window compare
               -> BRAM write port) must not disturb the cache-write critical path at 60
               MHz. *)
          ~fb_bram:true

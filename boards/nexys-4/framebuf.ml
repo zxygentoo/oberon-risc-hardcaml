@@ -39,9 +39,12 @@ end
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* the store's 18-bit word address in the 1 MB window — exactly {!Cache}'s cached
-     address, so shadow and PSRAM see the same aliasing *)
-  let wa = select i.adr ~high:19 ~low:2 in
+  (* the store's 22-bit word address (full 16 MiB — exactly {!Cache}'s cached address, and
+     {!Cellram}'s since 2a). This MUST match Cellram's width: with a narrow 18-bit compare a
+     himem store whose low 18 word-bits fall in [base, base+size) would false-match the
+     window and corrupt the shadow (and break shadow ≡ PSRAM, since Cellram no longer
+     aliases). The wide compare places all of himem outside the window. *)
+  let wa = select i.adr ~high:23 ~low:2 in
   let in_window = wa >=:. base &: (wa <:. base + size) in
   let widx = select (wa -:. base) ~high:(span_log2 - 1) ~low:0 in
   let ridx = select (i.vidadr -:. base) ~high:(span_log2 - 1) ~low:0 in
@@ -174,6 +177,12 @@ let%expect_test "framebuf — word store, byte-lane store, out-of-window store i
   (* likewise one word past the span's end (word Org + 0x8000, aliasing to index 0) *)
   store ~adr:((base + (1 lsl span_log2)) * 4) ~ben:0 ~wdata:0xFFFFFFFF;
   Stdlib.Printf.printf "above window    : %08X\n" (fetch base);
+  (* 2a himem-alias guard: word (Org + 2^18) is byte 0x1DFF00 in himem, but its low 18
+     word-bits equal Org — an 18-bit window compare would corrupt shadow index 0. The
+     22-bit compare (matching {!Cellram}) places it outside the window, so Org is
+     untouched. *)
+  store ~adr:((base + (1 lsl 18)) * 4) ~ben:0 ~wdata:0xFFFFFFFF;
+  Stdlib.Printf.printf "himem alias Org : %08X\n" (fetch base);
   (* the span's last word is writable *)
   store ~adr:((base + (1 lsl span_log2) - 1) * 4) ~ben:0 ~wdata:0x12345678;
   Stdlib.Printf.printf "last word       : %08X\n" (fetch (base + (1 lsl span_log2) - 1));
@@ -183,6 +192,7 @@ let%expect_test "framebuf — word store, byte-lane store, out-of-window store i
     byte store lane1: AABB11DD
     below window    : AABB11DD
     above window    : AABB11DD
+    himem alias Org : AABB11DD
     last word       : 12345678
     |}]
 ;;

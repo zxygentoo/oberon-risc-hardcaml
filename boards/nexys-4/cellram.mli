@@ -37,8 +37,11 @@
     A transaction is two 16-bit halfword phases (low half = even halfword address, high
     half = odd); each phase drives the async pins for a parameterized number of cycles
     ([read_cycles]/[write_cycles], sized so a phase covers the chip's 70 ns tAA at the
-    system clock — 5 at 60 MHz on the board). 1 MB window:
-    [MemAdr[18:0] = {adr[19:2], half}], [MemAdr[22:19] = 0].
+    system clock — 5 at 60 MHz on the board). The full 16 MiB chip is addressed:
+    [MemAdr[22:0] = {adr[23:2], half}] (the core's 24-bit byte address, less the two
+    byte-offset bits carried by the halfword/lane selects). Oberon itself still uses only
+    the low 1 MB; the [1 MB, 16 MB) himem is reachable by anything driving a high [adr]
+    (the DOOM blob — DOOM.md §3).
 
     {1 The on-chip fast path}
 

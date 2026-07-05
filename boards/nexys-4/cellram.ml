@@ -71,7 +71,7 @@ let create
   let half = Always.Variable.reg spec ~width:1 in
   let cnt = Always.Variable.reg spec ~width:cnt_width in
   let lo = Always.Variable.reg spec ~width:16 in
-  let req_word = Always.Variable.reg spec ~width:18 in
+  let req_word = Always.Variable.reg spec ~width:22 in
   let req_ben = Always.Variable.reg spec ~width:1 in
   let req_lane = Always.Variable.reg spec ~width:2 in
   let req_wdata = Always.Variable.reg spec ~width:32 in
@@ -88,7 +88,7 @@ let create
      untouched. Depth 1 reduces cycle-for-cycle to the proven single slot
      ([~full = empty], no shift, accept and completion can never coincide). *)
   let wb_cnt_w = Int.ceil_log2 (wbuf_depth + 1) in
-  let wb_word = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:18) in
+  let wb_word = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:22) in
   let wb_ben = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:1) in
   let wb_lane = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:2) in
   let wb_wdata = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:32) in
@@ -174,7 +174,7 @@ let create
       ; op_vid <--. 1
       ; op_wr <--. 0
       ; op_wb <--. 0
-      ; req_word <-- i.vidadr
+      ; req_word <-- uresize i.vidadr ~width:22 (* video is low-mem: top 4 bits zero *)
       ; half <--. 0
       ; cnt <-- cval (read_cycles - 1)
       ]
@@ -185,7 +185,7 @@ let create
       ; op_vid <--. 0
       ; op_wr <-- i.wr
       ; op_wb <--. 0
-      ; req_word <-- select i.adr ~high:19 ~low:2
+      ; req_word <-- select i.adr ~high:23 ~low:2 (* 22-bit word address, full 16 MiB *)
       ; req_ben <-- i.ben
       ; req_lane <-- select i.adr ~high:1 ~low:0
       ; req_wdata <-- i.wdata
@@ -262,7 +262,7 @@ let create
          let slot_stmts k =
            let capture =
              Always.
-               [ wb_word.(k) <-- select i.adr ~high:19 ~low:2
+               [ wb_word.(k) <-- select i.adr ~high:23 ~low:2
                ; wb_ben.(k) <-- i.ben
                ; wb_lane.(k) <-- select i.adr ~high:1 ~low:0
                ; wb_wdata.(k) <-- i.wdata
@@ -294,7 +294,8 @@ let create
   (* ── PSRAM pins ── address [{req_word, half}]; data the current half of the store word;
      control active during [busy]: CE always, OE on reads, WE pulsed on writes (high at
      [cnt_zero] so it rises before the address moves), byte enables per word/byte store. *)
-  let mem_adr = uresize (req_word_v @: half_v) ~width:23 in
+  let mem_adr = req_word_v @: half_v in
+  (* {22-bit word address, halfword select} = the full 23-bit halfword address = 16 MiB *)
   let mem_dq_o =
     mux2 half_v (select req_wdata_v ~high:31 ~low:16) (select req_wdata_v ~high:15 ~low:0)
   in
@@ -377,7 +378,9 @@ module Tb = struct
     [@@deriving hardcaml]
   end
 
-  let create ?read_cycles ?write_cycles ?write_buffer ?wbuf_depth (i : _ I.t) : _ O.t =
+  let create ?read_cycles ?write_cycles ?write_buffer ?wbuf_depth ?addr_bits (i : _ I.t)
+    : _ O.t
+    =
     let dq_i = wire 16 in
     let c =
       cr_create
@@ -399,6 +402,7 @@ module Tb = struct
     in
     let m =
       Cellram_model.create
+        ?addr_bits
         { Cellram_model.I.clock = i.clock
         ; mem_adr = c.mem_adr
         ; mem_dq_o = c.mem_dq_o
@@ -1354,4 +1358,140 @@ let%expect_test "cellram/wbuf depth-2 — 32-bit round-trip: word + byte stores 
            (triple bool (int_range 0 ((win * 4) - 1)) (int_bound 0xFFFF_FFFF)))
        check_seq);
   [%expect {| |}]
+;;
+
+(* ── 2a: himem addressing ([1 MB, 16 MB) reachable) ─────────────────────────── DOOM.md §3:
+   the core already emits 24-bit byte addresses; 2a widened the controller's word address
+   from 18 bits (1 MB) to 22 bits (16 MiB) so the DOOM blob/zone/WAD in himem are real
+   locations, distinct from their former low-1 MB aliases. Oberon is untouched (still a 1 MB
+   machine); only anything driving a high [adr] sees the difference. *)
+
+let%expect_test "cellram/2a — himem [1 MB, 16 MB) is addressable and distinct from low \
+                 memory"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* back 4 MiB so a few himem words round-trip (the real chip is 16 MiB); the default 1
+     MB model can't hold them. *)
+  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~addr_bits:22) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  let store adr wdata =
+    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben:false ~wdata : int)
+  in
+  let load adr =
+    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
+  in
+  (* the crux of 2a: under the old 18-bit mask (adr[19:2] drops bit 20+) byte 0x100000 and
+     byte 0 shared one word address, so a himem store clobbered low memory. Widened to
+     adr[23:2] they are distinct. 0x300000 sets word-address bits 20 and 21 together. *)
+  store 0x000000 0x11111111;
+  store 0x100000 0x22222222;
+  store 0x300000 0x33333333;
+  Stdlib.Printf.printf "low   0x000000 = 0x%08X\n" (load 0x000000);
+  Stdlib.Printf.printf "himem 0x100000 = 0x%08X\n" (load 0x100000);
+  Stdlib.Printf.printf "himem 0x300000 = 0x%08X\n" (load 0x300000);
+  [%expect
+    {|
+    low   0x000000 = 0x11111111
+    himem 0x100000 = 0x22222222
+    himem 0x300000 = 0x33333333
+    |}]
+;;
+
+let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM pins" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* pins only — the default 1 MB model is fine (a high store aliases in it harmlessly);
+     mem_adr carries the true 22-bit word address to the (16 MiB) chip regardless. *)
+  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0) in
+  inp.vidreq := b1 false;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  inp.cpu_internal := b1 false;
+  inp.ben := b1 false;
+  inp.wdata := Bits.of_unsigned_int ~width:32 0;
+  (* the phase-0 word address the controller drives for a store to [adr]: capture mem_adr
+     while WE is asserted in the low halfword phase (mem_adr[0] = 0), then drop the half. *)
+  let pin_word adr =
+    inp.mem_pend := b1 true;
+    inp.wr := b1 true;
+    inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    let seen = ref (-1)
+    and k = ref 0 in
+    while !seen < 0 && !k < 40 do
+      Cyclesim.cycle sim;
+      Int.incr k;
+      let we_n = Bits.to_int_trunc !(outp.we_n) in
+      let ma = Bits.to_unsigned_int !(outp.mem_adr) in
+      if we_n = 0 && ma land 1 = 0 then seen := ma lsr 1
+    done;
+    inp.mem_pend := b1 false;
+    Cyclesim.cycle sim;
+    !seen
+  in
+  (* addresses exercising each formerly-masked bit up to adr[23]; 0xFFBFFC is the top RAM
+     word just below the ROM region (adr[23:14] = 0x3FF). *)
+  List.iter [ 0x000004; 0x100000; 0x800000; 0xE00000; 0xFFBFFC ] ~f:(fun a ->
+    let w = pin_word a in
+    Stdlib.Printf.printf
+      "byte 0x%06X -> mem_adr word 0x%06X (expect 0x%06X, ok: %b)\n"
+      a
+      w
+      (a lsr 2)
+      (w = a lsr 2));
+  [%expect
+    {|
+    byte 0x000004 -> mem_adr word 0x000001 (expect 0x000001, ok: true)
+    byte 0x100000 -> mem_adr word 0x040000 (expect 0x040000, ok: true)
+    byte 0x800000 -> mem_adr word 0x200000 (expect 0x200000, ok: true)
+    byte 0xE00000 -> mem_adr word 0x380000 (expect 0x380000, ok: true)
+    byte 0xFFBFFC -> mem_adr word 0x3FEFFF (expect 0x3FEFFF, ok: true)
+    |}]
+;;
+
+let%expect_test "cellram/wbuf 2a — himem round-trip through the shipped write buffer \
+                 (depth 2)"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* the board's shipped memory config — write_buffer, depth 2 — over a 4 MiB model, so a
+     himem store captured into the FIFO and drained back exercises the [wb_word] 22-bit
+     widening on the exact path the board runs. Wbuf ce is input-driven ⇒
+     [~clock_edge:Before] (the Phase-10d harness lesson). *)
+  let sim =
+    Sim.create
+      (Tb.create
+         ~read_cycles:2
+         ~write_cycles:2
+         ~write_buffer:true
+         ~wbuf_depth:2
+         ~addr_bits:22)
+  in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs ~clock_edge:Before sim in
+  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
+  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+  let store adr wdata =
+    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben:false ~wdata : int)
+  in
+  let load adr =
+    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
+  in
+  (* a low word and two himem words drain through the FIFO and read back distinct —
+     0x100000 is word 0's alias under the old 18-bit mask, 0x2AAAA8 sets a scattered high
+     bit pattern *)
+  store 0x000000 0x0000000F;
+  store 0x100000 0xCAFEBABE;
+  store 0x2AAAA8 0x5A5A5A5A;
+  Stdlib.Printf.printf "low   0x000000 = 0x%08X\n" (load 0x000000);
+  Stdlib.Printf.printf "himem 0x100000 = 0x%08X\n" (load 0x100000);
+  Stdlib.Printf.printf "himem 0x2AAAA8 = 0x%08X\n" (load 0x2AAAA8);
+  [%expect
+    {|
+    low   0x000000 = 0x0000000F
+    himem 0x100000 = 0xCAFEBABE
+    himem 0x2AAAA8 = 0x5A5A5A5A
+    |}]
 ;;
