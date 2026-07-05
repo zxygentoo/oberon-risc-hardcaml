@@ -37,23 +37,25 @@ module O = struct
 end
 
 (* [lines_log2] = log2 of the number of lines (default 1024 lines = 4 KiB of data). The
-   cached address is the 18-bit word address of the 1 MB window ([adr[19:2]]); index = its
-   low [lines_log2] bits, tag = the rest. *)
+   cached address is the 22-bit word address of the 16 MiB space ([adr[23:2]]); index = its
+   low [lines_log2] bits, tag = the rest. (Widened from the 1 MB / 18-bit map for himem —
+   DOOM.md §3 track 2a; the extra tag bits distinguish [1 MB, 16 MB) from its low-1 MB
+   alias, so a himem line can no longer false-hit a low-memory one.) *)
 let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
-  (* outside 1..17 the index/tag selects die inside Hardcaml with an opaque width error
-     (18 would need a degenerate 0-bit tag); fail legibly at the seam instead *)
-  if lines_log2 < 1 || lines_log2 > 17
+  (* outside 1..21 the index/tag selects die inside Hardcaml with an opaque width error
+     (22 would need a degenerate 0-bit tag); fail legibly at the seam instead *)
+  if lines_log2 < 1 || lines_log2 > 21
   then
     failwith
       (Stdlib.Printf.sprintf
-         "Cache.create: lines_log2 = %d out of range (valid 1..17)"
+         "Cache.create: lines_log2 = %d out of range (valid 1..21)"
          lines_log2);
   let lines = 1 lsl lines_log2 in
-  let tag_w = 18 - lines_log2 in
+  let tag_w = 22 - lines_log2 in
   let line_w = 1 + tag_w + 32 in
-  let wa = select i.adr ~high:19 ~low:2 in
+  let wa = select i.adr ~high:23 ~low:2 in
   let index = select wa ~high:(lines_log2 - 1) ~low:0 in
-  let tag = select wa ~high:17 ~low:lines_log2 in
+  let tag = select wa ~high:21 ~low:lines_log2 in
   (* one synchronous write port, feedback-driven (fill/invalidate depend on the read) *)
   let we = wire 1 in
   let wd = wire line_w in
@@ -189,6 +191,40 @@ let%expect_test "icache — write-update: word store refreshes in place, byte st
     A after fill       : hit=1 rdata=0xAAAA0001
     A after word store : hit=1 rdata=0xBBBB0002
     A after byte store : hit=0
+    |}]
+;;
+
+(* 2a (DOOM.md §3): the tag widened 18→22 bits so a himem line can't false-hit its low-1
+   MB alias. Low word 0x10 (byte 0x40) and himem word 0x40010 (byte 0x100040) share index
+   0x10 and, under the OLD 18-bit tag, the same tag (bit 18 dropped) — the himem read
+   would have false-hit the low line. With the 22-bit tag their tags differ (0 vs 0x100),
+   so it misses. *)
+let%expect_test "icache — 2a: a himem [1 MB, 16 MB) line does not alias low memory" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let set r v w = r := Bits.of_unsigned_int ~width:w v in
+  let step ~adr ~ce =
+    set inp.adr adr 24;
+    set inp.cacheable_read 1 1;
+    set inp.write 0 1;
+    set inp.ce ce 1;
+    Cyclesim.cycle sim
+  in
+  let hit () = Bits.to_int_trunc !(outp.hit) in
+  set inp.fill_data 0xD00DF00D 32;
+  step ~adr:0x40 ~ce:1 (* miss on low word 0x10 → fill *);
+  step ~adr:0x40 ~ce:0;
+  Stdlib.Printf.printf "low line filled    : hit=%d\n" (hit ());
+  step ~adr:0x100040 ~ce:0 (* himem word 0x40010: same index, wider tag → miss *);
+  Stdlib.Printf.printf
+    "himem alias of low : hit=%d (0 = distinct tag, no false hit)\n"
+    (hit ());
+  [%expect
+    {|
+    low line filled    : hit=1
+    himem alias of low : hit=0 (0 = distinct tag, no false hit)
     |}]
 ;;
 

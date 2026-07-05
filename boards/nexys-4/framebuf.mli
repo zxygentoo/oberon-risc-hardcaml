@@ -35,7 +35,7 @@
 
 open Hardcaml
 
-(** The shadow's window in 18-bit word addresses: [[base, base + size)]. [base] is
+(** The shadow's window in 22-bit word addresses: [[base, base + size)]. [base] is
     {!Risc5.Video.org}; [size] is the full 32768-word DMA-addressable span. Exported for
     harnesses that read the shadow back (the board visual golden's shadow-vs-PSRAM
     equality check). *)

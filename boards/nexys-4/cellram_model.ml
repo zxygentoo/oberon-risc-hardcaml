@@ -6,9 +6,6 @@ open! Base
 open Hardcaml
 open Signal
 
-let depth = 1 lsl 19 (* 2^19 halfwords = 1 MB window *)
-let zero_init = Array.create ~len:depth (Bits.of_unsigned_int ~width:8 0)
-
 module I = struct
   type 'a t =
     { clock : 'a
@@ -26,8 +23,15 @@ module O = struct
   type 'a t = { mem_dq_i : 'a [@bits 16] } [@@deriving hardcaml]
 end
 
-let create (i : _ I.t) : _ O.t =
-  let hw_adr = select i.mem_adr ~high:(19 - 1) ~low:0 in
+(* [addr_bits] halfword-address bits are backed (default 19 = the faithful 1 MB window; the
+   real chip is 23 = 16 MiB). Boot / golden sims keep the default — the OS only drives the
+   low 1 MB, so a 1 MB model is exact and cheap; himem tests (DOOM.md §3) raise it to reach
+   [1 MB, 16 MB). Addresses above the backed span alias down (the top [23 - addr_bits] bits
+   are dropped) — harmless, since a smaller model is only used where no such address arises. *)
+let create ?(addr_bits = 19) (i : _ I.t) : _ O.t =
+  let depth = 1 lsl addr_bits in
+  let zero_init = Array.create ~len:depth (Bits.of_unsigned_int ~width:8 0) in
+  let hw_adr = select i.mem_adr ~high:(addr_bits - 1) ~low:0 in
   let write = ~:(i.ce_n) &: ~:(i.we_n) in
   let lane ~name ~lo ~hi ~lane_en =
     let write_port =

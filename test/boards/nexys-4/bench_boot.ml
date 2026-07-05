@@ -112,8 +112,10 @@ let must = function
    the straight-line OS code before the first I/O wait. [make_os] builds one instance; the
    closures keep the [Sim.t] type private. *)
 (* one CPU PSRAM access retiring this cycle, with its address — the raw material for the
-   miss-autopsy cache mirrors (Phase-10b). [wa] is the 18-bit word address of the 1 MB
-   window ([adr[19:2]], exactly {!Cache}'s cached address). *)
+   miss-autopsy cache mirrors (Phase-10b). [wa] is the 22-bit word address of the 16 MiB
+   space ([adr[23:2]], exactly {!Cache}'s cached address since 2a — DOOM.md §3). Boot only
+   drives the low 1 MB, so the mirror hit/miss stream is unchanged; the wider mask keeps
+   it exact for himem workloads too. *)
 type mem_ev =
   | Read of
       { wa : int
@@ -258,7 +260,7 @@ let make_os
     if ci n_core_ce <> 1
     then None
     else (
-      let wa = (ci n_core_adr lsr 2) land 0x3FFFF in
+      let wa = (ci n_core_adr lsr 2) land 0x3FFFFF in
       let read, hit = cache_ev () in
       if read
       then Some (Read { wa; hit; fetch = ci n_is_fetch = 1 })
