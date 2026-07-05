@@ -23,6 +23,7 @@ how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/
 | `nexys4_top.v` | hand-written vendor shim: MMCM / IOBUF / POR — the **only** vendor code |
 | `nexys4.xdc` | pin + clock/CDC constraints (from the Digilent master XDC) |
 | `gen_verilog.sh`, `*.tcl` | the emit → synth → program / flash flow (below) |
+| `RESET-FINDINGS.md` | HW-confirmed: why EO misbehaves after the reset button — phantom mouse-button bits from the HID bridge under a (faithful) mid-stream re-init; SoC reset wiring and timer verified faithful |
 
 Board integration tests (boot checkpoint, visual golden) live in `test/boards/nexys-4/`.
 

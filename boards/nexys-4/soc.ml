@@ -621,6 +621,50 @@ let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still 
     {| after 2000 clocks @ 50 clk/ms: ticks (cnt1) = 40   delivered (irq1 rises) = 40   every tick delivered (<=1 in flight): true |}]
 ;;
 
+let%expect_test "board soc — ms timer free-runs across a mid-run reset (RESET-FINDINGS)" =
+  (* The board SoC's timer is a hand-copy of lib/soc.ml's and can drift from it, so guard
+     it here too: RISC5Top's cnt0/cnt1 carry no rst term (l.139-140), and EO's
+     abort-recovery relies on [Kernel.Time()] never rewinding across a button reset. Same
+     property as the lib guard, through the PSRAM harness (a ce-gated core underneath — a
+     reset term would show as a rewind AND undercount). *)
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let nop = 0x40080000 in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:(Array.create ~len:8 nop) ~clocks_per_ms:10)
+  in
+  let inp = Cyclesim.inputs sim in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  let rst v = inp.rst_n := Bits.of_unsigned_int ~width:1 v in
+  let run n =
+    for _ = 1 to n do
+      Cyclesim.cycle sim
+    done
+  in
+  drive_idle inp;
+  rst 0;
+  run 1;
+  rst 1;
+  run 55;
+  let before = Cyclesim.Reg.to_int cnt1 in
+  rst 0;
+  run 27;
+  let at_release = Cyclesim.Reg.to_int cnt1 in
+  rst 1;
+  run 29;
+  let after = Cyclesim.Reg.to_int cnt1 in
+  (* 10 clocks/ms ⇒ a tick every 10th clock regardless of rst_n; ticks land inside the
+     asserted reset. cnt1 must be strictly non-decreasing across the whole sequence. *)
+  Stdlib.Printf.printf
+    "cnt1: before=%d at-release=%d after=%d   monotonic across reset: %b\n"
+    before
+    at_release
+    after
+    (at_release >= before && after >= at_release);
+  [%expect {| cnt1: before=5 at-release=8 after=11   monotonic across reset: true |}]
+;;
+
 let%expect_test "board soc — MMIO word 1: read {btn, sw}; store latches the LEDs" =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let nop = 0x40080000 in

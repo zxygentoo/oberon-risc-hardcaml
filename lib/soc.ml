@@ -352,6 +352,87 @@ let%expect_test "soc — millisecond timer ticks cnt1 every clocks_per_ms cycles
   [%expect {| cnt1 = 2 |}]
 ;;
 
+(* Button-reset regression guards (boards/nexys-4/RESET-FINDINGS.md). RISC5Top.OStation.v
+   lines 139-140 free-run the ms counter — no rst term — and Extended Oberon's
+   abort-recovery (preserved task [nextTime] stamps) depends on exactly that:
+   [Kernel.Time()] must never move backwards across a button reset. These pin it. *)
+
+let%expect_test "soc — ms timer free-runs across a mid-run reset (RISC5Top fidelity)" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (create ~contents:(Array.create ~len:8 nop) ~clocks_per_ms:10)
+  in
+  let inp = Cyclesim.inputs sim in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  let rst v = inp.rst_n := Bits.of_unsigned_int ~width:1 v in
+  let run n =
+    for _ = 1 to n do
+      Cyclesim.cycle sim
+    done
+  in
+  rst 0;
+  run 1;
+  rst 1;
+  run 55;
+  let before = Cyclesim.Reg.to_int cnt1 in
+  (* the button: reset asserted mid-run, long enough to span several would-be ticks *)
+  rst 0;
+  run 27;
+  let at_release = Cyclesim.Reg.to_int cnt1 in
+  rst 1;
+  run 29;
+  let after = Cyclesim.Reg.to_int cnt1 in
+  (* 10 clocks/ms ⇒ a tick every 10th clock regardless of rst_n: 56 cycles = 5, 83 = 8
+     (three ticks land INSIDE the asserted reset), 112 = 11. A reset term on cnt0/cnt1
+     would restart the count and fail here. *)
+  Stdlib.Printf.printf "cnt1: before=%d at-release=%d after=%d\n" before at_release after;
+  [%expect {| cnt1: before=5 at-release=8 after=11 |}]
+;;
+
+let%expect_test "soc — ms timer monotonic across random mid-run resets [qcheck]" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  (* one sim for all cases (§6 hoist); cnt1 never resets, so each case asserts on the
+     delta from its own start. Property: cnt1 non-decreasing on every single cycle, and
+     the case's total delta = elapsed/cpm rounded down or up (prescaler phase). *)
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (create ~contents:(Array.create ~len:8 nop) ~clocks_per_ms:7)
+  in
+  let inp = Cyclesim.inputs sim in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  QCheck.Test.check_exn
+    (QCheck.Test.make
+       ~count:200
+       ~name:"timer free-run under reset"
+       QCheck.(triple (int_bound 40) (int_bound 29) (int_bound 40))
+       (fun (pre, dur0, post) ->
+         let dur = dur0 + 1 in
+         let start = Cyclesim.Reg.to_int cnt1 in
+         let prev = ref start in
+         let mono = ref true in
+         let step rstv n =
+           inp.rst_n := Bits.of_unsigned_int ~width:1 rstv;
+           for _ = 1 to n do
+             Cyclesim.cycle sim;
+             let v = Cyclesim.Reg.to_int cnt1 in
+             if v < !prev then mono := false;
+             prev := v
+           done
+         in
+         step 1 pre;
+         step 0 dur;
+         step 1 post;
+         let delta = !prev - start in
+         let expected = (pre + dur + post) / 7 in
+         !mono && (delta = expected || delta = expected + 1)));
+  [%expect {| |}]
+;;
+
 let%expect_test "soc — MMIO read mux: word 0 = ms counter, RAM elsewhere" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let nop = 0x40080000 in
@@ -492,6 +573,72 @@ let%expect_test "soc — GPIO words 8/9: gpout/gpoc registers + gpin readback" =
     (r 3)
     (r 6);
   [%expect {| gpio_out=0x3C gpio_oe=0xFF   R3(gpin read)=0x5A R6(gpoc read)=0xFF |}]
+;;
+
+let%expect_test "soc — reset clears the RISC5Top-faithful register set, and only it" =
+  (* RISC5Top.OStation.v l.138-144: rst clears Lreg, spiCtrl, bitrate, gpoc — and
+     deliberately NOT gpout (no rst term) nor the free-running cnt0/cnt1. Configure
+     everything via the MMIO stub, then sample WHILE reset is asserted — after release the
+     CPU restarts and re-runs the stub, so during-assert is the honest observation window
+     (exactly the warm-reset moment RESET-FINDINGS.md is about). [bitrate] is cleared too
+     but carries no peek name — covered by inspection. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let nop = 0x40080000 in
+  let prog =
+    [| 0x640000FF (* MOV' R4, #0xFF<<16 R4 = 0xFF0000 *)
+     ; 0x4546FFC4 (* IOR R5, R4, #0xFFC4 R5 = word 1 (LEDs) *)
+     ; 0x4746FFD4 (* IOR R7, R4, #0xFFD4 R7 = word 5 (spiCtrl) *)
+     ; 0x4846FFE0 (* IOR R8, R4, #0xFFE0 R8 = word 8 (gpout) *)
+     ; 0x4946FFE4 (* IOR R9, R4, #0xFFE4 R9 = word 9 (gpoc) *)
+     ; 0x410000AB (* MOV R1, #0xAB *)
+     ; 0xA1500000 (* ST R1, [R5] Lreg := 0xAB *)
+     ; 0x42000005 (* MOV R2, #0x5 *)
+     ; 0xA2700000 (* ST R2, [R7] spiCtrl := 0x5 *)
+     ; 0x4300003C (* MOV R3, #0x3C *)
+     ; 0xA3800000 (* ST R3, [R8] gpout := 0x3C *)
+     ; 0x410000FF (* MOV R1, #0xFF *)
+     ; 0xA1900000 (* ST R1, [R9] gpoc := 0xFF *)
+     ; nop
+     ; nop
+     ; nop
+    |]
+  in
+  let sim =
+    Sim.create ~config:Cyclesim.Config.trace_all (create ~contents:prog ~clocks_per_ms:10)
+  in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let spi_ctrl = Option.value_exn (Cyclesim.lookup_reg_by_name sim "spi_ctrl") in
+  let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
+  let show tag =
+    Stdlib.Printf.printf
+      "%s leds=0x%X spi_ctrl=0x%X gpoc=0x%X | survivors: gpout=0x%X cnt1=%d\n"
+      tag
+      (Bits.to_unsigned_int !(outp.leds))
+      (Cyclesim.Reg.to_int spi_ctrl)
+      (Bits.to_unsigned_int !(outp.gpio_oe))
+      (Bits.to_unsigned_int !(outp.gpio_out))
+      (Cyclesim.Reg.to_int cnt1)
+  in
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  for _ = 1 to 39 do
+    Cyclesim.cycle sim
+  done;
+  show "configured:";
+  (* the button: hold reset across a tick (cycle 50) and sample with rst_n still low *)
+  inp.rst_n := Bits.of_unsigned_int ~width:1 0;
+  for _ = 1 to 12 do
+    Cyclesim.cycle sim
+  done;
+  show "in reset:  ";
+  inp.rst_n := Bits.of_unsigned_int ~width:1 1;
+  [%expect
+    {|
+    configured: leds=0xAB spi_ctrl=0x5 gpoc=0xFF | survivors: gpout=0x3C cnt1=4
+    in reset:   leds=0x0 spi_ctrl=0x0 gpoc=0x0 | survivors: gpout=0x3C cnt1=5
+    |}]
 ;;
 
 let%expect_test "soc — video DMA: vidreq steals a core cycle and steers the SRAM" =
