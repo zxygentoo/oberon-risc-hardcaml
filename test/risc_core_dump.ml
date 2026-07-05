@@ -303,7 +303,7 @@ let () =
   let cfg = read_config () in
   (* boot + capture: SoC + the shared off-chip SD card *)
   let tmp = copy_to_temp cfg.disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all

@@ -34,7 +34,7 @@ let cycle_cap = 80_000_000
 (* boot to the OS handoff; return the cycle count (or None if it never leaves the ROM) *)
 let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create ~fast_mul ~mul_stages ~icache ~read_cycles ~write_cycles i)
@@ -155,7 +155,7 @@ let make_os
   ()
   =
   let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create

@@ -20,7 +20,7 @@
 
 open Hardcaml
 module Core = Risc5.Cpu
-module R = Oracle.Risc
+module R = Emu.Risc
 module Sim = Cyclesim.With_interface (Core.I) (Core.O)
 
 (* a word index safely inside RAM (< mem_size/4) so the oracle fetches from ram.(pc) *)

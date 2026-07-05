@@ -23,7 +23,7 @@
    words the screen actually shows — and additionally asserts shadow ≡ PSRAM framebuffer
    window over the full span, the shadow's own coherence invariant), DISK_IMG the image. *)
 
-module R = Oracle.Risc
+module R = Emu.Risc
 open Hardcaml
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
@@ -69,16 +69,16 @@ let fb_base_word = 0x39FC0 (* display_start 0xE7F00 / 4 *)
 let boot_oracle frames =
   let tmp = copy_to_temp disk_image in
   let risc = R.make () in
-  R.set_serial risc (Oracle.Pclink.to_serial (Oracle.Pclink.create ()));
+  R.set_serial risc (Emu.Pclink.to_serial (Emu.Pclink.create ()));
   R.set_clipboard
     risc
-    (Oracle.Clipboard.to_clipboard
-       (Oracle.Clipboard.create
-          { Oracle.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
-  R.set_spi risc 1 (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp)));
-  Oracle.Headless.run_frames risc frames;
+    (Emu.Clipboard.to_clipboard
+       (Emu.Clipboard.create
+          { Emu.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
+  R.set_spi risc 1 (Emu.Disk.to_spi (Emu.Disk.create (Some tmp)));
+  Emu.Headless.run_frames risc frames;
   let fb = Array.init fb_words (fun i -> R.framebuffer_word risc i) in
-  let hash = Oracle.Headless.framebuffer_hash risc in
+  let hash = Emu.Headless.framebuffer_hash risc in
   (try Sys.remove tmp with
    | Sys_error _ -> ());
   fb, hash
@@ -114,7 +114,7 @@ let render fb ~sx ~sy =
   Buffer.contents buf
 ;;
 
-(* FNV-1a over the framebuffer words, matching Oracle.Headless.framebuffer_hash. *)
+(* FNV-1a over the framebuffer words, matching Emu.Headless.framebuffer_hash. *)
 let fb_fnv fb =
   let prime = 0x0000_0100_0000_01b3L
   and offset = 0xcbf2_9ce4_8422_2325L in
@@ -144,7 +144,7 @@ let boot_board
   ~settle
   =
   let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create

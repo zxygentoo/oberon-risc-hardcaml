@@ -12,8 +12,8 @@
 
     The circuit's image is a {b parameter} ([~contents]), not baked in — the SoC/emit
     chooses: tests feed hand-assembled programs, the real machine feeds [bootloader].
-    [Oracle.Boot_rom] holds the oracle's own transcription (from the C [risc-boot.inc])
-    for the emulator's internal boot; a guard test (test/test_rom.ml) pins it equal to
+    [Emu.Boot_rom] holds the oracle's own transcription (from the C [risc-boot.inc]) for
+    the emulator's internal boot; a guard test (test/test_rom.ml) pins it equal to
     [bootloader], so hardware and oracle can never boot different ROMs. *)
 
 open Hardcaml

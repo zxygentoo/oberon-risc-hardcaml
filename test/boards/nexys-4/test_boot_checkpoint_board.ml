@@ -26,7 +26,7 @@ let soc_cycle_cap = 80_000_000
 
 let run_soc_to_handoff () =
   let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   (* board SoC + PSRAM model at the checkpoint's small wait counts (Board_tb defaults: 2
      read/write cycles, cache off, ROM = Risc5.Rom). *)
   let sim = Sim.create ~config:Cyclesim.Config.trace_all (fun i -> Board_tb.create i) in

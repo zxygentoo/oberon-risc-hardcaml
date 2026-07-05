@@ -3,7 +3,7 @@
    boot + §8-aware compare + the [run] driver. The interface-specific [run_soc_to_handoff]
    (the Cyclesim setup + RAM read) lives in each checkpoint. *)
 
-module R = Oracle.Risc
+module R = Emu.Risc
 
 type snapshot =
   { pc : int
@@ -77,16 +77,16 @@ let rm_temp tmp =
 let boot_oracle_to_handoff () =
   let tmp = copy_to_temp disk_image in
   let oracle = R.make () in
-  R.set_serial oracle (Oracle.Pclink.to_serial (Oracle.Pclink.create ()));
+  R.set_serial oracle (Emu.Pclink.to_serial (Emu.Pclink.create ()));
   R.set_clipboard
     oracle
-    (Oracle.Clipboard.to_clipboard
-       (Oracle.Clipboard.create
-          { Oracle.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
-  R.set_spi oracle 1 (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp)));
+    (Emu.Clipboard.to_clipboard
+       (Emu.Clipboard.create
+          { Emu.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
+  R.set_spi oracle 1 (Emu.Disk.to_spi (Emu.Disk.create (Some tmp)));
   let steps = ref 0 in
   while R.For_tests.pc oracle >= oracle_ram_base && !steps < oracle_step_cap do
-    if !steps land 0xFFF = 0 then R.set_time oracle (Oracle.U32.wrap (!steps / 25000));
+    if !steps land 0xFFF = 0 then R.set_time oracle (Emu.U32.wrap (!steps / 25000));
     R.For_tests.single_step oracle;
     incr steps
   done;

@@ -123,7 +123,7 @@ Boot ROM image: `test/_po/verilog/prom.mem` (hex) + `test/_po/verilog/prom.bmm`.
    (free & exact in simulation); the **PSRAM async-SRAM adapter** (16↔32-bit width + stall-path
    wait-states) is a **deferred refactor** for board bring-up (see §4 — still needed since BRAM
    < 1 MB, but **far lighter than a DDR2/MIG** one).
-6. **Oracle:** the OCaml `risc_core` emulator, in-process, plus its FP vectors + boot ROM.
+6. **Oracle:** the OCaml `risc_core` emulator (`emu`), in-process, plus its FP vectors + boot ROM — our *behavioural* oracle; `RISC5.v` is the second, *fidelity* oracle (§6).
 7. **Toolchain:** **OxCaml** (opam switch `5.2.0+ox`) + Hardcaml **`v0.18~preview`** — chosen so
    the official `docs.hardcaml.org` matches our API exactly (it documents the OxCaml/preview
    build; vanilla opam stops at v0.17.1). Details and v0.18 API notes in §9.
@@ -195,15 +195,15 @@ Vivado-specific layer.
 
 | Phase | Deliverable | Oracle / proof |
 |---|---|---|
-| **0** ✅ | dune project on ox; emulator submodule + `oracle` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
+| **0** ✅ | dune project on ox; emulator submodule + `emu` wrapper lib; FP vectors & boot ROM via submodule; waveterm waveform rendered in the smoke | scaffold smoke (`dune test`) green |
 | **1** ✅ | `LeftShifter`, `RightShifter`, ALU logic/adder + C/V flags | unit specs / qcheck |
 | **2** ✅ | Register file (3R/1W async-read array) | unit |
 | **3a** ✅ | `Multiplier`, `Divider` (state counter + stall) | qcheck vs pure-OCaml integer reference (signed/unsigned 64-bit `*`, floored `/`); hardware-accurate (see §8 unsigned-`MUL` note) |
-| **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Oracle.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
-| **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Oracle.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
-| **5** ✅ | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the oracle on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter, opt-in via `dune build @boot_checkpoint` (§6) |
+| **3b** ✅ | `FPAdder`/`FPMultiplier`/`FPDivider` (+ FLT/FLOOR) | reachable-domain `fp_vectors.txt` + `Emu.Fp` fuzz; RTL co-sim vs the `.v` (`test/cosim/`) |
+| **4** ✅ | **CPU core** = PC/IR + control unit + stall aggregation + interrupts + N/Z (from `regmux`) | **single-instruction lockstep** vs `Emu.Risc.For_tests.single_step`, fuzzed (steering around §8); the interrupt FSM has no oracle (the emulator is interrupt-free), so it's a behavioural waveform vs `RISC5.v` instead — exhaustively the Phase-8 co-sim |
+| **5** ✅ | Memory + SoC harness + **SPI/SD-card master** (the one peripheral boot needs); boot the ROM through SD load to the **OS handoff** (`pc=0`) | **boot-handoff checkpoint** vs the emulator on the same `.dsk` (loaded image + arch state at the handoff) + SoC integration unit tests; plain Cyclesim interpreter, opt-in via `dune build @boot_checkpoint` (§6) |
 | **6a** ✅ | **Remaining peripherals**, each a faithful port: UART (`RS232R`/`RS232T`), PS/2 keyboard (`PS2`), PS/2 mouse (`MousePM`), video controller (`VID`, framebuffer DMA) | per-module **co-located `ppx_expect`/`qcheck` + Verilator RTL co-sim** vs the `.v` (`test/cosim/`) — the proven Phase 1–5 stack. (`hardcaml_step_testbench` + `event_driven_sim` were revisited at the mouse and **rejected**: its device model is a single sequential task, so the coroutine gave no benefit while running ~5× slower.) Closed with the **cosim-harness dedup** — a shared `run_serial_cosim` across SPI/RS232x/PS2 (+ the rename to `cosim.h`). VID is two-clock (`By_input_clocks`, the DCM→pclk a Phase-7 input); the mouse splits its open-drain `inout` into `*_oe` outputs + resolved inputs |
-| **6b** ✅ | **SoC top** — the full `RISC5Top` MMIO map (UART 2/3, mouse + kbd 6/7, GPIO 8/9, LEDs + switches 1) + the **video DMA / `stallX`** path; framebuffer out | **visual golden** — boot past the handoff to the idle Oberon desktop and assert the framebuffer is byte-identical to the oracle (hash `0xb9bdbf56ba51298d`, 18607 px; `dune build @visual_golden`). It surfaced a real **core** bug the single-instruction fuzzer structurally missed: ADD/SUB set the flags from `op` alone, lacking `RISC5.v`'s `~p`, so a *stalled* conditional branch whose op-field is 8/9 clobbered C → a spurious trap ~17.3 M cycles in. Caught + root-caused by a new **boot-stream RTL co-sim** (capture the core's per-cycle I/O over the boot, replay through `RISC5.v` under Verilator, find the first divergence — now the `core` unit of `dune build @cosim`, the core's first *cycle-level* RTL check before Phase 8). Fixed (one `~p`) + guarded in the fast suite (the ALU qcheck now drives `p`; the lockstep branch-gen now reaches op-field 8/9). The boot-handoff checkpoint extension over the new region stays a later option |
+| **6b** ✅ | **SoC top** — the full `RISC5Top` MMIO map (UART 2/3, mouse + kbd 6/7, GPIO 8/9, LEDs + switches 1) + the **video DMA / `stallX`** path; framebuffer out | **visual golden** — boot past the handoff to the idle Oberon desktop and assert the framebuffer is byte-identical to the emulator (hash `0xb9bdbf56ba51298d`, 18607 px; `dune build @visual_golden`). It surfaced a real **core** bug the single-instruction fuzzer structurally missed: ADD/SUB set the flags from `op` alone, lacking `RISC5.v`'s `~p`, so a *stalled* conditional branch whose op-field is 8/9 clobbered C → a spurious trap ~17.3 M cycles in. Caught + root-caused by a new **boot-stream RTL co-sim** (capture the core's per-cycle I/O over the boot, replay through `RISC5.v` under Verilator, find the first divergence — now the `core` unit of `dune build @cosim`, the core's first *cycle-level* RTL check before Phase 8). Fixed (one `~p`) + guarded in the fast suite (the ALU qcheck now drives `p`; the lockstep branch-gen now reaches op-field 8/9). The boot-handoff checkpoint extension over the new region stays a later option |
 | **7** ✅ | **Board shim:** `MMCM`, `IOBUF`/`ODDR`, **Cellular-RAM (PSRAM) async-SRAM adapter**, VGA/PS2/SD pins, `.xdc` → **bitstream**. The Phase-6 design ports **nearly unchanged** onto a **Nexys 4** and **boots Project Oberon to the idle desktop from an SD image** on real silicon. One bug surfaced — **horizontal video flicker** — whose cause the **Phase-8 formal layer had already pinpointed**: VID's framebuffer-fetch **CDC**, the one spot not cycle-equivalent to `VID60.v`. The Phase-6 `caught`/`req` handshake sampled a `pclk` flop directly in `clk` with no synchroniser (+ a clk→pclk feedback) — deterministic in sim, metastable/timing-marginal on silicon. **Fixed** with a metastability-safe **toggle pulse-synchroniser** (`lib/video.ml` `pulse_sync` — proven no-loss/no-spurious for all phases in Phase 8; the cosim + visual-golden confirm it's output-identical) **+ the matching `.xdc` CDC constraints** (`nexys4.xdc`: `set_clock_groups -asynchronous` clk25↔clk65 + `ASYNC_REG` on `sync0/1/2` — a `set_max_delay -datapath_only` on the `req_toggle→sync0` hop is deliberately *not* used: clock_groups outranks it in Vivado and would render it inert, and the routed hop is already ~0.95 ns; see the `nexys4.xdc` note). **Flicker confirmed gone on real hardware (both PO and EO)** — the fix holds on silicon. Post-route timing closes with WNS 9.389 ns (pixel domain) / 20.992 ns (clk25 domain), all constraints met. *Note:* the single onboard PS/2 port is wired to the mouse; the **PS/2 keyboard's on-hardware test is pending a Pmod PS/2 adapter** for the 2nd port (the `PS2` controller itself is proven in @formal + cosim, so this is a board-wiring bring-up step, not a design gap). | on-hardware boot ✅ |
 | **8** *(stretch)* ✅ *(in-scope)* | `test/formal` / `@formal`, two modes: **combinational** (`hardcaml_of_verilog` import + `hardcaml_verify` `Sec` + z3) and **sequential** (emit our Verilog → yosys `equiv_induct`, k-induction). **Working**: both shifters (z3) + the Multiplier, Divider and all three FP units (FPAdder/FPMultiplier/FPDivider; yosys, FFs paired by name) proven ≡ their `.v`, plus the **register file** proven ≡ a behavioural spec (`registers_spec.v` — `Registers.v`'s duplicated bit-sliced `RAM16X1D` is a synthesis idiom with incongruent state, so we prove the 16×32/3R/1W *contract*; §2/§3). Every datapath unit proven. And the **whole core glue** — incl. the **in-situ ALU** (`aluRes`, no standalone `.v`) — proven ≡ `RISC5.v` with the 8 submodules black-boxed (assume-guarantee: `equiv_make` merges + checks the unit inputs, `cutpoint -blackbox` assumes their outputs, sound on the leaf proofs; teeth-checked by mutation). The datapath + core layer is closed, and the **Tier-1 peripherals are now proven too** — the same yosys `equiv_induct` path extended to the faithful-`.v` peripherals (the exhaustive upgrade of their Phase-6a cosim): **Tier 1** RS232R/T, SPI, PS2 ✓ (clean single-clock FSMs as `sequential` rows; each lib register *named*, then paired to the RTL by a per-row `renames` list — e.g. `q0→Q0`, `spi_shreg→shreg`; SPI's `rdy` `output reg` pairs via the output port; PS2's 16×8 `fifo` pairs through the `memory` pass like the register file), **plus the Mouse** (Tier 2) ✓ — its open-drain `inout msclk/msdat` (we split into `*_oe`+resolved-input) handled by two shims wrapping *both* sides into one explicit interface with a **free** external read (else yosys ties the inout read to 0 and the FSM degenerates — a vacuous proof) and the resolved line `oe ? 0 : ext` as the observable; the tristate lowered by `tribuf -formal`/`chformal -remove`/`setundef -one` (the pad pull-up). **And VID** (Tier 2) ✓ — a *partial* multiclock proof: drop `VID60.v`'s DCM (Phase-7 primitive) + `expose -input pclk`, **cut** `vidbuf` to a shared free input so the raster + pixel datapath prove ≡ `VID60.v` *given the fetched word*, and **`equiv_remove`** the `req` handshake — the framebuffer-fetch CDC deliberately departs (our toggle pulse-synchroniser vs the RTL async-set `req1`). That departure's **fetch invariant** is then closed by a *property* proof (`vid_invariant`): the extracted `pulse_sync` primitive is proven **one-`req`-per-`req0`, no loss, no spurious — for all clk/pclk phases and all reachable states** via `yosys-smtbmc -i`/z3 **k-induction** (the engine SymbiYosys wraps; no `sby` needed — and no hand-crafted inductive invariant: k≈48 spanning a fetch cycle suffices) — the CDC-robustness the single-phase Cyclesim test can't reach. The 2-group prefetch's `vidadr` departure is closed the same way — by **decomposition**: its look-ahead address is proven ≡ an independent geometry spec (`vid_addr`, combinational `Sec`/z3, all `(hcnt,vcnt)`), timing comes from `vid_invariant`, and a **reviewed composition lemma** glues them (the one place a hand argument bridges the mechanized pieces; the monolithic all-phases proof doesn't converge — col 0 is cross-line; see test/formal/README "VID prefetch"). **17 checks** total, each mutation-checked. *(That VID-CDC departure was no longer just a sim artifact: its `caught` one-shot turned out to be a real metastability bug on the Nexys 4 — horizontal flicker — so `video.ml` now ships the synchroniser the proof is built around; the formal layer flagged the exact fragile spot.)* **Out of scope:** the SoC top (`RISC5Top`) — board-specific, our sim `Soc` ≠ `RISC5Top.OStation.v` by design (DCM/PROM/IOBUF/memory are Phase 7); revisit only if a board SoC lands. See test/formal/README | z3 `Unsat` / yosys all-`$equiv`-proven |
 | **9** *(stretch)* ✅ *(compute arc)* | **Optimization pass** — from the verified-correct, Phase-8-proven baseline, make it faster / more idiomatic: DSP-backed `*:`/`*+` for MUL/DIV, pipelining, idiomatic rewrites, dropping iterative stalls where behavior-preserving. *Landed:* DSP MUL + FML, pipelined to **60 MHz**, benchmarked end-to-end (`test/bench/`). *Deferred:* Newton-Raphson DIV. *Verdict:* memory-bound, not compute-bound → Phase 10 | architectural lockstep only (instruction-level state + Oberon still boots & runs end-to-end); cycle-accuracy & formal eq vs `RISC5.v` intentionally relaxed |
@@ -421,7 +421,7 @@ a new architectural block, not in the faithful RTL).
 
 Each layer's oracle already exists next door — this is our biggest leverage.
 
-**Two oracles, split by the question they answer.** The OCaml `risc_core` emulator is the
+**Two oracles, split by the question they answer.** The OCaml `risc_core` emulator (library `emu`) is the
 *system-state* oracle: bit-exact architectural state (`pc`/`r[]`/`H`/`flags`) at *instruction*
 granularity (its ms-clock is injected, not cycle-derived — it sees no wire and no cycle). Its
 home is single-instruction lockstep (layer 4) and the boot-handoff checkpoint (layer 5). The **original Verilog itself**, run
@@ -438,7 +438,7 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
 2. **FP vectors** — replay `fp_vectors.txt` through the FP units over the *compiler-reachable*
    domain (FLT/FLOOR always carry the fixed 2nd operand `0x4B000000`; steer around the
    unreachable forms where the C-derived oracle diverges from `RISC5.v` — see §8), plus a fuzz
-   of the reachable conversion domain against `Oracle.Fp`.
+   of the reachable conversion domain against `Emu.Fp`.
 3. **RTL co-sim (fidelity)** — our `test/cosim/`: dump the Hardcaml unit's outputs over a
    stimulus set, replay them through the reference `.v` under Verilator, assert bit-exact.
    Opt-in (needs Verilator; outside `dune runtest`). The reference `.v` is not vendored — the
@@ -446,12 +446,12 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
    OCaml dumper builds under `@check` so it can't rot. The simulation preview of layer 6: one
    shared `fp_dump.ml` over the FP units + a per-unit `<unit>.cpp`.
 4. **Single-instruction lockstep** — drive random instructions into the Hardcaml CPU sim,
-   compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Oracle.Risc.For_tests.single_step`.
+   compare architectural state (`pc`, `r[]`, `h`, `flags`) against `Emu.Risc.For_tests.single_step`.
    `qcheck`-fuzzed, like the OCaml repo's `test/cosim/test_cosim_cpu.ml` (steering §8).
 5. **Boot-handoff checkpoint** — *not* per-instruction lockstep, which a booting machine defeats
    (the §8 code-address skew while running from ROM, the interrupt-free oracle, its injected vs our
    cycle-derived ms-clock, and SD/timer poll timing all diverge step-by-step without diverging in
-   *result*). Instead: drive our SoC's SD card from the **same `Oracle.Disk` + `.dsk`** the oracle
+   *result*). Instead: drive our SoC's SD card from the **same `Emu.Disk` + `.dsk`** the emulator
    boots, run both through the SD load to the **OS handoff** (the boot loader jumps to the inner
    core at `pc=0` in low RAM — empirically ~403 K instructions, ~21 K SPI transactions), and compare
    the **loaded image + architectural state there**. Exact because the handoff is where
@@ -504,7 +504,7 @@ out-of-process under Verilator and compares dumps, which needs no yosys.)
 
 **Harness — co-locate genuine unit/module tests; keep a separate harness only for
 system-level tests.** Co-location is the default — reach for `test/` only when a test *can't* sit
-in `lib`: it couples to the emulator oracle (the dep we deliberately keep out of `lib`), or it's a
+in `lib`: it couples to the emulator (the dep we deliberately keep out of `lib`), or it's a
 system-level harness (the boot checkpoint). Module tests live *inline in the design
 module's own `.ml`* via
 `ppx_expect` (`let%expect_test`): waveform expect tests — render with `hardcaml_waveterm`,
@@ -518,8 +518,8 @@ to the rendered width rather than omitting it, so a rolling `v0.18~preview` defa
 silently reflow the frozen ASCII out from under the `[%expect]`. Find the pin once: render wide,
 then shrink until the last cell keeps ~2 trailing spaces with no cycle clipped (≈70 for 5 cycles of
 32-bit hex, ≈58 for 4; `left_shifter.ml` is the reference shape). Compose
-with the oracle where it applies (single-instruction lockstep, Phase 4): waveform for visible
-behavior + architectural-state assertions against `Oracle.Risc`.
+with the emulator where it applies (single-instruction lockstep, Phase 4): waveform for visible
+behavior + architectural-state assertions against `Emu.Risc`.
 
 Mechanics, with an honest caveat (verified empirically, not assumed — dune 3.22, ppx_expect
 v0.18~preview). A co-located `let%expect_test` compiles *as part of the library*, so the tooling
@@ -533,9 +533,9 @@ that they're host-side OCaml dev tools from the Jane Street/Hardcaml ecosystem w
 they *never reach the generated Verilog*: `Rtl.print` lowers the circuit graph, not the library's
 OCaml deps, so the netlist is identical with or without them. (Escape hatch, unused: `(pps …
 -inline-test-drop)` strips the test bodies and their deps — at the cost of those tests in that
-build.) The one dep we deliberately keep *out* of `lib` is the emulator — oracle-coupled tests
+build.) The one dep we deliberately keep *out* of `lib` is the emulator — emu-coupled tests
 (single-instruction lockstep Phase 4, the boot checkpoint Phase 5) live in `test/` (depending on `risc5` +
-`oracle`), so the synthesizable design never depends on the software model. `lib/dune` carries
+`emu`), so the synthesizable design never depends on the software model. `lib/dune` carries
 `(inline_tests)` + `(preprocess (pps ppx_hardcaml ppx_expect))`.
 
 ---
@@ -643,7 +643,7 @@ oberon-risc-hardcaml/
       cache.{ml,mli}          Phase-10a/b direct-mapped write-through read/I-cache (async LUTRAM) — 0-stall hit before Cellram
       framebuf.{ml,mli}       Phase-10c framebuffer BRAM shadow — video DMA served on-chip, off the PSRAM port
       soc.{ml,mli}            board SoC — core(`ce`) + Cellram + peripherals + video (+ optional Cache)
-      emit_verilog.ml         emit the board SoC as Verilog (module name stays `soc_board`; ROM from Risc5.Rom → oracle-free); run by gen_verilog.sh
+      emit_verilog.ml         emit the board SoC as Verilog (module name stays `soc_board`; ROM from Risc5.Rom → emu-free); run by gen_verilog.sh
       nexys4_top.v          hand-written shim: MMCM / IOBUF / POR — the ONLY vendor code
       nexys4.xdc            pin constraints (derived from the Digilent master XDC)
       *.tcl, gen_verilog.sh Vivado emit → synth → program flow
@@ -659,7 +659,7 @@ oberon-risc-hardcaml/
                             bench_boot (the board gauge), sharing the `board_tb` harness
                             (@boot_checkpoint_board / @visual_golden_board / @bench_boot)
     bench/                ← the target-independent gauges (@bench = lib units,
-                            @profile_boot = oracle, both opt-in); README.md there is the
+                            @profile_boot = emu, both opt-in); README.md there is the
                             index for all three gauges incl. the board's @bench_boot
     fetch-rtl.sh          ← fetch + checksum-verify the reference .v on demand (shared by
     rtl-sources.txt         cosim + formal); the provenance pins live in rtl-sources.txt
@@ -668,10 +668,10 @@ oberon-risc-hardcaml/
     _work/                ← test scratch, git-ignored (Verilator obj_dirs, dumped traces,
                             the downloaded zip, yosys/z3 intermediates); safe to delete
   vendor/
-    oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator/oracle, pinned
+    oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator (our behavioural oracle), pinned
                               (data_only_dirs: dune ignores its own project files)
-    oracle/               ← compiles the submodule's lib/ into library `oracle`
-                            (Oracle.Risc, Oracle.Fp, Oracle.Boot_rom, …)
+    emu/                  ← compiles the submodule's lib/ into library `emu`
+                            (Emu.Risc, Emu.Fp, Emu.Boot_rom, …)
 ```
 
 **Board layer layout (Phase 7, locked).** Each target is `boards/<target>/` — a
@@ -682,22 +682,22 @@ vendor primitives (MMCM/IOBUF/POR) live in the hand-written `nexys4_top.v`. Gene
 artifacts hoist to `boards/_generated/<target>/` + `boards/_build/<target>/` — two all-boards
 `.gitignore` entries (`/boards/_generated/`, `/boards/_build/`) — so every `boards/<target>/`
 stays pure tracked source. The board's Verilog emitter (`emit_verilog`) lives here too —
-it bakes the design ROM (`Risc5.Rom`), so the whole `boards/<target>/` is oracle-free. Tests
+it bakes the design ROM (`Risc5.Rom`), so the whole `boards/<target>/` is emu-free. Tests
 follow §6: `cellram`/`icache` unit checks co-locate inline against `cellram_model` (in the
-board lib, no oracle); the oracle-coupled board integration tests — the PSRAM boot checkpoint +
+board lib, no emu); the emu-coupled board integration tests — the PSRAM boot checkpoint +
 visual golden — live in `test/boards/<target>/`, sharing the `board_tb` harness.
 
-**Oracle wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
+**Emu wiring (decided Phase 0).** `oberon-risc-emu-ocaml` is a git submodule under
 `vendor/`. Its `risc_core` is a *private* library behind its own `dune-project`, which dune
-won't expose across the project boundary — so `vendor/oracle/dune` `copy_files` its `lib/`
-sources and builds them as library **`oracle`** in our project (warnings off; only dep is
+won't expose across the project boundary — so `vendor/emu/dune` `copy_files` its `lib/`
+sources and builds them as library **`emu`** in our project (warnings off; only dep is
 `unix`). Self-contained and leaves the submodule pristine. *Cleaner alternative if ever
 wanted:* give the emulator a `public_name` upstream (needs a package stanza in that repo),
 then depend on it directly and delete the wrapper. FP vectors
 (`vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt`) come straight from the submodule. The
 boot ROM lives in the design as `Risc5.Rom` (so the published `risc5` library is
-self-contained); the oracle keeps its own `Oracle.Boot_rom` copy, and a guard test
-(`test/test_rom.ml`) pins the two equal — design and oracle can never boot different images.
+self-contained); the emulator keeps its own `Emu.Boot_rom` copy, and a guard test
+(`test/test_rom.ml`) pins the two equal — design and emulator can never boot different images.
 
 **Toolchain:** **OxCaml** — opam switch **`5.2.0+ox`** (`ocaml-variants.5.2.0+ox`), dune
 `3.22+ox`, Hardcaml **`v0.18~preview`** (with `ppx_hardcaml` + `hardcaml_waveterm`, same
@@ -780,9 +780,9 @@ full `lookup_*` introspection the harness needs.
     `of_unsigned_int ~width` / `of_signed_int ~width` (use these instead of v0.17's `to_int`/`of_int`).
   - `mux sel list` and `mux2 sel t f` stay positional; `Signal.input`/`Signal.output` unchanged.
 - Hardcaml → Verilog: `Rtl.print Rtl.Language.Verilog circuit`.
-- The toolchain wiring (the `oracle` callable on ox, `ppx_hardcaml` interfaces +
+- The toolchain wiring (the `emu` callable on ox, `ppx_hardcaml` interfaces +
   `Cyclesim.With_interface`, `hardcaml_waveterm` waveform render) is now exercised by the real
-  suite itself — every FP replay and the CPU lockstep link and call `oracle`, all the `test_*`
+  suite itself — every FP replay and the CPU lockstep link and call `emu`, all the `test_*`
   build and simulate Hardcaml circuits, and the lib's co-located `let%expect_test` waveforms drive
   `hardcaml_waveterm`. (The standalone Phase-0 `test_scaffold` smoke that originally certified this
   was retired once those real tests subsumed it.)

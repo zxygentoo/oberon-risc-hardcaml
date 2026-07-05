@@ -21,7 +21,7 @@
 (executable
  (name profile_boot)
  (modules profile_boot)
- (libraries oracle boot_checkpoint_common))
+ (libraries emu boot_checkpoint_common))
 
 (rule
  (alias profile_boot)

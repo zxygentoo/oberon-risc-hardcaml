@@ -15,7 +15,7 @@
     the same instruction) and gates the register write until the final cycle.
 
     The core is assembled across Phase 4 in vertical slices, each ending at a green
-    instruction-lockstep milestone against [Oracle.Risc] (AGENT.md §6): the fetch/decode
+    instruction-lockstep milestone against [Emu.Risc] (AGENT.md §6): the fetch/decode
     spine, then register ALU ops, the multi-cycle units, branches, load/store, and
     interrupts. The ports below are the final SoC-facing interface throughout. *)
 

@@ -1,9 +1,9 @@
 (* Public API and design notes live in [sd_bridge.mli]. Factored out of the three SoC
    integration tests (boot checkpoint / visual golden / core RTL co-sim capture), which
-   all bit-bang the same off-chip SD card over Oracle.Disk. *)
+   all bit-bang the same off-chip SD card over Emu.Disk. *)
 
 type t =
-  { spi : Oracle.Io.spi
+  { spi : Emu.Io.spi
   ; mutable rx_seq :
       int array (* miso bits for the current transfer, MSbit-first per byte *)
   ; mutable rx_idx : int
@@ -16,7 +16,7 @@ let create spi =
   { spi; rx_seq = [||]; rx_idx = 0; prev_sclk = 0; prev_rdy = 1; nbytes = 0 }
 ;;
 
-(* One transfer = one whole-value exchange with [Oracle.Disk] (write-then-read, the
+(* One transfer = one whole-value exchange with [Emu.Disk] (write-then-read, the
    emulator's order), gated on the SD being selected (the emulator's [spi_selected]). The
    response value is unpacked into the [miso] bit sequence the master will shift in. *)
 let begin_ b ~data_tx ~fast ~selected =

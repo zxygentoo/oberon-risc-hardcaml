@@ -4,7 +4,7 @@
 
    Unlike the adder, FML has no compiler-unreachable domain and no emulator-vs-RTL
    divergence (AGENT.md §8), so it needs no steering: replay every M-vector and fuzz
-   against Oracle.Fp via the shared [Fp_replay.simple_value_test]. *)
+   against Emu.Fp via the shared [Fp_replay.simple_value_test]. *)
 
 open Hardcaml
 module Fp = Risc5.Fp_multiplier
@@ -19,5 +19,5 @@ let () =
     Fp_replay.set inp.y y;
     Fp_replay.drive sim ~run:inp.run ~stall:outp.stall ~z:outp.z
   in
-  Fp_replay.simple_value_test ~name:"fp-multiplier" ~tag:"M" ~run ~oracle:Oracle.Fp.fp_mul
+  Fp_replay.simple_value_test ~name:"fp-multiplier" ~tag:"M" ~run ~oracle:Emu.Fp.fp_mul
 ;;

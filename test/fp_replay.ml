@@ -2,7 +2,7 @@
    test_fp_adder/_multiplier/_divider executables). The sim-drive protocol, the
    frozen-vector loader and the fuzz RNG live here once; each test supplies its unit (via
    a [run] closure that hides the interface differences — the adder carries u/v, mul/div
-   don't), its [fp_vectors] line tag and its [Oracle.Fp] function.
+   don't), its [fp_vectors] line tag and its [Emu.Fp] function.
 
    This is the value-correctness (behavioural) layer that runs under `dune runtest`,
    distinct from the opt-in Verilator fidelity co-sim in test/cosim/ (AGENT.md §6). The
@@ -100,7 +100,7 @@ let fuzz_xy ~name ~run ~oracle =
          let x = u32 x
          and y = u32 y in
          run ~x ~y = oracle x y));
-  Printf.printf "%s fuzz: 20000 QCheck cases vs Oracle.Fp, ok\n" name
+  Printf.printf "%s fuzz: 20000 QCheck cases vs Emu.Fp, ok\n" name
 ;;
 
 (* No-steering value test for a unit with no compiler-unreachable / divergent domain (FML,

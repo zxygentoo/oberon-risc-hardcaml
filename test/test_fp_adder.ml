@@ -5,8 +5,8 @@
    adder has a real emulator-vs-RTL divergence, so it cannot use
    [Fp_replay.simple_value_test].
 
-   The oracle is the frozen fp_vectors.txt (C-generated; Oracle.Fp is bit-identical to
-   it). Each [A x y u v result] line is one FAD/FSB/FLT/FLOOR case. We verify over the
+   The oracle is the frozen fp_vectors.txt (C-generated; Emu.Fp is bit-identical to it).
+   Each [A x y u v result] line is one FAD/FSB/FLT/FLOOR case. We verify over the
    COMPILER-REACHABLE domain:
    - FAD/FSB (u=0, v=0): any operands.
    - FLT (u=1) / FLOOR (v=1): the compiler (ORG.Mod, Float/Floor) fixes the second operand
@@ -18,7 +18,7 @@
    (every reachable bucket 100% pass); and a Verilator co-sim of FPAdder.v (the Hardcaml
    port is bit-exact to the RTL, agreeing with it AND disagreeing with the oracle on the
    junk). So we replay the reachable frozen vectors, steer around the unreachable forms,
-   and additionally fuzz the reachable FLT/FLOOR domain against Oracle.Fp for depth the
+   and additionally fuzz the reachable FLT/FLOOR domain against Emu.Fp for depth the
    ~24-each frozen sample lacks. See the [[fp-flt-floor-magic-operand]] memory. *)
 
 open Hardcaml
@@ -112,8 +112,8 @@ let replay_reachable run =
   !fails
 ;;
 
-(* fuzz the reachable FLT/FLOOR domain (y=magic) against Oracle.Fp — the frozen set
-   samples only ~24 x each, and FLT's real domain is 32-bit integers. The [edges] run
+(* fuzz the reachable FLT/FLOOR domain (y=magic) against Emu.Fp — the frozen set samples
+   only ~24 x each, and FLT's real domain is 32-bit integers. The [edges] run
    deterministically; the random pass is QCheck, each x checked as both FLT and FLOOR.
    Prints a summary; returns the edge mismatch count (the QCheck pass raises on failure). *)
 let fuzz_conversions run =
@@ -122,7 +122,7 @@ let fuzz_conversions run =
   let check_conv ~u ~v x =
     incr conv_n;
     let got = run ~u ~v ~x ~y:magic in
-    let want = Oracle.Fp.fp_add x magic (u = 1) (v = 1) in
+    let want = Emu.Fp.fp_add x magic (u = 1) (v = 1) in
     if got <> want
     then (
       incr conv_fails;
@@ -142,10 +142,10 @@ let fuzz_conversions run =
        (QCheck.set_print (fun x -> Printf.sprintf "x=%08lx" x) QCheck.int32)
        (fun x32 ->
          let x = Fp_replay.u32 x32 in
-         run ~u:1 ~v:0 ~x ~y:magic = Oracle.Fp.fp_add x magic true false
-         && run ~u:0 ~v:1 ~x ~y:magic = Oracle.Fp.fp_add x magic false true));
+         run ~u:1 ~v:0 ~x ~y:magic = Emu.Fp.fp_add x magic true false
+         && run ~u:0 ~v:1 ~x ~y:magic = Emu.Fp.fp_add x magic false true));
   Printf.printf
-    "fp-adder fuzz: %d edge + 5000 QCheck FLT/FLOOR cases vs Oracle.Fp, %d edge fail\n"
+    "fp-adder fuzz: %d edge + 5000 QCheck FLT/FLOOR cases vs Emu.Fp, %d edge fail\n"
     !conv_n
     !conv_fails;
   !conv_fails

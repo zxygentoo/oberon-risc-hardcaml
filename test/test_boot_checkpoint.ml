@@ -1,8 +1,8 @@
 (* Phase 5 — boot-handoff checkpoint (AGENT.md §6 layer 5).
 
    Boot the minimal SoC from the real disk image — with the SD card modelled test-side by
-   a bit-level SPI slave over [Oracle.Disk] — to the OS handoff (pc leaves the boot ROM
-   for low RAM), then compare the loaded image + architectural state against the oracle
+   a bit-level SPI slave over [Emu.Disk] — to the OS handoff (pc leaves the boot ROM for
+   low RAM), then compare the loaded image + architectural state against the oracle
    booting the same [.dsk]. They agree exactly, modulo the §8 code-address skew (which
    self-heals in low RAM): the static loaded image is byte-identical; only runtime
    pc-links (R15, boot-stack saved links) carry the constant ROM-base offset.
@@ -23,7 +23,7 @@ let soc_cycle_cap = 30_000_000
    leaves the ROM within the cycle cap. *)
 let run_soc_to_handoff () =
   let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp))) in
+  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all

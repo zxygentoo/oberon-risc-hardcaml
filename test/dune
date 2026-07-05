@@ -9,14 +9,14 @@
 
 (data_only_dirs _po _work)
 
-; Shared off-chip SD card (bit-level SPI slave over Oracle.Disk) used by the SoC integration
+; Shared off-chip SD card (bit-level SPI slave over Emu.Disk) used by the SoC integration
 ; tests — the BRAM boot checkpoint / visual golden + core RTL co-sim capture below, and the
 ; board (PSRAM) checkpoint / visual golden in test/boards/nexys-4/.
 
 (library
  (name sd_bridge)
  (modules sd_bridge)
- (libraries oracle))
+ (libraries emu))
 
 ; Shared bounded forked-worker pool + PASS/FAIL summary, used by both opt-in RTL-fidelity
 ; runners — cosim's cosim_run and formal's formal_run (see fork_pool.mli).
@@ -33,7 +33,7 @@
 (library
  (name boot_checkpoint_common)
  (modules boot_checkpoint_common)
- (libraries oracle))
+ (libraries emu))
 
 (tests
  (names
@@ -49,7 +49,7 @@
   test_fp_divider
   test_cpu_lockstep
   test_rom)
- (libraries risc5 oracle hardcaml qcheck-core)
+ (libraries risc5 emu hardcaml qcheck-core)
  ; Phase 3b: the frozen FP vectors (vendored, data-only) feed test_fp_adder's replay.
  (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
  (preprocess
@@ -61,7 +61,7 @@
 (executable
  (name test_boot_checkpoint)
  (modules test_boot_checkpoint)
- (libraries risc5 oracle hardcaml sd_bridge boot_checkpoint_common))
+ (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common))
 
 (rule
  (alias boot_checkpoint)
@@ -76,7 +76,7 @@
 (executable
  (name test_visual_golden)
  (modules test_visual_golden)
- (libraries risc5 oracle hardcaml sd_bridge))
+ (libraries risc5 emu hardcaml sd_bridge))
 
 (rule
  (alias visual_golden)
@@ -97,7 +97,7 @@
 (executable
  (name risc_core_dump)
  (modules risc_core_dump)
- (libraries risc5 oracle hardcaml unix sd_bridge))
+ (libraries risc5 emu hardcaml unix sd_bridge))
 
 ; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
 ; their own dune — driven by `dune build @bench` / `@profile_boot`. The board-SoC Verilog

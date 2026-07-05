@@ -11,7 +11,7 @@
 (copy_files ../oberon-risc-emu-ocaml/lib/*.mli)
 
 (library
- (name oracle)
+ (name emu)
  (libraries unix)
  (flags
   (:standard -w -a)))

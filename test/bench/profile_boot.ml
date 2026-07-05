@@ -13,7 +13,7 @@
 
    Run: dune build @profile_boot (or dune exec test/profile_boot.exe) *)
 
-module R = Oracle.Risc
+module R = Emu.Risc
 module BCC = Boot_checkpoint_common
 
 let oracle_ram_base = 0x4_0000 (* word pc < this ⇒ low RAM (OS); else ROM *)
@@ -24,15 +24,15 @@ let () =
   (* boot the oracle exactly as the checkpoint does: PCLink + no-op clipboard + the disk *)
   let tmp = BCC.copy_to_temp BCC.disk_image in
   let oracle = R.make () in
-  R.set_serial oracle (Oracle.Pclink.to_serial (Oracle.Pclink.create ()));
+  R.set_serial oracle (Emu.Pclink.to_serial (Emu.Pclink.create ()));
   R.set_clipboard
     oracle
-    (Oracle.Clipboard.to_clipboard
-       (Oracle.Clipboard.create
-          { Oracle.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
-  R.set_spi oracle 1 (Oracle.Disk.to_spi (Oracle.Disk.create (Some tmp)));
+    (Emu.Clipboard.to_clipboard
+       (Emu.Clipboard.create
+          { Emu.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
+  R.set_spi oracle 1 (Emu.Disk.to_spi (Emu.Disk.create (Some tmp)));
   let ram = R.For_tests.ram oracle in
-  let bootrom = Oracle.Boot_rom.bootloader in
+  let bootrom = Emu.Boot_rom.bootloader in
   let rom_instr = ref 0
   and ram_instr = ref 0
   and mul = ref 0
