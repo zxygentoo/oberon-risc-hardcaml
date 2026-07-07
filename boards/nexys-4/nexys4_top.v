@@ -7,11 +7,11 @@
 // power-on reset, and the IOBUFs / pin mapping the synthesizable design can't express.
 // See boards/nexys-4/README.md.
 //
-// Mouse bring-up build: the single PS/2 port (presented by the board's USB-HID PIC) is
-// wired to the MOUSE — Oberon is mouse-driven, so the mouse comes first. The keyboard
-// stays idled until the 2nd-port PS/2 Pmod lands. The Mouse module is develop's faithful,
-// cosim/formal-proven port of MousePM.v (no scratch workarounds). LD9-14 diagnose the
-// bring-up (see the status-LED block at the bottom).
+// The single PS/2 port (presented by the board's USB-HID PIC) is wired to the MOUSE —
+// Oberon is mouse-driven, so the mouse came first (develop's faithful, cosim/formal-proven
+// port of MousePM.v, no scratch workarounds). The KEYBOARD arrives on a Digilent Pmod PS/2
+// in JA's top row (kbdClk/kbdDat) — receive-only, so two plain inputs. LD9-14 diagnose the
+// PS/2 bring-up (see the status-LED block at the bottom).
 //
 module nexys4_top (
   input  wire        CLK100MHZ,     // E3, 100 MHz
@@ -35,6 +35,9 @@ module nexys4_top (
 
   inout  wire        PS2Clk,        // F4  PS/2 (wired to the MOUSE — open-drain, bidirectional)
   inout  wire        PS2Data,       // B2
+
+  input  wire        kbdClk,        // D17 Pmod JA3 — PS/2 keyboard clock (Pmod PS/2 pin 3)
+  input  wire        kbdDat,        // B13 Pmod JA1 — PS/2 keyboard data  (Pmod PS/2 pin 1)
 
   output wire        sd_sck,        // B1  microSD in SPI mode
   output wire        sd_cmd,        // C1  (MOSI)
@@ -178,10 +181,12 @@ module nexys4_top (
     .gpio_out (),
     .gpio_oe  (),
 
-    // PS/2 keyboard — idled (the single PS/2 port is given to the mouse; the keyboard
-    // moves to the 2nd-port PS/2 Pmod once it arrives)
-    .ps2c     (1'b1),
-    .ps2d     (1'b1),
+    // PS/2 keyboard — the Pmod PS/2 on JA. Receive-only (PS2.v never transmits), so the
+    // raw pads go straight in: the controller's own Q0/Q1 flop chain (faithful to PS2.v)
+    // synchronises ps2c, and ps2d is sampled ~2 clocks after the detected falling edge,
+    // well inside PS/2's >=5 us data-hold window.
+    .ps2c     (kbdClk),
+    .ps2d     (kbdDat),
 
     // PS/2 mouse — the single PS/2 port, open-drain bidirectional via the IOBUFs above
     .msclk    (ps2c_in),
@@ -228,37 +233,38 @@ module nexys4_top (
 
   // Decoded mouse state from the SoC debug word {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}.
   wire        ms_run  = mouse_dbg[27];
-  wire [2:0]  ms_btns = mouse_dbg[26:24];
   wire [9:0]  ms_y    = mouse_dbg[21:12];
   wire [9:0]  ms_x    = mouse_dbg[9:0];
 
-  // Sticky "has the module EVER decoded movement / a button?" latches — the decisive
-  // bring-up signal. Move the mouse, then read them: x/y_ever lit => the report decode
-  // works (so a dead cursor is Oberon-side); dark => the decode/done path is failing.
-  // Cleared by reset (btnCpuReset / POR).
-  reg x_ever = 1'b0, y_ever = 1'b0, btns_ever = 1'b0;
+  // Sticky "has the module EVER decoded movement?" latches — the decisive bring-up
+  // signal. Move the mouse, then read them: x/y_ever lit => the report decode works
+  // (so a dead cursor is Oberon-side); dark => the decode/done path is failing.
+  // Cleared by reset (btnCpuReset / POR). (btns_ever retired with the mouse bring-up;
+  // LD12 now watches the keyboard.)
+  reg x_ever = 1'b0, y_ever = 1'b0;
   // Retriggerable activity one-shots (on = happening now, off ~0.1 s after it stops).
-  reg [24:0] hold_ps2c = 0, hold_host = 0;
-  reg        ps2c_d = 0;
+  reg [24:0] hold_ps2c = 0, hold_host = 0, hold_kbdc = 0;
+  reg        ps2c_d = 0, kbdc_d = 0;
   always @(posedge clk25) begin
     ps2c_d <= ps2c_in;
+    kbdc_d <= kbdClk;
     if (!rst_n) begin
-      x_ever <= 1'b0; y_ever <= 1'b0; btns_ever <= 1'b0;
+      x_ever <= 1'b0; y_ever <= 1'b0;
     end else begin
-      if (ms_x != 10'd0) x_ever    <= 1'b1;
-      if (ms_y != 10'd0) y_ever    <= 1'b1;
-      if (|ms_btns)      btns_ever <= 1'b1;
+      if (ms_x != 10'd0) x_ever <= 1'b1;
+      if (ms_y != 10'd0) y_ever <= 1'b1;
     end
     hold_ps2c <= (ps2c_d ^ ps2c_in)    ? HOLD : (hold_ps2c != 0 ? hold_ps2c - 25'd1 : 25'd0);
     hold_host <= (msclk_oe | msdat_oe) ? HOLD : (hold_host != 0 ? hold_host - 25'd1 : 25'd0);
+    hold_kbdc <= (kbdc_d ^ kbdClk)     ? HOLD : (hold_kbdc != 0 ? hold_kbdc - 25'd1 : 25'd0);
   end
 
   assign led[8]  = heartbeat[24];      // ~1.8 Hz blink: the 60 MHz clock is alive
   assign led[9]  = ms_run;             // mouse init completed (run=1, now streaming reports)
   assign led[10] = x_ever;             // module's X accumulated away from 0 (X decode works)
   assign led[11] = y_ever;             // module's Y accumulated away from 0 (Y decode works)
-  assign led[12] = btns_ever;          // a mouse button was decoded as pressed
-  assign led[13] = (hold_ps2c != 0);   // PS/2 clock edges (device clocking packets to us)
+  assign led[12] = (hold_kbdc != 0);   // KEYBOARD clock edges (keypress reaching the FPGA)
+  assign led[13] = (hold_ps2c != 0);   // mouse PS/2 clock edges (device clocking packets)
   assign led[14] = (hold_host != 0);   // mouse module pulling lines low (sending commands)
   assign led[15] = mmcm_locked;
 

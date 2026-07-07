@@ -3,7 +3,8 @@
 ## Port names match boards/nexys-4/nexys4_top.v.
 ##
 ## The single PS/2 port (PS2Clk=F4, PS2Data=B2) is wired to the MOUSE (open-drain,
-## bidirectional via the top's IOBUFs); the keyboard moves to the 2nd-port PS/2 Pmod later.
+## bidirectional via the top's IOBUFs); the KEYBOARD arrives on a Digilent Pmod PS/2
+## plugged into JA's top row (kbdClk/kbdDat below).
 
 ## ── Clock: 100 MHz on E3 ─────────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN E3 IOSTANDARD LVCMOS33} [get_ports CLK100MHZ]
@@ -140,6 +141,16 @@ set_property -dict {PACKAGE_PIN B12 IOSTANDARD LVCMOS33} [get_ports Vsync]
 ## neither side drives. PS2Clk=F4, PS2Data=B2 per the Digilent master XDC.
 set_property -dict {PACKAGE_PIN F4 IOSTANDARD LVCMOS33 PULLUP true} [get_ports PS2Clk]
 set_property -dict {PACKAGE_PIN B2 IOSTANDARD LVCMOS33 PULLUP true} [get_ports PS2Data]
+
+## ── PS/2 keyboard: Digilent Pmod PS/2 in JA's top row ────────────────────────────────
+## Pmod PS/2 pinout (its ref. manual Table 1): pin 1 = DATA, pin 3 = CLOCK (2/4 NC,
+## 5 = GND, 6 = VCC) -> JA1 = B13 (data), JA3 = D17 (clock) per the Digilent master XDC.
+## Receive-only — Wirth's PS2.v keyboard controller never transmits — so plain inputs,
+## no IOBUF. PULLUP backs the open-collector lines' idle-high state. The Pmod powers the
+## keyboard from Pmod VCC = 3.3 V; if a keyboard won't run there, the module's JP4
+## jumper takes an external 5 V supply instead.
+set_property -dict {PACKAGE_PIN D17 IOSTANDARD LVCMOS33 PULLUP true} [get_ports kbdClk]
+set_property -dict {PACKAGE_PIN B13 IOSTANDARD LVCMOS33 PULLUP true} [get_ports kbdDat]
 
 ## ── microSD (SPI mode) ───────────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN B1  IOSTANDARD LVCMOS33} [get_ports sd_sck]
