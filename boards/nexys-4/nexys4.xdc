@@ -2,8 +2,10 @@
 ## Pins from the official Digilent Nexys-4 master XDC, cross-checked against the board.
 ## Port names match boards/nexys-4/nexys4_top.v.
 ##
-## The single PS/2 port (PS2Clk=F4, PS2Data=B2) is wired to the MOUSE (open-drain,
-## bidirectional via the top's IOBUFs); the keyboard moves to the 2nd-port PS/2 Pmod later.
+## PS/2 assignment (feat/ps2-port-swap): the MOUSE is a genuine PS/2 device on a Digilent
+## Pmod PS/2 in JA's top row (msClk/msDat — open-drain, bidirectional via the top's
+## IOBUFs); the KEYBOARD is a USB keyboard bridged by the onboard USB-HID PIC
+## (PS2Clk=F4, PS2Data=B2 — receive-only, plain inputs).
 
 ## ── Clock: 100 MHz on E3 ─────────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN E3 IOSTANDARD LVCMOS33} [get_ports CLK100MHZ]
@@ -135,11 +137,23 @@ set_property -dict {PACKAGE_PIN D8  IOSTANDARD LVCMOS33} [get_ports {vgaBlue[3]}
 set_property -dict {PACKAGE_PIN B11 IOSTANDARD LVCMOS33} [get_ports Hsync]
 set_property -dict {PACKAGE_PIN B12 IOSTANDARD LVCMOS33} [get_ports Vsync]
 
-## ── PS/2 (single port via the USB-HID PIC; wired to the mouse) ───────────────────────
-## Open-drain bidirectional (IOBUFs in the top); PULLUP holds the idle-high line when
-## neither side drives. PS2Clk=F4, PS2Data=B2 per the Digilent master XDC.
+## ── PS/2 keyboard: the onboard port (USB-HID PIC bridging a USB keyboard) ────────────
+## Receive-only — Wirth's PS2.v keyboard controller never transmits — so plain inputs,
+## no IOBUF. PULLUP holds the idle-high open-collector lines. PS2Clk=F4, PS2Data=B2 per
+## the Digilent master XDC.
 set_property -dict {PACKAGE_PIN F4 IOSTANDARD LVCMOS33 PULLUP true} [get_ports PS2Clk]
 set_property -dict {PACKAGE_PIN B2 IOSTANDARD LVCMOS33 PULLUP true} [get_ports PS2Data]
+
+## ── PS/2 mouse: Digilent Pmod PS/2 in JA's top row ───────────────────────────────────
+## Pmod PS/2 pinout (its ref. manual Table 1): pin 1 = DATA, pin 3 = CLOCK (2/4 NC,
+## 5 = GND, 6 = VCC) -> JA1 = B13 (data), JA3 = D17 (clock) per the Digilent master XDC.
+## Open-drain BIDIRECTIONAL (IOBUFs in the top): the Mouse module transmits its
+## enable/sample-rate init by pulling the lines low. PULLUP holds the idle-high line
+## when neither side drives. The Pmod powers the mouse from Pmod VCC = 3.3 V; if a
+## mouse won't run there, the module's JP4 jumper takes an external 5 V supply instead
+## (NB a forum report says JP4's VE/GND silkscreen is swapped on some revs).
+set_property -dict {PACKAGE_PIN D17 IOSTANDARD LVCMOS33 PULLUP true} [get_ports msClk]
+set_property -dict {PACKAGE_PIN B13 IOSTANDARD LVCMOS33 PULLUP true} [get_ports msDat]
 
 ## ── microSD (SPI mode) ───────────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN B1  IOSTANDARD LVCMOS33} [get_ports sd_sck]

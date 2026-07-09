@@ -36,6 +36,20 @@ place_design -directive Explore
 phys_opt_design -directive AggressiveExplore
 route_design -directive Explore
 
+# Post-route recovery loop (feat/more-cache): the 16 KiB icache (4096-line LUTRAM, 4x the
+# shipped 1024) lengthens the combinational hit path — the 60 MHz critical cone — so the
+# Explore route lands just short (measured -0.017 ns / 2 endpoints, placement noise on the
+# deeper distributed-RAM output mux, not a design gap). Iterated post-route phys_opt closes
+# it (same lever the 75 MHz spike used for its own near-miss). Bounded at 8 passes; a design
+# that still misses after that has a real problem the gate below catches. No-op when routing
+# already met timing.
+set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+for {set i 1} {$i <= 8 && $wns < 0} {incr i} {
+  phys_opt_design -directive AggressiveExplore
+  set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+  puts "=== post-route phys_opt pass $i: WNS = $wns ==="
+}
+
 write_checkpoint -force $build/post_route.dcp
 report_timing_summary -file $build/timing.rpt -warn_on_violation
 report_utilization    -file $build/util.rpt

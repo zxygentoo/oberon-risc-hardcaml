@@ -61,6 +61,19 @@ let () =
               infers RAM (distributed), not BRAM/FF, and that the combinational hit path
               (regfile → tag compare → mem_rdata mux → decode) still closes 60 MHz. *)
          ~icache:true
+           (* feat/more-cache: bump the I-cache 4 KiB (1024 lines, default) → 16 KiB (4096
+              lines, lines_log2 12). DOOM's working set — renderer code + the 30.7 KB
+              dither rank tables + texture/pixel streams — thrashes 4 KiB: an
+              access-stream replay of the DOOM blob showed read-miss stall = 51% of the
+              frame, a CAPACITY problem (not line width — wide lines need PSRAM burst fill
+              to not backfire). Measured on hardware (timedemo demo1): baseline 4 KiB ~4.9
+              fps → 16 KiB 6.8 fps (+39%). 32 KiB was tried and gave only 7.1 fps (+4% —
+              diminishing returns, the miss stream is nearly drained) at a razor-thin
+              +0.005 ns vs 16 KiB's +0.019 and 2x the LUTRAM, so 16 KiB is the keeper —
+              the knee of the capacity curve. Closes 60 MHz only after the build.tcl
+              post-route recovery loop (the deeper async-read LUTRAM lands the
+              combinational hit path — the critical cone — just short otherwise). *)
+         ~lines_log2:12
            (* Phase-10b: write-update snoop — a word store-hit refreshes the cached line
               in place instead of dropping it (96% of running-OS load misses were
               snoop-invalidate self-inflicted; load hit 59% -> 98%, same-work 1.305x in

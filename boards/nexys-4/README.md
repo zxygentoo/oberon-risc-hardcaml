@@ -145,6 +145,62 @@ same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at t
 
 Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board emit turns it on).
 
+## The 16 KiB icache — DOOM's capacity lever (feat/more-cache)
+
+Phase 10's "capacity-flat" finding was an **Oberon-OS** fact — its hot loops fit a few KB, so
+1 KB→256 KB moved the hit-rate 1.6 pt. The **DOOM** workload (the sibling `DOOM-on-Oberon`) is the
+opposite. A throwaway access-stream replay (the emulator's *exact* DOOM fetch+load stream through
+a cache mirror — bit-identical to this board per the desync oracle) showed **read-miss stall = 51%
+of the DOOM frame**, and it is a *capacity* problem, not line-width: **55%** of misses are
+instruction fetch (the renderer code footprint), **28%** are loads into the 30.7 KB dither rank
+tables, and only **16%** are zone/texture streaming (the one slice a wider line / burst fill would
+help). So the board emit now ships a **16 KiB** icache (`lines_log2:12` — 4096-line async-read
+LUTRAM, 2822 LUTs, **0 extra BRAM**; up from the 4 KiB / 1024-line default):
+
+- **Measured on hardware** (`-timedemo demo1`, fps on the raw UART): baseline 4 KiB ~4.9 fps →
+  **16 KiB 6.8 fps (+39%)**. Oberon is unaffected (still capacity-flat — a bigger cache neither
+  helps nor hurts it beyond the LUT/timing cost).
+- **32 KiB** (`lines_log2:13`) was tried and gave only **+4%** (7.1 fps — 16 KiB nearly drains the
+  miss stream) at a razor-thin WNS +0.005 vs 16 KiB's +0.019, so **16 KiB is the knee**.
+- **Timing:** the deeper async-read LUTRAM lengthens the combinational hit path — the 60 MHz
+  critical cone — so it routes ~17 ps short and closes **only** via `build.tcl`'s bounded
+  post-route `phys_opt` recovery loop (widened to 8 passes). WNS **+0.019 ns**, deterministic.
+- **Deferred:** multi-word lines / PSRAM burst fill (DOOM.md §1's predicted lever) — the access
+  stream shows they'd help only the 16% streaming slice, and without burst each miss fetches N
+  words at full latency (a net loss); capacity is the cheaper, bigger win. Judged against the
+  ISA/oracle, not `RISC5.v` timing (a cache is a board block, not in the faithful RTL).
+
+## PS/2 topology — mouse + keyboard (feat/ps2-port-swap)
+
+Two PS/2-protocol devices, two physical ports; **the direction machinery follows the device
+role, not the connector**:
+
+- **Mouse = a genuine 3-button PS/2 mouse on a Digilent Pmod PS/2 in JA's top row**
+  (`msClk`=D17/JA3, `msDat`=B13/JA1 — the Pmod's pin 3 = CLOCK, pin 1 = DATA). The mouse is
+  the *bidirectional* device (the `Mouse` module transmits its enable/sample-rate init by
+  pulling the lines low), so these pins carry the two open-drain **IOBUFs** +
+  `msclk_oe`/`msdat_oe`. Middle-button interclicks work — the reason for a real 3-button
+  mouse. The Pmod feeds the device 3.3 V (JP4 takes an external 5 V if a device won't run
+  there; NB a forum report says JP4's VE/GND silkscreen is swapped on some revs).
+- **Keyboard = a USB keyboard on the onboard USB-HID port** (`PS2Clk`=F4, `PS2Data`=B2). The
+  board's PIC24 bridges USB HID to an emulated PS/2 device; Wirth's `PS2.v` controller never
+  transmits, so these are two plain **inputs** (the ref manual explicitly blesses
+  receive-only hosts).
+
+Bring-up gotchas, hardware-confirmed:
+
+- **USB keyboard compatibility:** the PIC has **no hub support**, so composite/hub keyboards
+  — anything with a USB passthrough port, wireless combo dongles, most gaming boards — never
+  enumerate. A plain wired HID keyboard works. Diagnostics: the PIC's aux status LED blinks
+  per HID report (enumeration proof); LD12 flashes per PS/2 edge at F4 (our side).
+- **Mouse after a JTAG load needs one `btnCpuReset`:** during JTAG configuration the pins
+  float (no pull-ups yet), which can disturb the mouse right when the one-shot init fires;
+  the reset re-fires init onto stable lines. A QSPI cold boot power-cycles the mouse inside
+  the POR window and comes up clean. (Escalation if that ever regresses: the init
+  auto-retry.)
+- LED map: LD9 = mouse `run`, LD10/11 = X/Y ever decoded, LD12 = keyboard clock activity,
+  LD13 = mouse clock activity, LD14 = host pulling the mouse lines (init).
+
 ## Build & program
 
 ```sh
@@ -162,9 +218,9 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 ```
 
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
-system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
-and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs
+(on the Pmod PS/2 pins — see the PS/2 topology above), and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
+`icache`/`lines_log2:12`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
 (One synthesis note, Phase-10d: the rc=5 PSRAM I/O budget (13.3 ns split across the address-out and
 data-in groups) became a standing knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then
 two builds grazed at +0.130 and +0.009. `build.tcl` runs Explore-class implementation directives,
