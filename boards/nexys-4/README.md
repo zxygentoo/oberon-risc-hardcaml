@@ -170,6 +170,37 @@ LUTRAM, 2822 LUTs, **0 extra BRAM**; up from the 4 KiB / 1024-line default):
   words at full latency (a net loss); capacity is the cheaper, bigger win. Judged against the
   ISA/oracle, not `RISC5.v` timing (a cache is a board block, not in the faithful RTL).
 
+## PS/2 topology — mouse + keyboard (feat/ps2-port-swap)
+
+Two PS/2-protocol devices, two physical ports; **the direction machinery follows the device
+role, not the connector**:
+
+- **Mouse = a genuine 3-button PS/2 mouse on a Digilent Pmod PS/2 in JA's top row**
+  (`msClk`=D17/JA3, `msDat`=B13/JA1 — the Pmod's pin 3 = CLOCK, pin 1 = DATA). The mouse is
+  the *bidirectional* device (the `Mouse` module transmits its enable/sample-rate init by
+  pulling the lines low), so these pins carry the two open-drain **IOBUFs** +
+  `msclk_oe`/`msdat_oe`. Middle-button interclicks work — the reason for a real 3-button
+  mouse. The Pmod feeds the device 3.3 V (JP4 takes an external 5 V if a device won't run
+  there; NB a forum report says JP4's VE/GND silkscreen is swapped on some revs).
+- **Keyboard = a USB keyboard on the onboard USB-HID port** (`PS2Clk`=F4, `PS2Data`=B2). The
+  board's PIC24 bridges USB HID to an emulated PS/2 device; Wirth's `PS2.v` controller never
+  transmits, so these are two plain **inputs** (the ref manual explicitly blesses
+  receive-only hosts).
+
+Bring-up gotchas, hardware-confirmed:
+
+- **USB keyboard compatibility:** the PIC has **no hub support**, so composite/hub keyboards
+  — anything with a USB passthrough port, wireless combo dongles, most gaming boards — never
+  enumerate. A plain wired HID keyboard works. Diagnostics: the PIC's aux status LED blinks
+  per HID report (enumeration proof); LD12 flashes per PS/2 edge at F4 (our side).
+- **Mouse after a JTAG load needs one `btnCpuReset`:** during JTAG configuration the pins
+  float (no pull-ups yet), which can disturb the mouse right when the one-shot init fires;
+  the reset re-fires init onto stable lines. A QSPI cold boot power-cycles the mouse inside
+  the POR window and comes up clean. (Escalation if that ever regresses: the init
+  auto-retry.)
+- LED map: LD9 = mouse `run`, LD10/11 = X/Y ever decoded, LD12 = keyboard clock activity,
+  LD13 = mouse clock activity, LD14 = host pulling the mouse lines (init).
+
 ## Build & program
 
 ```sh
@@ -187,8 +218,8 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 ```
 
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
-system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
-and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
+system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs
+(on the Pmod PS/2 pins — see the PS/2 topology above), and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
 `icache`/`lines_log2:12`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
 (One synthesis note, Phase-10d: the rc=5 PSRAM I/O budget (13.3 ns split across the address-out and
 data-in groups) became a standing knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then
