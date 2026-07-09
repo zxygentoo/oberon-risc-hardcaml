@@ -7,11 +7,13 @@
 // power-on reset, and the IOBUFs / pin mapping the synthesizable design can't express.
 // See boards/nexys-4/README.md.
 //
-// The single PS/2 port (presented by the board's USB-HID PIC) is wired to the MOUSE —
-// Oberon is mouse-driven, so the mouse came first (develop's faithful, cosim/formal-proven
-// port of MousePM.v, no scratch workarounds). The KEYBOARD arrives on a Digilent Pmod PS/2
-// in JA's top row (kbdClk/kbdDat) — receive-only, so two plain inputs. LD9-14 diagnose the
-// PS/2 bring-up (see the status-LED block at the bottom).
+// PS/2 port assignment (feat/ps2-port-swap): a genuine 3-button PS/2 MOUSE sits on the
+// Digilent Pmod PS/2 in JA's top row (msClk/msDat — open-drain bidirectional via IOBUFs:
+// the Mouse module transmits its init commands), and a USB KEYBOARD sits on the onboard
+// port (PS2Clk/PS2Data — the USB-HID PIC bridges it to PS/2; our side is receive-only, so
+// two plain inputs). The direction machinery follows the device ROLE, not the connector.
+// The Mouse module is develop's faithful, cosim/formal-proven port of MousePM.v. LD9-14
+// diagnose the PS/2 bring-up (see the status-LED block at the bottom).
 //
 module nexys4_top (
   input  wire        CLK100MHZ,     // E3, 100 MHz
@@ -33,11 +35,11 @@ module nexys4_top (
   output wire        Hsync,         // B11
   output wire        Vsync,         // B12
 
-  inout  wire        PS2Clk,        // F4  PS/2 (wired to the MOUSE — open-drain, bidirectional)
-  inout  wire        PS2Data,       // B2
+  input  wire        PS2Clk,        // F4  onboard PS/2 (USB-HID PIC) — the KEYBOARD, receive-only
+  input  wire        PS2Data,       // B2
 
-  input  wire        kbdClk,        // D17 Pmod JA3 — PS/2 keyboard clock (Pmod PS/2 pin 3)
-  input  wire        kbdDat,        // B13 Pmod JA1 — PS/2 keyboard data  (Pmod PS/2 pin 1)
+  inout  wire        msClk,         // D17 Pmod JA3 — PS/2 MOUSE clock (open-drain, bidirectional)
+  inout  wire        msDat,         // B13 Pmod JA1 — PS/2 MOUSE data  (Pmod PS/2: pin 3 = CLK, pin 1 = DATA)
 
   output wire        sd_sck,        // B1  microSD in SPI mode
   output wire        sd_cmd,        // C1  (MOSI)
@@ -104,13 +106,13 @@ module nexys4_top (
   // Held low until the MMCM locks and a counter elapses, and whenever the reset button is
   // pressed (btnCpuReset is active-low). The counter gives ~1.1 s (26 bits at 60 MHz;
   // it was ~2.7 s when picked empirically at 25 MHz — the margin shrank with the clock
-  // bump but stays ample, mouse-confirmed on hardware at 60 MHz)
-  // so the whole SoC — the mouse included — stays in reset until the board's USB-HID PIC
-  // has booted and enumerated the USB mouse. The Mouse sends its PS/2 init handshake once
-  // and latches `run`; if it fires before the PIC is ready, streaming never starts and the
-  // cursor stays dead until a manual reset. Delaying that single init past PIC-ready avoids
-  // it — automating the post-config btnCpuReset the bring-up needed. Dwarfed by Oberon's
-  // ~20 s boot; trim/raise if a slower mouse needs it.
+  // bump but stays ample, mouse-confirmed on hardware at 60 MHz). Post-swap the delay
+  // covers BOTH init-timing hazards: the genuine PS/2 mouse on the Pmod finishes its
+  // power-on self-test (BAT, ~500 ms) before the Mouse module's one-shot init fires and
+  // latches `run` (fire early => streaming never starts until a manual reset), and the
+  // USB-HID PIC gets time to enumerate the USB keyboard (receive-only, so merely losing
+  // pre-enumeration keystrokes — harmless). Dwarfed by Oberon's ~20 s boot; trim/raise
+  // if a slower mouse needs it.
   reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~1.1 s at 60 MHz (was 16 bits / ~1 ms)
   wire        por_done = (por_cnt == 26'd0);
   always @(posedge clk25) begin
@@ -142,16 +144,17 @@ module nexys4_top (
   assign RamADVn = 1'b0;   // address always valid (async)
   assign RamCRE  = 1'b0;   // memory array, not config register
 
-  // ── PS/2 mouse, open-drain bidirectional (single PS/2 port via the USB-HID PIC) ───
+  // ── PS/2 mouse, open-drain bidirectional (Pmod PS/2 in JA) ────────────────────────
   // Drive the line low when the SoC requests it (msX_oe=1), else release to hi-Z — the
-  // XDC pullup + the device pullup hold it high. The PIC presents the USB mouse as a PS/2
-  // device on these pins; the Mouse module sends enable / sample-rate init by pulling the
-  // lines low (request-to-send), then receives the device's report stream.
+  // XDC pullup + the device pullup hold it high. A genuine PS/2 mouse hangs off the Pmod;
+  // the Mouse module sends enable / sample-rate init by pulling the lines low
+  // (request-to-send), then receives the device's report stream. (The IOBUFs moved here
+  // from the onboard port with the swap — the mouse is the bidirectional device.)
   wire        msclk_oe, msdat_oe;   // mouse open-drain pull-low requests (from the SoC)
   wire        ps2c_in, ps2d_in;     // resolved PS/2 lines into the mouse module
   wire [27:0] mouse_dbg;            // {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]} for the LEDs
-  IOBUF ps2c_iobuf (.I(1'b0), .O(ps2c_in), .IO(PS2Clk),  .T(~msclk_oe));
-  IOBUF ps2d_iobuf (.I(1'b0), .O(ps2d_in), .IO(PS2Data), .T(~msdat_oe));
+  IOBUF ps2c_iobuf (.I(1'b0), .O(ps2c_in), .IO(msClk), .T(~msclk_oe));
+  IOBUF ps2d_iobuf (.I(1'b0), .O(ps2d_in), .IO(msDat), .T(~msdat_oe));
 
   // ── The Hardcaml SoC ─────────────────────────────────────────────────────────────
   wire [5:0] rgb;
@@ -181,14 +184,15 @@ module nexys4_top (
     .gpio_out (),
     .gpio_oe  (),
 
-    // PS/2 keyboard — the Pmod PS/2 on JA. Receive-only (PS2.v never transmits), so the
-    // raw pads go straight in: the controller's own Q0/Q1 flop chain (faithful to PS2.v)
-    // synchronises ps2c, and ps2d is sampled ~2 clocks after the detected falling edge,
-    // well inside PS/2's >=5 us data-hold window.
-    .ps2c     (kbdClk),
-    .ps2d     (kbdDat),
+    // PS/2 keyboard — the onboard port (USB-HID PIC bridging a USB keyboard to PS/2).
+    // Receive-only (PS2.v never transmits), so the raw pads go straight in: the
+    // controller's own Q0/Q1 flop chain (faithful to PS2.v) synchronises ps2c, and ps2d
+    // is sampled ~2 clocks after the detected falling edge, well inside PS/2's >=5 us
+    // data-hold window.
+    .ps2c     (PS2Clk),
+    .ps2d     (PS2Data),
 
-    // PS/2 mouse — the single PS/2 port, open-drain bidirectional via the IOBUFs above
+    // PS/2 mouse — the Pmod PS/2, open-drain bidirectional via the IOBUFs above
     .msclk    (ps2c_in),
     .msdat    (ps2d_in),
     .msclk_oe (msclk_oe),
@@ -247,7 +251,7 @@ module nexys4_top (
   reg        ps2c_d = 0, kbdc_d = 0;
   always @(posedge clk25) begin
     ps2c_d <= ps2c_in;
-    kbdc_d <= kbdClk;
+    kbdc_d <= PS2Clk;
     if (!rst_n) begin
       x_ever <= 1'b0; y_ever <= 1'b0;
     end else begin
@@ -256,7 +260,7 @@ module nexys4_top (
     end
     hold_ps2c <= (ps2c_d ^ ps2c_in)    ? HOLD : (hold_ps2c != 0 ? hold_ps2c - 25'd1 : 25'd0);
     hold_host <= (msclk_oe | msdat_oe) ? HOLD : (hold_host != 0 ? hold_host - 25'd1 : 25'd0);
-    hold_kbdc <= (kbdc_d ^ kbdClk)     ? HOLD : (hold_kbdc != 0 ? hold_kbdc - 25'd1 : 25'd0);
+    hold_kbdc <= (kbdc_d ^ PS2Clk)     ? HOLD : (hold_kbdc != 0 ? hold_kbdc - 25'd1 : 25'd0);
   end
 
   assign led[8]  = heartbeat[24];      // ~1.8 Hz blink: the 60 MHz clock is alive
