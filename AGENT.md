@@ -412,6 +412,19 @@ frozen, and every remaining lever priced below its noise:
   traffic the whole PSRAM-wait pool is 4.2% of clocks, so the payoff is a fraction of that;
 - *Dead ends, measured:* bigger/split caches (capacity-flat; residual misses 90% genuine conflicts but
   ~1% of cycles), more compute (0.4–0.6% of clocks), write-allocate (+273 hits, evicts fetch lines).
+
+*Workload caveat — the DOOM arc (feat/more-cache, on-hardware).* "Capacity-flat" above is an
+**Oberon-OS** fact — its hot loops fit a few KB. The **DOOM** workload (sibling `DOOM-on-Oberon`,
+DOOM.md §1) is the opposite: an access-stream replay of the DOOM blob put read-miss stall at **51%
+of the frame**, and it is a *capacity* problem — **55%** of misses are instruction fetch (the
+renderer code footprint), **28%** loads into the 30.7 KB dither rank tables, only **16%**
+zone/texture streaming. So the board emit ships a **16 KiB icache** (`emit_verilog.ml`
+`lines_log2:12`, up from the 4 KiB default) — measured **+39% DOOM fps (4.9→6.8)**, closing 60 MHz
+at WNS +0.019 via `build.tcl`'s post-route `phys_opt` recovery loop. 32 KiB adds only +4% (16 KiB is
+the knee), and multi-word lines / PSRAM burst fill stay the deferred *streaming* lever (only that
+16% slice, and each miss would fetch N words at full latency without a burst controller). Oberon is
+unaffected. Detail: `boards/nexys-4/README.md`.
+
 Verification stays Phase-10a-style — judged against the **ISA/oracle**, not `RISC5.v` timing (a cache is
 a new architectural block, not in the faithful RTL).
 

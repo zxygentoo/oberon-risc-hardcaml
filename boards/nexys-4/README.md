@@ -145,6 +145,31 @@ same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at t
 
 Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board emit turns it on).
 
+## The 16 KiB icache — DOOM's capacity lever (feat/more-cache)
+
+Phase 10's "capacity-flat" finding was an **Oberon-OS** fact — its hot loops fit a few KB, so
+1 KB→256 KB moved the hit-rate 1.6 pt. The **DOOM** workload (the sibling `DOOM-on-Oberon`) is the
+opposite. A throwaway access-stream replay (the emulator's *exact* DOOM fetch+load stream through
+a cache mirror — bit-identical to this board per the desync oracle) showed **read-miss stall = 51%
+of the DOOM frame**, and it is a *capacity* problem, not line-width: **55%** of misses are
+instruction fetch (the renderer code footprint), **28%** are loads into the 30.7 KB dither rank
+tables, and only **16%** are zone/texture streaming (the one slice a wider line / burst fill would
+help). So the board emit now ships a **16 KiB** icache (`lines_log2:12` — 4096-line async-read
+LUTRAM, 2822 LUTs, **0 extra BRAM**; up from the 4 KiB / 1024-line default):
+
+- **Measured on hardware** (`-timedemo demo1`, fps on the raw UART): baseline 4 KiB ~4.9 fps →
+  **16 KiB 6.8 fps (+39%)**. Oberon is unaffected (still capacity-flat — a bigger cache neither
+  helps nor hurts it beyond the LUT/timing cost).
+- **32 KiB** (`lines_log2:13`) was tried and gave only **+4%** (7.1 fps — 16 KiB nearly drains the
+  miss stream) at a razor-thin WNS +0.005 vs 16 KiB's +0.019, so **16 KiB is the knee**.
+- **Timing:** the deeper async-read LUTRAM lengthens the combinational hit path — the 60 MHz
+  critical cone — so it routes ~17 ps short and closes **only** via `build.tcl`'s bounded
+  post-route `phys_opt` recovery loop (widened to 8 passes). WNS **+0.019 ns**, deterministic.
+- **Deferred:** multi-word lines / PSRAM burst fill (DOOM.md §1's predicted lever) — the access
+  stream shows they'd help only the 16% streaming slice, and without burst each miss fetches N
+  words at full latency (a net loss); capacity is the cheaper, bigger win. Judged against the
+  ISA/oracle, not `RISC5.v` timing (a cache is a board block, not in the faithful RTL).
+
 ## Build & program
 
 ```sh
@@ -164,7 +189,7 @@ vivado -mode batch -source boards/nexys-4/flash.tcl
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs,
 and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+`icache`/`lines_log2:12`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
 (One synthesis note, Phase-10d: the rc=5 PSRAM I/O budget (13.3 ns split across the address-out and
 data-in groups) became a standing knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then
 two builds grazed at +0.130 and +0.009. `build.tcl` runs Explore-class implementation directives,
