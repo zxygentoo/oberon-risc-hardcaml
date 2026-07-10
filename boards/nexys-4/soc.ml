@@ -70,6 +70,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
+  ?(indexbuf = false)
   ?(write_buffer = false)
   ?wbuf_depth
   ?(uart_baud_slow = 1302)
@@ -200,9 +201,32 @@ let create
         ; vidadr
         }
     in
-    assign viddata fb.viddata;
-    assign vid_ack fb.vid_ack;
-    assign vidpar fb.vidpar)
+    (* feat/indexbuf: the 8bpp indexed-colour framebuffer + scanout dither ({!Indexbuf}),
+       taps the same store transaction the Framebuf shadow and the cache snoop ride. Its
+       own mode bit muxes which shadow answers the DMA at RUNTIME — mode 0 leaves the
+       proven Framebuf path selected, so with the control word never written this
+       elaboration is display-identical to [indexbuf:false] (the do-no-harm gate below is
+       the visual golden). *)
+    if indexbuf
+    then (
+      let ixb =
+        Indexbuf.create
+          { Indexbuf.I.clock = i.clock
+          ; adr = core_adr
+          ; write = core.wr &: ~:cpu_internal
+          ; ben = core_ben
+          ; wdata = core.outbus
+          ; vidreq
+          ; vidadr
+          }
+      in
+      assign viddata (mux2 ixb.mode ixb.viddata fb.viddata);
+      assign vid_ack (mux2 ixb.mode ixb.vid_ack fb.vid_ack);
+      assign vidpar (mux2 ixb.mode ixb.vidpar fb.vidpar))
+    else (
+      assign viddata fb.viddata;
+      assign vid_ack fb.vid_ack;
+      assign vidpar fb.vidpar))
   else (
     assign viddata cellram.viddata;
     assign vid_ack cellram.vid_ack;

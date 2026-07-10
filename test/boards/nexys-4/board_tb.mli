@@ -61,6 +61,10 @@ val create
        (** default [false]; [true] = Phase-10c: video served from the
            {!Nexys4_board.Framebuf} BRAM shadow, PSRAM video port tied off (see
            {!Nexys4_board.Soc.create}) *)
+  -> ?indexbuf:bool
+       (** default [false]; [true] = feat/indexbuf: instantiate the
+           {!Nexys4_board.Indexbuf} scanout ditherer, mode-muxed against Framebuf (see
+           {!Nexys4_board.Soc.create}) *)
   -> ?write_buffer:bool
        (** default [false]; [true] = Phase-10d: 1-entry write buffer in
            {!Nexys4_board.Cellram} — stores retire in one ce cycle, the write drains in

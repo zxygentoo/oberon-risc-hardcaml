@@ -46,6 +46,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
+  ?(indexbuf = false)
   ?(write_buffer = false)
   ?wbuf_depth
   ?(fast_mul = false)
@@ -65,6 +66,7 @@ let create
       ~write_update
       ~video
       ~fb_bram
+      ~indexbuf
       ~write_buffer
       ?wbuf_depth
       ~fast_mul
