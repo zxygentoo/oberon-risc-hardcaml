@@ -159,7 +159,7 @@ let create
      only the few wasted cycles (re-earned before the next group's ~500 ns-away request).
      WRITES are never preempted — a half-written word would corrupt RAM. This removes the
      arbiter-wait term from the video deadline; the residual flicker / contention risk
-     lives in the deadline margin itself (see the .mli + boards/nexys-4/README.md). *)
+     lives in the deadline margin itself (see the .mli + board/nexys-4/README.md). *)
   let cpu_read_inflight = busy_v &: ~:op_vid_v &: ~:op_wr_v in
   let preempt =
     (cpu_read_inflight &: vid_pending_v &: ~:(cnt_zero &: half1)) -- "preempt"

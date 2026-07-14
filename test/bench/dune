@@ -5,7 +5,7 @@
 ;   dune build @profile_boot    dynamic MUL/DIV count over a boot (Amdahl context)
 ; Only the TARGET-INDEPENDENT gauges live here (lib units / the oracle). The third gauge,
 ; @bench_boot (end-to-end cycles on the PSRAM board SoC), is board-specific and lives in
-; the board-test mirror, test/boards/nexys-4/ — README.md here stays the index for all
+; the board-test mirror, test/board/nexys-4/ — README.md here stays the index for all
 ; three.
 
 (executable

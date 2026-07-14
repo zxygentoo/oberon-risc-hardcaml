@@ -352,7 +352,7 @@ let%expect_test "soc — millisecond timer ticks cnt1 every clocks_per_ms cycles
   [%expect {| cnt1 = 2 |}]
 ;;
 
-(* Button-reset regression guards (boards/nexys-4/RESET-FINDINGS.md). RISC5Top.OStation.v
+(* Button-reset regression guards (board/nexys-4/RESET-FINDINGS.md). RISC5Top.OStation.v
    lines 139-140 free-run the ms counter — no rst term — and Extended Oberon's
    abort-recovery (preserved task [nextTime] stamps) depends on exactly that:
    [Kernel.Time()] must never move backwards across a button reset. These pin it. *)

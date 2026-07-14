@@ -24,7 +24,7 @@ how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/
 | `nexys4.xdc` | pin + clock/CDC constraints (from the Digilent master XDC) |
 | `gen_verilog.sh`, `*.tcl` | the emit → synth → program / flash flow (below) |
 
-Board integration tests (boot checkpoint, visual golden) live in `test/boards/nexys-4/`.
+Board integration tests (boot checkpoint, visual golden) live in `test/board/nexys-4/`.
 
 ## How the board SoC works
 
@@ -104,7 +104,7 @@ cache in front of Cellram that turns most fetches/loads into a **0-stall hit**:
 - **Write-update snoop (Phase-10b, `?write_update` — board emit on):** the plain snoop-invalidate
   left the load hit-rate at 58.7% because 96.1% of load misses were its own doing — Oberon's
   store-then-load stack discipline killed the hot lines (measured by the miss autopsy,
-  `test/boards/nexys-4/bench_boot.ml`). A **word** store that hits now rewrites the line in place with the
+  `test/board/nexys-4/bench_boot.ml`). A **word** store that hits now rewrites the line in place with the
   store data — same single write port, and the same write-through transaction lands the identical
   word in PSRAM, so the coherence invariant is untouched; **byte** stores still invalidate. Load
   hit 58.7→98.4%, **1.305× same-work** on running-OS code; WNS +0.708 ns at 60 MHz (the cache-write
@@ -117,7 +117,7 @@ Full detail (incl. the coherence argument) in `cache.mli`.
 ## Framebuf — the Phase-10c framebuffer shadow
 
 With write-update in, the true residual (measured by the write-update stall profile,
-`test/boards/nexys-4/bench_boot.ml`) was CPI 1.75 with 25% of clocks frozen — and the video DMA
+`test/board/nexys-4/bench_boot.ml`) was CPI 1.75 with 25% of clocks frozen — and the video DMA
 still occupied the PSRAM port **22.8% of all clocks**, freezing the CPU behind it 5% (measured
 same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at the source:
 
@@ -205,16 +205,16 @@ Bring-up gotchas, hardware-confirmed:
 
 ```sh
 # 1. emit the SoC to Verilog (boot ROM baked in from Risc5.Rom)
-boards/nexys-4/gen_verilog.sh                 # → boards/_generated/nexys-4/soc_board.v
+board/nexys-4/gen_verilog.sh                 # → board/_generated/nexys-4/soc_board.v
 
 # 2. synthesize + implement → bitstream (Vivado non-project batch)
-vivado -mode batch -source boards/nexys-4/build.tcl   # → boards/_build/nexys-4/oberon.bit + reports
+vivado -mode batch -source board/nexys-4/build.tcl   # → board/_build/nexys-4/oberon.bit + reports
 
 # 3a. program over JTAG — volatile SRAM config, re-run after a power-cycle
-vivado -mode batch -source boards/nexys-4/program.tcl
+vivado -mode batch -source board/nexys-4/program.tcl
 
 # 3b. …or write the QSPI flash for persistent power-on boot (MODE jumper JP1 = QSPI)
-vivado -mode batch -source boards/nexys-4/flash.tcl
+vivado -mode batch -source board/nexys-4/flash.tcl
 ```
 
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
@@ -227,4 +227,4 @@ two builds grazed at +0.130 and +0.009. `build.tcl` runs Explore-class implement
 and the structural fix is in: `read_cycles:6` re-derives the budget to 30 ns (12/12 split, ~5 ns
 measured headroom per group), for a measured 0.86% same-work cost — the worst path is back on the
 internal cache-write path, where it has lived since 10b.)
-outputs land in the git-ignored `boards/_build/nexys-4/`.
+outputs land in the git-ignored `board/_build/nexys-4/`.

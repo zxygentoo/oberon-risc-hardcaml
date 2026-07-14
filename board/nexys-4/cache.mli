@@ -3,7 +3,7 @@
     the running OS fetches every instruction from PSRAM — so this cuts fetch/load latency:
     a hit is served combinationally from on-chip distributed RAM instead of a multi-cycle
     PSRAM read (measured ~6x on running-OS code, 93% hit-rate;
-    test/boards/nexys-4/bench_boot.ml).
+    test/board/nexys-4/bench_boot.ml).
 
     {1 Placement & the 0-stall hit}
 
@@ -40,7 +40,7 @@
     warm reset the retained lines still equal PSRAM (the CPU is the sole writer, every
     store is snooped, and external PSRAM persists). Verified on silicon (boots clean) and
     in sim by the board visual golden — byte-identical desktop with the cache on
-    (test/boards/nexys-4/test_visual_golden_board.ml) — and the running-OS lockstep bench.
+    (test/board/nexys-4/test_visual_golden_board.ml) — and the running-OS lockstep bench.
 
     {1 Geometry}
 
@@ -88,9 +88,8 @@ end
     line is rewritten with the store data through the same single write port, in the same
     write-through transaction that lands the word in PSRAM — so the coherence invariant (a
     valid line equals PSRAM) is untouched. Byte stores still invalidate (merging one lane
-    needs read-modify). Why: the Phase-10b miss autopsy
-    (test/boards/nexys-4/bench_boot.ml) measured {b 96.1% of running-OS load misses} to be
-    snoop-invalidate self-inflicted — Oberon's store-then-load stack discipline kills the
-    hot lines — capping load hit-rate at ~59% no matter the capacity; update-in-place
-    lifts it to ~98%. *)
+    needs read-modify). Why: the Phase-10b miss autopsy (test/board/nexys-4/bench_boot.ml)
+    measured {b 96.1% of running-OS load misses} to be snoop-invalidate self-inflicted —
+    Oberon's store-then-load stack discipline kills the hot lines — capping load hit-rate
+    at ~59% no matter the capacity; update-in-place lifts it to ~98%. *)
 val create : ?lines_log2:int -> ?write_update:bool -> Signal.t I.t -> Signal.t O.t

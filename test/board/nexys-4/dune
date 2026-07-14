@@ -1,4 +1,4 @@
-; Board (Nexys 4) SoC integration tests + the board bench — mirror boards/nexys-4/ under
+; Board (Nexys 4) SoC integration tests + the board bench — mirror board/nexys-4/ under
 ; test/. All close the PSRAM board SoC with cellram_model through the shared board_tb
 ; harness (this dir). Built by @check so they can't rot; opt-in to run, like the other
 ; heavyweight checks (§6):

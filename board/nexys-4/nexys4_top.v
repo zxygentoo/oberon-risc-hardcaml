@@ -3,9 +3,9 @@
 //
 // Phase 7 board top for the original Digilent Nexys 4 (XC7A100T, Cellular-RAM).
 // Hand-written vendor wrapper around the Hardcaml-generated `soc_board`
-// (boards/_generated/nexys-4/soc_board.v): clock generation (MMCM 100->60/65 MHz), a
+// (board/_generated/nexys-4/soc_board.v): clock generation (MMCM 100->60/65 MHz), a
 // power-on reset, and the IOBUFs / pin mapping the synthesizable design can't express.
-// See boards/nexys-4/README.md.
+// See board/nexys-4/README.md.
 //
 // PS/2 port assignment (feat/ps2-port-swap): a genuine 3-button PS/2 MOUSE sits on the
 // Digilent Pmod PS/2 in JA's top row (msClk/msDat — open-drain bidirectional via IOBUFs:

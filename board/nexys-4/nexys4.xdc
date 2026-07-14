@@ -1,6 +1,6 @@
 ## Nexys 4 (original, Cellular-RAM) constraints for the Oberon RISC5 board top.
 ## Pins from the official Digilent Nexys-4 master XDC, cross-checked against the board.
-## Port names match boards/nexys-4/nexys4_top.v.
+## Port names match board/nexys-4/nexys4_top.v.
 ##
 ## PS/2 assignment (feat/ps2-port-swap): the MOUSE is a genuine PS/2 device on a Digilent
 ## Pmod PS/2 in JA's top row (msClk/msDat — open-drain, bidirectional via the top's

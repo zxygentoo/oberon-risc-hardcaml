@@ -21,7 +21,7 @@ are *proven*, not just tested).
 
 - [`AGENT.md`](AGENT.md) — the working spec: architecture, the phase plan (0–10), and the
   verification strategy.
-- [`boards/nexys-4/README.md`](boards/nexys-4/README.md) — the board layer: how the SoC
+- [`board/nexys-4/README.md`](board/nexys-4/README.md) — the board layer: how the SoC
   maps onto the Nexys 4, and the build/program flow.
 
 *This README is a placeholder — a proper write-up is coming. The project is under active

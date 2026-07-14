@@ -15,7 +15,7 @@
   (pps ppx_hardcaml ppx_expect)))
 
 ; Emit the board SoC as Verilog with the boot ROM baked in — the design's own ROM
-; (Risc5.Rom), so no oracle. gen_verilog.sh runs it → boards/_generated/nexys-4/soc_board.v,
+; (Risc5.Rom), so no oracle. gen_verilog.sh runs it → board/_generated/nexys-4/soc_board.v,
 ; which nexys4_top.v wraps with the vendor primitives. Built by @check so it can't rot.
 
 (executable

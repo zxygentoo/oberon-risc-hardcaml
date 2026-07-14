@@ -1,13 +1,13 @@
 # Program the connected Nexys 4 (XC7A100T) with the built bitstream over JTAG.
-# Usage:   vivado -mode batch -source boards/nexys-4/program.tcl
+# Usage:   vivado -mode batch -source board/nexys-4/program.tcl
 # Assumes the board is connected (FT2232H) and powered. Volatile (SRAM) config — re-run after
 # a power-cycle, or write the QSPI flash separately for persistence.
 
-set here [file normalize [file dirname [info script]]]   ;# boards/nexys-4
+set here [file normalize [file dirname [info script]]]   ;# board/nexys-4
 set bit  [file normalize $here/../_build/nexys-4/oberon.bit]
 
 if {![file exists $bit]} {
-  puts "ERROR: $bit not found — run boards/nexys-4/build.tcl first."
+  puts "ERROR: $bit not found — run board/nexys-4/build.tcl first."
   exit 1
 }
 

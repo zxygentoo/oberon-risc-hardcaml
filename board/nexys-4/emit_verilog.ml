@@ -1,7 +1,7 @@
 (* Phase 7 — emit the synthesizable board SoC ({!Nexys4_board.Soc}) as Verilog, with the
    real boot ROM baked in. The hand-written nexys4_top.v (same dir) wraps the emitted
    [soc_board] module with the vendor primitives (MMCM, IOBUFs). Prints to stdout;
-   gen_verilog.sh redirects it to boards/_generated/nexys-4/soc_board.v.
+   gen_verilog.sh redirects it to board/_generated/nexys-4/soc_board.v.
 
    Lives in the board layer (not test/): it emits *this board's* SoC and sits next to the
    gen_verilog.sh / build.tcl / nexys4_top.v that consume it. The ROM image comes from the
@@ -28,8 +28,8 @@ let () =
     Circ.create_exn
     (* the EMITTED Verilog module keeps the name "soc_board" (decoupled from the OCaml
        module, now [Soc]): nexys4_top.v instantiates it by this name and the whole Vivado
-       flow reads boards/_generated/nexys-4/soc_board.v — renaming the artifact would
-       churn the board flow for nothing. *)
+       flow reads board/_generated/nexys-4/soc_board.v — renaming the artifact would churn
+       the board flow for nothing. *)
       ~name:"soc_board"
       (Soc.create
          ~contents:Risc5.Rom.bootloader
@@ -77,7 +77,7 @@ let () =
            (* Phase-10b: write-update snoop — a word store-hit refreshes the cached line
               in place instead of dropping it (96% of running-OS load misses were
               snoop-invalidate self-inflicted; load hit 59% -> 98%, same-work 1.305x in
-              sim — see Cache + test/boards/nexys-4/bench_boot.ml). Timing watch: the wd
+              sim — see Cache + test/board/nexys-4/bench_boot.ml). Timing watch: the wd
               mux gained a level (fill_data vs wdata) on the cache-write path, which was
               already the 60 MHz critical path — check WNS still closes. *)
          ~write_update:true

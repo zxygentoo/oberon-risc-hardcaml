@@ -1,9 +1,9 @@
 # Vivado non-project batch build for the Oberon RISC5 Nexys 4 board top.
-# Usage (from anywhere):   vivado -mode batch -source boards/nexys-4/build.tcl
-# Reads boards/_generated/nexys-4/soc_board.v (run gen_verilog.sh first) + the hand-written
-# nexys4_top.v / nexys4.xdc; outputs to boards/_build/nexys-4/ : oberon.bit + reports.
+# Usage (from anywhere):   vivado -mode batch -source board/nexys-4/build.tcl
+# Reads board/_generated/nexys-4/soc_board.v (run gen_verilog.sh first) + the hand-written
+# nexys4_top.v / nexys4.xdc; outputs to board/_build/nexys-4/ : oberon.bit + reports.
 
-set here  [file normalize [file dirname [info script]]]   ;# boards/nexys-4
+set here  [file normalize [file dirname [info script]]]   ;# board/nexys-4
 set gen   [file normalize $here/../_generated/nexys-4]
 set build [file normalize $here/../_build/nexys-4]
 set part  xc7a100tcsg324-1

@@ -11,7 +11,7 @@
 
 ; Shared off-chip SD card (bit-level SPI slave over Emu.Disk) used by the SoC integration
 ; tests — the BRAM boot checkpoint / visual golden + core RTL co-sim capture below, and the
-; board (PSRAM) checkpoint / visual golden in test/boards/nexys-4/.
+; board (PSRAM) checkpoint / visual golden in test/board/nexys-4/.
 
 (library
  (name sd_bridge)
@@ -28,7 +28,7 @@
 
 ; Shared SoC-independent half of the boot-handoff checkpoints (disk, oracle boot, §8-aware
 ; compare, the run driver), used by both test_boot_checkpoint (BRAM, below) and
-; test_boot_checkpoint_board (PSRAM, in test/boards/nexys-4/); see boot_checkpoint_common.mli.
+; test_boot_checkpoint_board (PSRAM, in test/board/nexys-4/); see boot_checkpoint_common.mli.
 
 (library
  (name boot_checkpoint_common)
@@ -85,7 +85,7 @@
   (run ./test_visual_golden.exe)))
 
 ; The board (PSRAM) SoC integration tests — boot checkpoint + visual golden through
-; the board Soc + cellram_model — moved to test/boards/nexys-4/ (mirroring boards/nexys-4/),
+; the board Soc + cellram_model — moved to test/board/nexys-4/ (mirroring board/nexys-4/),
 ; where they share the board_tb harness. Same aliases: @boot_checkpoint_board / @visual_golden_board.
 
 ; Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3) — capture half: records the core's
@@ -101,4 +101,4 @@
 
 ; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
 ; their own dune — driven by `dune build @bench` / `@profile_boot`. The board-SoC Verilog
-; emitter moved to boards/nexys-4/ (it emits that board's SoC, next to its build scripts).
+; emitter moved to board/nexys-4/ (it emits that board's SoC, next to its build scripts).

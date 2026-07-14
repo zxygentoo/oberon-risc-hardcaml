@@ -1,6 +1,6 @@
 # Write the built bitstream to the Nexys 4's QSPI configuration flash (Spansion
 # S25FL128S, 16 MB) so the board boots Oberon on power-up without a JTAG load.
-# Usage:   vivado -mode batch -source boards/nexys-4/flash.tcl
+# Usage:   vivado -mode batch -source board/nexys-4/flash.tcl
 #
 # Persistent (unlike program.tcl's volatile SRAM load). The flash WRITE goes over
 # JTAG and works in any mode; for the board to BOOT from flash on power-up the MODE
@@ -11,12 +11,12 @@
 # the safe default (boots; ~1 s slower config than x4). For x4, set CONFIG_MODE /
 # SPI_BUSWIDTH in the xdc and rebuild, then bump -interface below.
 
-set here [file normalize [file dirname [info script]]]   ;# boards/nexys-4
+set here [file normalize [file dirname [info script]]]   ;# board/nexys-4
 set bit  [file normalize $here/../_build/nexys-4/oberon.bit]
 set mcs  [file normalize $here/../_build/nexys-4/oberon.mcs]
 
 if {![file exists $bit]} {
-  puts "ERROR: $bit not found — run boards/nexys-4/build.tcl first."
+  puts "ERROR: $bit not found — run board/nexys-4/build.tcl first."
   exit 1
 }
 
