@@ -1,15 +1,15 @@
-(** [Indexbuf] — the machine's indexed/grayscale display mode, v2 (the generality rework):
+(** [Halftone] — the machine's indexed/grayscale display mode, v2 (the generality rework):
     a client-defined 8bpp source window scanned out to a RECTANGLE of the 1024x768 mono
     panel through a CPU-uploaded tone LUT, threshold map, row map and scale registers —
     ordered dithering at scanout. The v1 experiment (DOOM's dither moved into hardware)
     baked the 320x200 → fullscreen geometry into ROMs; v2 keeps only MECHANISM in hardware
     — every policy (tone, thresholds, and now geometry) arrives from the client at
     runtime, so DOOM is one client among any Oberon program that wants grayscale pixels
-    (draft seam: the DOOM repo's indexbuf-seam.md, v2).
+    (draft seam: the DOOM repo's halftone-seam.md, v2).
 
     The Phase-10c {!Framebuf} trick still: a write-through shadow of the himem windows
     below serves {!Risc5.Video}'s [vidreq] with a compose FSM; the board muxes
-    Indexbuf/Framebuf per completing request on {!O.claim} — inside the rect this module
+    Halftone/Framebuf per completing request on {!O.claim} — inside the rect this module
     answers, outside (and whenever the mode is off) the mono shadow does.
 
     {1 The pixel window (64 KiB at {!base} = [0x310000])}
@@ -94,7 +94,7 @@
 
 open Hardcaml
 
-(** Byte base of the 64 KiB pixel window: [0x310000] (draft seam indexbuf-seam.md v2). *)
+(** Byte base of the 64 KiB pixel window: [0x310000] (draft seam halftone-seam.md v2). *)
 val base : int
 
 (** Pixel window size in bytes (64 KiB — decode is [adr[23:16] = base >> 16]). *)
@@ -137,7 +137,7 @@ module O : sig
     (** parity (column LSB) of the completing fetch — {!Framebuf}'s contract *)
     ; claim : 'a
     (** latched at request-accept: 1 = this request is the rect's (mode on, visible row,
-        word inside the rect) — the board's per-request Indexbuf/Framebuf mux *)
+        word inside the rect) — the board's per-request Halftone/Framebuf mux *)
     ; status : 'a
     (** [{16'0, frame_ctr[8], 7'0, vblank}] — the SoC's MMIO slot 10 ([0xFFFFE8]) *)
     }

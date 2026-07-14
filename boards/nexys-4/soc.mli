@@ -121,14 +121,14 @@ val create
            synthesizer then prunes the arbiter's video FSM and read-preemption logic). The
            shadow mirrors the same PSRAM-bound stores the cache snoops, so it equals the
            PSRAM framebuffer window at every instant — see {!Framebuf}. *)
-  -> ?indexbuf:bool
-       (** feat/indexbuf v2 (default [false]; requires [fb_bram]): instantiate {!Indexbuf}
+  -> ?halftone:bool
+       (** feat/halftone v2 (default [false]; requires [fb_bram]): instantiate {!Halftone}
            — the generalized 8bpp display mode (client-uploaded tone LUT, threshold map,
            row map, scale registers, overlay rect). Its per-request [claim] (mode on AND
            the fetch word inside the client's rect) selects which shadow answers the video
            DMA: unclaimed = {!Framebuf} (the proven mono path, bit-identical to
-           [indexbuf:false] while the control word is never written), claimed = the
-           Indexbuf compose FSM. Also wires the vblank/frame-counter status word at MMIO
+           [halftone:false] while the control word is never written), claimed = the
+           Halftone compose FSM. Also wires the vblank/frame-counter status word at MMIO
            slot 10 ([0xFFFFE8]). *)
   -> ?write_buffer:bool
        (** Phase-10d (default [false] = the proven synchronous write path): a 1-entry

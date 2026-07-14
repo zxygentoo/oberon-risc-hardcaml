@@ -1,4 +1,4 @@
-(* Public API and behaviour spec live in [indexbuf.mli].
+(* Public API and behaviour spec live in [halftone.mli].
 
    Implementation notes (v2 — the generality rework).
 
@@ -113,7 +113,7 @@ let create (i : _ I.t) : _ O.t =
      geometry registers are SHADOWS, latched into the active set at vblank entry *)
   let regw = select off ~high:7 ~low:2 in
   let wr_reg n = wr_win &: is_ctl &: (regw ==:. n) in
-  let mode = reg spec ~enable:(wr_reg 0) (lsb i.wdata) -- "ixb_mode" in
+  let mode = reg spec ~enable:(wr_reg 0) (lsb i.wdata) -- "ht_mode" in
   let shadow n width =
     reg spec ~enable:(wr_reg n) (select i.wdata ~high:(width - 1) ~low:0)
   in
@@ -144,7 +144,7 @@ let create (i : _ I.t) : _ O.t =
   let vblank_rise = gap.value ==:. 4094 &: ~:(i.vidreq) in
   let frame_ctr = Always.Variable.reg spec ~width:8 in
   let active sh = reg spec ~enable:vblank_rise sh in
-  let win_x = active sh_win_x -- "ixb_win_x" in
+  let win_x = active sh_win_x -- "ht_win_x" in
   let win_y = active sh_win_y in
   let win_w = active sh_win_w in
   let win_h = active sh_win_h in
@@ -162,7 +162,7 @@ let create (i : _ I.t) : _ O.t =
   let col6 = uresize col_req ~width:6 in
   let x_in = col6 >=: x_w0 &: (col6 <: x_w0 +: select win_w ~high:10 ~low:5) in
   let claim_now = mode &: y_in &: x_in in
-  let claim = reg spec ~enable:accept claim_now -- "ixb_claim" in
+  let claim = reg spec ~enable:accept claim_now -- "ht_claim" in
   let first_of_row = col6 ==: x_w0 in
   (* ── the row map: rect-relative output row -> [{thr_row, row_base}]; async array +
      output register = a sync read landing exactly at cycle 1 (the v1 timing lesson) *)
@@ -170,7 +170,7 @@ let create (i : _ I.t) : _ O.t =
   let rm_read =
     (multiport_memory
        1024
-       ~name:"ixb_rowmap"
+       ~name:"ht_rowmap"
        ~initialize_to:(Array.init 1024 ~f:(fun _ -> Bits.zero 22))
        ~write_ports:
          [| { Write_port.write_clock = i.clock
@@ -194,7 +194,7 @@ let create (i : _ I.t) : _ O.t =
   let wbase = Always.Variable.reg spec ~width:14 in
   let w0 = Always.Variable.reg spec ~width:32 in
   let w1 = Always.Variable.reg spec ~width:32 in
-  let col_v = col.value -- "ixb_col" in
+  let col_v = col.value -- "ht_col" in
   let a0 = uresize row_base ~width:16 +: sx.value in
   let a0_word = select a0 ~high:15 ~low:2 in
   let beat = cnt.value >=:. 4 &: (cnt.value <=:. 19) in
@@ -236,7 +236,7 @@ let create (i : _ I.t) : _ O.t =
   let pix_issue = cnt.value >=:. 1 &: (cnt.value <=:. 19) in
   let pix_lane k =
     (Ram.create
-       ~name:(Printf.sprintf "ixb_pix%d" k)
+       ~name:(Printf.sprintf "ht_pix%d" k)
        ~collision_mode:Read_before_write
        ~size:(size / 4)
        ~write_ports:
@@ -261,7 +261,7 @@ let create (i : _ I.t) : _ O.t =
   let thr_issue = cnt.value >=:. 3 &: (cnt.value <=:. 17) &: lsb cnt.value in
   let thr_lane k =
     (Ram.create
-       ~name:(Printf.sprintf "ixb_thr%d" k)
+       ~name:(Printf.sprintf "ht_thr%d" k)
        ~collision_mode:Read_before_write
        ~size:(thr_size / 8)
        ~write_ports:
@@ -293,7 +293,7 @@ let create (i : _ I.t) : _ O.t =
     let lut_lane k =
       (multiport_memory
          64
-         ~name:(Printf.sprintf "ixb_lut%d_%d" r k)
+         ~name:(Printf.sprintf "ht_lut%d_%d" r k)
          ~write_ports:
            [| { Write_port.write_clock = i.clock
               ; write_address = select off ~high:7 ~low:2
@@ -351,10 +351,10 @@ let create (i : _ I.t) : _ O.t =
               ]
           ]
       ]);
-  let vid_ack = (cnt.value ==:. 20) -- "ixb_ack" in
-  let viddata = acc.value -- "ixb_word" in
+  let vid_ack = (cnt.value ==:. 20) -- "ht_ack" in
+  let viddata = acc.value -- "ht_word" in
   let status =
-    concat_msb [ zero 16; frame_ctr.value; zero 7; vblank.value ] -- "ixb_status"
+    concat_msb [ zero 16; frame_ctr.value; zero 7; vblank.value ] -- "ht_status"
   in
   { O.viddata; vid_ack; vidpar = par.value; claim; status }
 ;;
@@ -692,7 +692,7 @@ let bn64 =
   |]
 [@@ocamlformat "disable"]
 
-let%expect_test "indexbuf — the DDA at 16/5 deals the v1 slot widths" =
+let%expect_test "halftone — the DDA at 16/5 deals the v1 slot widths" =
   (* one 64-px period = 20 source columns; the emit/advance rule from the mli *)
   let widths = Array.create ~len:20 0 in
   let sx = ref 0 in
@@ -713,7 +713,7 @@ let%expect_test "indexbuf — the DDA at 16/5 deals the v1 slot widths" =
   [%expect {| 3 3 3 3 4 3 3 3 3 4 3 3 3 3 4 3 3 3 3 4 | sx=20 acc=5 |}]
 ;;
 
-let%expect_test "indexbuf — reference model ≡ gcc-compiled dither.c (full frame)" =
+let%expect_test "halftone — reference model ≡ gcc-compiled dither.c (full frame)" =
   let lcg = ref 12345 in
   let next_byte () =
     lcg := ((!lcg * 1664525) + 1013904223) land 0xFFFFFFFF;
@@ -756,7 +756,7 @@ let%expect_test "indexbuf — reference model ≡ gcc-compiled dither.c (full fr
   [%expect {| b66f831b508c374f |}]
 ;;
 
-let%expect_test "indexbuf — hardware ≡ model differential (geometry-swept)" =
+let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
@@ -994,7 +994,7 @@ let%expect_test "indexbuf — hardware ≡ model differential (geometry-swept)" 
     |}]
 ;;
 
-let%expect_test "indexbuf — mode, byte stores, zero-rect do-no-harm, identity scale" =
+let%expect_test "halftone — mode, byte stores, zero-rect do-no-harm, identity scale" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in

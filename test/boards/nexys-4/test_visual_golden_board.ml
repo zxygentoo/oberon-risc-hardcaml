@@ -137,7 +137,7 @@ let boot_board
   ~icache
   ~write_update
   ~fb_bram
-  ~indexbuf
+  ~halftone
   ~write_buffer
   ~wbuf_depth
   ~cap
@@ -154,7 +154,7 @@ let boot_board
         ~icache
         ~write_update
         ~fb_bram
-        ~indexbuf
+        ~halftone
         ~write_buffer
         ~wbuf_depth
         i)
@@ -286,11 +286,11 @@ let () =
     | None -> 0
   in
   let write_buffer = wbuf_depth >= 1 in
-  (* opt-in (feat/indexbuf): INDEXBUF=1 instantiates the Indexbuf scanout ditherer with
+  (* opt-in (feat/halftone): HALFTONE=1 instantiates the Halftone scanout ditherer with
      its mode bit never written — the byte-identical desktop is the do-no-harm gate (the
      mux at mode 0 must leave the proven Framebuf path untouched) *)
-  let indexbuf =
-    match Sys.getenv_opt "INDEXBUF" with
+  let halftone =
+    match Sys.getenv_opt "HALFTONE" with
     | Some "1" -> true
     | _ -> false
   in
@@ -300,13 +300,13 @@ let () =
     oracle_hash
     (popcount oracle_fb);
   Printf.printf
-    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b indexbuf=%b \
+    "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b halftone=%b \
      write_buffer=%b depth=%d) past the handoff — cache makes this feasible...\n\
      %!"
     icache
     write_update
     fb_bram
-    indexbuf
+    halftone
     write_buffer
     wbuf_depth;
   let cap =
@@ -319,7 +319,7 @@ let () =
       ~icache
       ~write_update
       ~fb_bram
-      ~indexbuf
+      ~halftone
       ~write_buffer
       ~wbuf_depth:(max 1 wbuf_depth)
       ~cap

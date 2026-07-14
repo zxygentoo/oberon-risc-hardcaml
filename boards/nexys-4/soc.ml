@@ -70,7 +70,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
-  ?(indexbuf = false)
+  ?(halftone = false)
   ?(write_buffer = false)
   ?wbuf_depth
   ?(uart_baud_slow = 1302)
@@ -100,9 +100,9 @@ let create
   let viddata = wire 32 in
   let vid_ack = wire 1 in
   let vidpar = wire 1 in
-  (* feat/indexbuf v2: the display-mode status word (vblank + frame counter), read at MMIO
-     slot 10 — zero unless the Indexbuf elaboration below drives it *)
-  let ixb_status = wire 32 in
+  (* feat/halftone v2: the display-mode status word (vblank + frame counter), read at MMIO
+     slot 10 — zero unless the Halftone elaboration below drives it *)
+  let ht_status = wire 32 in
   let vid =
     Video.create
       ~viddata_valid:vid_ack
@@ -204,18 +204,18 @@ let create
         ; vidadr
         }
     in
-    (* feat/indexbuf v2: the generalized 8bpp display mode ({!Indexbuf}), taps the same
+    (* feat/halftone v2: the generalized 8bpp display mode ({!Halftone}), taps the same
        store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
        per accepted request: mode on AND the fetch word inside the client's rect — muxes
        which shadow answers the DMA, so the mono path serves everything outside the rect
        (v1 muxed on the whole-screen mode bit). With the control word never written no
-       request ever claims, and this elaboration is display-identical to [indexbuf:false]
+       request ever claims, and this elaboration is display-identical to [halftone:false]
        (the do-no-harm gate below is the visual golden). *)
-    if indexbuf
+    if halftone
     then (
-      let ixb =
-        Indexbuf.create
-          { Indexbuf.I.clock = i.clock
+      let ht =
+        Halftone.create
+          { Halftone.I.clock = i.clock
           ; adr = core_adr
           ; write = core.wr &: ~:cpu_internal
           ; ben = core_ben
@@ -224,17 +224,17 @@ let create
           ; vidadr
           }
       in
-      assign ixb_status ixb.status;
-      assign viddata (mux2 ixb.claim ixb.viddata fb.viddata);
-      assign vid_ack (mux2 ixb.claim ixb.vid_ack fb.vid_ack);
-      assign vidpar (mux2 ixb.claim ixb.vidpar fb.vidpar))
+      assign ht_status ht.status;
+      assign viddata (mux2 ht.claim ht.viddata fb.viddata);
+      assign vid_ack (mux2 ht.claim ht.vid_ack fb.vid_ack);
+      assign vidpar (mux2 ht.claim ht.vidpar fb.vidpar))
     else (
-      assign ixb_status (zero 32);
+      assign ht_status (zero 32);
       assign viddata fb.viddata;
       assign vid_ack fb.vid_ack;
       assign vidpar fb.vidpar))
   else (
-    assign ixb_status (zero 32);
+    assign ht_status (zero 32);
     assign viddata cellram.viddata;
     assign vid_ack cellram.vid_ack;
     assign vidpar cellram.vidpar);
@@ -393,7 +393,7 @@ let create
        ; uresize kbd.data ~width:32
        ; uresize i.gpio_in ~width:32
        ; uresize gpoc.value ~width:32
-       ; ixb_status (* slot 10, 0xFFFFE8 — Indexbuf vblank + frame counter (v2 seam) *)
+       ; ht_status (* slot 10, 0xFFFFE8 — Halftone vblank + frame counter (v2 seam) *)
        ]
        @ List.init 5 ~f:(fun _ -> zero 32))
   in
