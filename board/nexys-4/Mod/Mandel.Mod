@@ -3,15 +3,16 @@ MODULE Mandel; (*Halftone's demo client — a cooperative Mandelbrot infinite zo
   "Mandel.Close  Mandel.Run  Mandel.Stop"), Run/Stop install/remove the render
   task (Oberon.Install/Remove are state-guarded, so both are idempotent), Close
   is menu-invoked like Stars.Close. Resizing is a simple reset, the Stars way:
-  ModifyMsg drops the mode and repaints; the next running tick re-claims the
+  ModifyMsg drops the mode and repaints; the next running tick re-shapes the
   largest word-aligned 2x2 rect centred in the frame and restarts the zoom.
   SINGLE OWNER twice over: one viewer (V), and one rect in hardware (ABI.md
-  §11 in the sibling DOOM-on-Oberon repo, the seam spec) — Halftone enforces
-  the rect: while another client (a DOOM window) holds the claim, Shape's Open
-  fails and the task simply retries, so the frame sits black and the zoom
-  starts by itself when the display frees. The task also keeps a safety net
-  (a viewer closed behind our back drops the mode and the task), because a
-  dead viewer must never leave the panel rect scanning.
+  §11 in the sibling DOOM-on-Oberon repo, the seam spec) — the rect is claimed
+  for the viewer's WHOLE lifetime (Halftone.Claim at Open, Release at Close):
+  while a DOOM window lives, Mandel.Open refuses and the user closes it first;
+  while WE live, the rect stays ours through suspend and resize, so nobody can
+  touch the tables under us. The task also keeps a safety net (a viewer closed
+  behind our back releases the claim and the task), because a dead viewer must
+  never leave the panel rect scanning — or claimed.
   The zoom: seahorse valley pinned at rect centre, scale x0.85 per frame,
   reset at the single-precision floor (~62 frames — the "infinite" is a loop
   sized by the mantissa), escape limit 48 +2/frame capped 128, exact
@@ -108,25 +109,26 @@ MODULE Mandel; (*Halftone's demo client — a cooperative Mandelbrot infinite zo
     Display.ReplConst(Display.black, x, y, w, h, Display.replace)
   END Paint;
 
-  PROCEDURE Reset(G: Frame);  (*the Stars.Restore analogue: drop the mode, restart
-    the zoom, repaint the ground; the next running tick re-claims and re-uploads
-    the tables (they must be re-sent per claim: the RAMs power up zero, and a
-    DOOM run in between leaves ITS rendition)*)
+  PROCEDURE Reset(G: Frame);  (*the Stars.Restore analogue: drop the mode (claim
+    kept), restart the zoom, repaint the ground; the next running tick re-shapes
+    and re-uploads the tables (re-sent at every mode-on: the RAMs power up zero,
+    and a fullscreen DOOM.Run past our suspended claim leaves ITS rendition)*)
   BEGIN
     IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
     sx := Sx0; sy := Sy0; lim := Iter0; row := 0;
     IF G.H > 0 THEN Paint(G.X, G.Y, G.W, G.H) END
   END Reset;
 
-  PROCEDURE Tick;  (*the Oberon.Task handler: a render chunk per pass, claim lazily.
-    The safety net: a viewer closed or suspended behind our back (track change,
-    System.CloseTrack — paths that never click Mandel.Close) must drop the mode*)
+  PROCEDURE Tick;  (*the Oberon.Task handler: a render chunk per pass, shape lazily
+    under the held claim. The safety net: a viewer closed or suspended behind our
+    back (track change, System.CloseTrack — paths that never click Mandel.Close)
+    must drop the mode — and a closed one must release the claim*)
     VAR k: INTEGER;
   BEGIN
     IF (V = NIL) OR (V.state = 0) THEN
-      IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
-      V := NIL; F := NIL; Oberon.Remove(T)
-    ELSIF V.state < 0 THEN  (*suspended (covered track): release the panel*)
+      IF V # NIL THEN Halftone.Release END ;  (*ours since Open; V = NIL is a ghost tick*)
+      modeOn := FALSE; V := NIL; F := NIL; Oberon.Remove(T)
+    ELSIF V.state < 0 THEN  (*suspended (covered track): picture off, claim kept*)
       IF modeOn THEN Halftone.Off; modeOn := FALSE END
     ELSE  (*displayed*)
       IF ~modeOn & (F # NIL) THEN
@@ -164,10 +166,12 @@ MODULE Mandel; (*Halftone's demo client — a cooperative Mandelbrot infinite zo
     END
   END Handle;
 
-  PROCEDURE Open*;
+  PROCEDURE Open*;  (*the claim is taken HERE, for the viewer's whole lifetime*)
     VAR X, Y: INTEGER;
   BEGIN
     IF V # NIL THEN Msg("Mandel: already open (the panel rect is single-owner)")
+    ELSIF ~Halftone.Claim() THEN
+      Msg("Mandel: panel rect in use (close its owner first)")
     ELSE
       NEW(F); F.handle := Handle; modeOn := FALSE;
       sx := Sx0; sy := Sy0; lim := Iter0; row := 0;
@@ -180,23 +184,18 @@ MODULE Mandel; (*Halftone's demo client — a cooperative Mandelbrot infinite zo
 
   PROCEDURE Run*;
   BEGIN
-    IF V # NIL THEN
-      IF ~modeOn & Halftone.Claimed() THEN
-        Msg("Mandel: panel rect in use (the zoom starts when it frees)")
-      END ;
-      Oberon.Install(T)
-    END
+    IF V # NIL THEN Oberon.Install(T) END
   END Run;
 
   PROCEDURE Stop*;  (*freeze the zoom; the claimed rect stays on screen*)
   BEGIN Oberon.Remove(T)
   END Stop;
 
-  PROCEDURE Close*;  (*menu-invoked, the Stars.Close shape*)
+  PROCEDURE Close*;  (*menu-invoked, the Stars.Close shape; the claim ends with us*)
   BEGIN
     IF (V # NIL) & (Oberon.Par.vwr = V) & (Oberon.Par.vwr.dsc = Oberon.Par.frame) THEN
       Oberon.Remove(T);
-      IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
+      Halftone.Release; modeOn := FALSE;
       Viewers.Close(V); V := NIL; F := NIL
     END
   END Close;

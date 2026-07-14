@@ -151,10 +151,12 @@ Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board e
 ## Mod/ — the display mode's Oberon driver + demo
 
 `Mod/Halftone.Mod` is the Oberon-07 face of the `Halftone` unit: the thin system service
-any Oberon program uses to put grayscale pixels on the 1-bit panel (`Open` + `LinearRows`
-+ a threshold upload + `On` gets a working window; single-owner, **enforced** — there is
-one rect in hardware, so `Open` claims it and refuses everyone until the owner's `Off`
-releases; `Claimed()` probes, and a refused client waits or reports). `Mod/Mandel.Mod`
+any Oberon program uses to put grayscale pixels on the 1-bit panel (`Claim`, then `Open`
++ `LinearRows` + a threshold upload + `On` gets a working window; `Release` when done.
+Single-owner, **enforced at consumer lifetime** — there is one rect in hardware, so
+`Claim` takes it for as long as the consumer lives and a second consumer is refused
+until `Release`; inside the claim, `Open` reshapes and `Off` blanks through
+suspend/resize with the tables untouched). `Mod/Mandel.Mod`
 is its demo client — a cooperative Mandelbrot infinite-zoom in an ordinary viewer, zero
 DOOM code or content: the display mode's generality witness. They live **here, next to the hardware they drive**, so one commit —
 and one submodule pin in a consuming repo — captures design, emulator, driver and demo
