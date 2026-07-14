@@ -70,6 +70,7 @@ let create
   ?(write_update = false)
   ?(video = true)
   ?(fb_bram = false)
+  ?(halftone = false)
   ?(write_buffer = false)
   ?wbuf_depth
   ?(uart_baud_slow = 1302)
@@ -99,6 +100,9 @@ let create
   let viddata = wire 32 in
   let vid_ack = wire 1 in
   let vidpar = wire 1 in
+  (* feat/halftone v2: the display-mode status word (vblank + frame counter), read at MMIO
+     slot 10 — zero unless the Halftone elaboration below drives it *)
+  let ht_status = wire 32 in
   let vid =
     Video.create
       ~viddata_valid:vid_ack
@@ -200,10 +204,37 @@ let create
         ; vidadr
         }
     in
-    assign viddata fb.viddata;
-    assign vid_ack fb.vid_ack;
-    assign vidpar fb.vidpar)
+    (* feat/halftone v2: the generalized 8bpp display mode ({!Halftone}), taps the same
+       store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
+       per accepted request: mode on AND the fetch word inside the client's rect — muxes
+       which shadow answers the DMA, so the mono path serves everything outside the rect
+       (v1 muxed on the whole-screen mode bit). With the control word never written no
+       request ever claims, and this elaboration is display-identical to [halftone:false]
+       (the do-no-harm gate below is the visual golden). *)
+    if halftone
+    then (
+      let ht =
+        Halftone.create
+          { Halftone.I.clock = i.clock
+          ; adr = core_adr
+          ; write = core.wr &: ~:cpu_internal
+          ; ben = core_ben
+          ; wdata = core.outbus
+          ; vidreq
+          ; vidadr
+          }
+      in
+      assign ht_status ht.status;
+      assign viddata (mux2 ht.claim ht.viddata fb.viddata);
+      assign vid_ack (mux2 ht.claim ht.vid_ack fb.vid_ack);
+      assign vidpar (mux2 ht.claim ht.vidpar fb.vidpar))
+    else (
+      assign ht_status (zero 32);
+      assign viddata fb.viddata;
+      assign vid_ack fb.vid_ack;
+      assign vidpar fb.vidpar))
   else (
+    assign ht_status (zero 32);
     assign viddata cellram.viddata;
     assign vid_ack cellram.vid_ack;
     assign vidpar cellram.vidpar);
@@ -362,8 +393,9 @@ let create
        ; uresize kbd.data ~width:32
        ; uresize i.gpio_in ~width:32
        ; uresize gpoc.value ~width:32
+       ; ht_status (* slot 10, 0xFFFFE8 — Halftone vblank + frame counter (v2 seam) *)
        ]
-       @ List.init 6 ~f:(fun _ -> zero 32))
+       @ List.init 5 ~f:(fun _ -> zero 32))
   in
   (* fetch: ROM in the top 16 KiB, else PSRAM; load: MMIO in the top 64 B, else PSRAM *)
   assign codebus (mux2 rom_region prom.data mem_rdata);
