@@ -152,15 +152,16 @@ Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board e
 
 `Mod/Halftone.Mod` is the Oberon-07 face of the `Halftone` unit: the thin system service
 any Oberon program uses to put grayscale pixels on the 1-bit panel (`Open` + `LinearRows`
-+ a threshold upload + `On` gets a working window; single-owner by construction — one
-rect in hardware). `Mod/Mandel.Mod` is its demo client — a cooperative Mandelbrot
-infinite-zoom in an ordinary viewer, zero DOOM code or content: the display mode's
-generality witness. They live **here, next to the hardware they drive**, so one commit —
++ a threshold upload + `On` gets a working window; single-owner, **enforced** — there is
+one rect in hardware, so `Open` claims it and refuses everyone until the owner's `Off`
+releases; `Claimed()` probes, and a refused client waits or reports). `Mod/Mandel.Mod`
+is its demo client — a cooperative Mandelbrot infinite-zoom in an ordinary viewer, zero
+DOOM code or content: the display mode's generality witness. They live **here, next to the hardware they drive**, so one commit —
 and one submodule pin in a consuming repo — captures design, emulator, driver and demo
 together; the driver's address/register constants mirror `halftone.mli`, which carries
 the full register-map detail. This repo never compiles them (not dune material): the
 sibling `DOOM-on-Oberon`'s `script/mkdsk.sh` reads them from this directory and compiles
-them in-image (norebo ORP) into the bootable `DOOM.dsk`, where `DOOM.Window` is the
+them in-image (norebo ORP) into the bootable `DOOM.dsk`, where `DOOM.Run -win` is the
 driver's other client — and the on-system tests over there (`run_dsk`) are what exercise
 them.
 

@@ -1,22 +1,22 @@
-MODULE Mandel; (*feat/halftone v2 demo — the display mode's first VIEWER CITIZEN (and
-  Halftone.Mod's first client; zero code and zero content shared with DOOM).
-  Mandel.Open opens an ordinary MenuViewers viewer (the Stars.Mod pattern) whose main
-  frame hosts a Halftone rect: the largest word-aligned 2x2-pixel rect centred in the
-  frame, margins painted black. An Oberon.Task renders a few Mandelbrot rows per
-  Oberon.Loop pass into the pixel window — the zoom animates COOPERATIVELY: mouse,
-  clock and every other viewer stay live while it runs, and the desktop repaints
-  normally around it.
-  Lifecycle is the viewer protocol, not key-grabbing: MenuViewers.ModifyMsg (open,
-  resize by neighbours, suspend-with-H=0) drops the mode and reshapes the rect on the
-  next tick; the task polls V.state so a plain System.Close from the menu works — the
-  first displayed tick after any change re-claims the rect (Halftone.Open latches at
-  the next vblank entry), suspended (state < 0) releases the panel, closed (state = 0)
-  releases it and removes the task.
-  The zoom itself: seahorse valley pinned at rect centre, scale x0.85 per frame,
-  reset at the single-precision floor (~8 ulp pixel steps — the "infinite" is a loop
-  sized by the mantissa), escape limit growing 48 +2/frame capped 128, exact
-  cardioid + period-2-bulb interior tests. Iteration count IS brightness (identity
-  tone ramp); the rendition is Halftone's computed Bayer 8x8.*)
+MODULE Mandel; (*Halftone's demo client — a cooperative Mandelbrot infinite zoom
+  in an ordinary viewer, UI modelled on Stars.Mod: Open opens the viewer (menu
+  "Mandel.Close  Mandel.Run  Mandel.Stop"), Run/Stop install/remove the render
+  task (Oberon.Install/Remove are state-guarded, so both are idempotent), Close
+  is menu-invoked like Stars.Close. Resizing is a simple reset, the Stars way:
+  ModifyMsg drops the mode and repaints; the next running tick re-claims the
+  largest word-aligned 2x2 rect centred in the frame and restarts the zoom.
+  SINGLE OWNER twice over: one viewer (V), and one rect in hardware (ABI.md
+  §11 in the sibling DOOM-on-Oberon repo, the seam spec) — Halftone enforces
+  the rect: while another client (a DOOM window) holds the claim, Shape's Open
+  fails and the task simply retries, so the frame sits black and the zoom
+  starts by itself when the display frees. The task also keeps a safety net
+  (a viewer closed behind our back drops the mode and the task), because a
+  dead viewer must never leave the panel rect scanning.
+  The zoom: seahorse valley pinned at rect centre, scale x0.85 per frame,
+  reset at the single-precision floor (~62 frames — the "infinite" is a loop
+  sized by the mantissa), escape limit 48 +2/frame capped 128, exact
+  cardioid + period-2-bulb interior tests. Iteration count IS brightness
+  (identity tone ramp); the rendition is Halftone's computed Bayer 8x8.*)
 
   IMPORT SYSTEM, Display, Viewers, Texts, Oberon, MenuViewers, TextFrames, Halftone;
 
@@ -108,20 +108,29 @@ MODULE Mandel; (*feat/halftone v2 demo — the display mode's first VIEWER CITIZ
     Display.ReplConst(Display.black, x, y, w, h, Display.replace)
   END Paint;
 
-  PROCEDURE Tick;  (*the Oberon.Task handler: lifecycle + a render chunk per pass*)
+  PROCEDURE Reset(G: Frame);  (*the Stars.Restore analogue: drop the mode, restart
+    the zoom, repaint the ground; the next running tick re-claims and re-uploads
+    the tables (they must be re-sent per claim: the RAMs power up zero, and a
+    DOOM run in between leaves ITS rendition)*)
+  BEGIN
+    IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
+    sx := Sx0; sy := Sy0; lim := Iter0; row := 0;
+    IF G.H > 0 THEN Paint(G.X, G.Y, G.W, G.H) END
+  END Reset;
+
+  PROCEDURE Tick;  (*the Oberon.Task handler: a render chunk per pass, claim lazily.
+    The safety net: a viewer closed or suspended behind our back (track change,
+    System.CloseTrack — paths that never click Mandel.Close) must drop the mode*)
     VAR k: INTEGER;
   BEGIN
-    IF (V = NIL) OR (V.state = 0) THEN  (*System.Close: release panel + task*)
+    IF (V = NIL) OR (V.state = 0) THEN
       IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
-      V := NIL; F := NIL; Oberon.Remove(T); Msg("Mandel: closed")
+      V := NIL; F := NIL; Oberon.Remove(T)
     ELSIF V.state < 0 THEN  (*suspended (covered track): release the panel*)
       IF modeOn THEN Halftone.Off; modeOn := FALSE END
     ELSE  (*displayed*)
-      IF ~modeOn & (F # NIL) THEN  (*fresh, resized or redisplayed: (re)claim*)
+      IF ~modeOn & (F # NIL) THEN
         IF Shape(F.X, F.Y, F.W, F.H) THEN
-          (*tables too, every claim: the RAMs power up ZERO (an all-black rect — the
-            board taught this: the emulator legs cannot see scanout), and a DOOM run
-            in between would leave ITS rendition*)
           Halftone.Bayer8; Halftone.ToneIdentity;
           Halftone.On; modeOn := TRUE
         END
@@ -145,12 +154,11 @@ MODULE Mandel; (*feat/halftone v2 demo — the display mode's first VIEWER CITIZ
             Oberon.DrawMouseArrow(M(Oberon.InputMsg).X, M(Oberon.InputMsg).Y)
           END
       | MenuViewers.ModifyMsg:
-          (*open (extend from H=0), neighbour resize, suspend (reduce to H=0) — one
-            protocol: drop the mode now, let the next displayed tick re-Shape against
-            the updated frame (Adjust writes G.Y/G.H right after this returns)*)
+          (*open (extend from H=0), neighbour resize, suspend (reduce to H=0),
+            and the post-DOOM restore broadcast (MenuViewers re-extends the
+            frame) — one protocol, the Stars way: take the new geometry, reset*)
           IF (M.Y # G.Y) OR (M.H # G.H) THEN
-            IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
-            IF M.H > 0 THEN Paint(G.X, M.Y, G.W, M.H) END
+            G.Y := M.Y; G.H := M.H; Reset(G)
           END
       END
     END
@@ -161,16 +169,37 @@ MODULE Mandel; (*feat/halftone v2 demo — the display mode's first VIEWER CITIZ
   BEGIN
     IF V # NIL THEN Msg("Mandel: already open (the panel rect is single-owner)")
     ELSE
-      NEW(F); F.handle := Handle;
-      sx := Sx0; sy := Sy0; lim := Iter0; row := 0; modeOn := FALSE;
+      NEW(F); F.handle := Handle; modeOn := FALSE;
+      sx := Sx0; sy := Sy0; lim := Iter0; row := 0;
       Oberon.AllocateUserViewer(Oberon.Par.vwr.X, X, Y);
       V := MenuViewers.New(
-        TextFrames.NewMenu("Mandel", "System.Close"),
-        F, TextFrames.menuH, X, Y);
-      Oberon.Install(T);
-      Msg("Mandel: zooming — System.Close to stop")
+        TextFrames.NewMenu("Mandel", "Mandel.Close  Mandel.Run  Mandel.Stop"),
+        F, TextFrames.menuH, X, Y)
     END
   END Open;
+
+  PROCEDURE Run*;
+  BEGIN
+    IF V # NIL THEN
+      IF ~modeOn & Halftone.Claimed() THEN
+        Msg("Mandel: panel rect in use (the zoom starts when it frees)")
+      END ;
+      Oberon.Install(T)
+    END
+  END Run;
+
+  PROCEDURE Stop*;  (*freeze the zoom; the claimed rect stays on screen*)
+  BEGIN Oberon.Remove(T)
+  END Stop;
+
+  PROCEDURE Close*;  (*menu-invoked, the Stars.Close shape*)
+  BEGIN
+    IF (V # NIL) & (Oberon.Par.vwr = V) & (Oberon.Par.vwr.dsc = Oberon.Par.frame) THEN
+      Oberon.Remove(T);
+      IF modeOn THEN Halftone.Off; modeOn := FALSE END ;
+      Viewers.Close(V); V := NIL; F := NIL
+    END
+  END Close;
 
 BEGIN Texts.OpenWriter(Wr); T := Oberon.NewTask(Tick, 0)
 END Mandel.

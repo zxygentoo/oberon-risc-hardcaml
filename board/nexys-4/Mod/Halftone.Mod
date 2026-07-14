@@ -7,8 +7,15 @@ MODULE Halftone; (*the display mode's Oberon face (seam spec: ABI.md §11 in the
   get a working window. DOOM's blob keeps talking raw MMIO per its own seam (AGENT.md
   paragraph 5, blob-talks-MMIO); Mandel.Mod is this module's first client.
 
-  SINGLE OWNER by construction: there is exactly one rect in hardware — a second
-  client's Open displaces the first (like the Oberon focus, the doc is the arbiter).
+  SINGLE OWNER, enforced: there is exactly one rect in hardware, so Open CLAIMS it
+  and Off RELEASES it — while a claim is live, every further Open (any caller's,
+  including the owner's: Off first, then reshape) returns FALSE and writes nothing;
+  Claimed lets a client probe before committing work. A refused client reports, or
+  simply retries later — both shipped clients tick-retry, so the display resumes by
+  itself when the owner leaves. The tables and On are yours exactly between your
+  successful Open and your Off. Off is parameterless on purpose: as a command, a
+  middle-click on Halftone.Off frees a claim wedged by a client that died without
+  releasing.
 
   Geometry registers are SHADOWED in hardware and latch at vblank entry, so Open
   never tears mid-frame; the tables (thresholds, row map, tone) are LIVE — rewrite
@@ -27,17 +34,21 @@ MODULE Halftone; (*the display mode's Oberon face (seam spec: ABI.md §11 in the
     mapAdr = 30F000H;   (*row map: 768 words {thrRow[21:16], rowBase[15:0]}, word stores*)
     statusAdr = -24;    (*MMIO slot 10 = 0FFFFE8H: bit 0 vblank, bits 15..8 frame counter*)
 
+  VAR claimed: BOOLEAN;  (*a successful Open not yet Off'd — the whole arbitration state*)
+
   PROCEDURE Open*(x, y, w, h, xnum, xden, xoff: INTEGER): BOOLEAN;
   (*claim the rect: panel px, x and w multiples of 32 (the hardware muxes whole fb
     words); horizontal scale xnum/xden >= 1 (the DDA advances the source at most one
     byte per output pixel); xoff = starting source byte column. Takes effect at the
-    next vblank entry (call Sync to wait for it). FALSE = rejected, nothing written.*)
+    next vblank entry (call Sync to wait for it). FALSE = rejected (bad geometry, or
+    the rect is claimed), nothing written.*)
     VAR ok: BOOLEAN;
   BEGIN
-    ok := (x MOD 32 = 0) & (w MOD 32 = 0) & (w > 0) & (h > 0)
+    ok := ~claimed
+        & (x MOD 32 = 0) & (w MOD 32 = 0) & (w > 0) & (h > 0)
         & (x >= 0) & (y >= 0) & (x + w <= 1024) & (y + h <= 768)
         & (xden >= 1) & (xnum >= xden) & (xnum < 4096) & (xoff >= 0) & (xoff < 10000H);
-    IF ok THEN
+    IF ok THEN claimed := TRUE;
       SYSTEM.PUT(ctlAdr + 4, x); SYSTEM.PUT(ctlAdr + 8, y);
       SYSTEM.PUT(ctlAdr + 12, w); SYSTEM.PUT(ctlAdr + 16, h);
       SYSTEM.PUT(ctlAdr + 20, xnum); SYSTEM.PUT(ctlAdr + 24, xden);
@@ -115,9 +126,14 @@ MODULE Halftone; (*the display mode's Oberon face (seam spec: ABI.md §11 in the
   BEGIN SYSTEM.PUT(ctlAdr, 1)
   END On;
 
-  PROCEDURE Off*;  (*the desktop was under us all along: restore is instant*)
-  BEGIN SYSTEM.PUT(ctlAdr, 0)
+  PROCEDURE Off*;  (*mode off AND the claim released — the desktop was under us all
+    along, restore is instant. Parameterless, so it doubles as the recovery command*)
+  BEGIN SYSTEM.PUT(ctlAdr, 0); claimed := FALSE
   END Off;
+
+  PROCEDURE Claimed*(): BOOLEAN;  (*a claim is live: Open refuses until the owner's Off*)
+  BEGIN RETURN claimed
+  END Claimed;
 
   PROCEDURE Frame*(): INTEGER;  (*the free-running 8-bit frame counter*)
     VAR s: INTEGER;
@@ -134,4 +150,5 @@ MODULE Halftone; (*the display mode's Oberon face (seam spec: ABI.md §11 in the
     REPEAT SYSTEM.GET(statusAdr, s) UNTIL ODD(s)
   END Sync;
 
+BEGIN claimed := FALSE
 END Halftone.
