@@ -91,16 +91,16 @@ let () =
               -> BRAM write port) must not disturb the cache-write critical path at 60
               MHz. *)
          ~fb_bram:true
-           (* feat/indexbuf (EXPERIMENT): the 8bpp indexed-colour framebuffer + scanout
-              dither ({!Indexbuf}) — DOOM's dither moved into hardware. Mode-muxed against
-              Framebuf at runtime; with the control word never written the scanout is the
-              proven mono path (golden byte-identical, INDEXBUF=1). Cyclesim: 3.38
-              Mcyc/tick = 17.8 fps (was 7.20/8.3), scanout frame ≡ host golden bit-exact.
-              Synth watch: the four ixb_pix* arrays must infer BLOCK RAM (~16 RAMB36 on
-              top of Framebuf's 32) + the two constant ROMs (row map 1024x14, slot
-              thresholds 2048x32 — BRAM or LUT, either fine); all-new logic is clk-domain
-              BRAM-to-BRAM, must not disturb the cache-write or PSRAM-I/O critical paths
-              at 60 MHz. *)
+           (* feat/indexbuf v2 (EXPERIMENT): the generalized 8bpp display mode
+              ({!Indexbuf}) — client-uploaded tables + geometry, overlay rect. Claim-muxed
+              against Framebuf per request; with the control word never written the
+              scanout is the proven mono path (golden byte-identical, INDEXBUF=1).
+              Cyclesim (v1 measure): 3.38 Mcyc/tick = 17.8 fps (was 7.20/8.3), scanout
+              frame ≡ host golden bit-exact. Synth watch: the four ixb_pix* arrays must
+              infer BLOCK RAM (~16 RAMB36 on top of Framebuf's 32) + the two constant ROMs
+              (row map 1024x14, slot thresholds 2048x32 — BRAM or LUT, either fine);
+              all-new logic is clk-domain BRAM-to-BRAM, must not disturb the cache-write
+              or PSRAM-I/O critical paths at 60 MHz. *)
          ~indexbuf:true
            (* Phase-10d: the 1-entry write buffer — a PSRAM store retires in one ce cycle
               and drains in the background; reads wait out a pending drain

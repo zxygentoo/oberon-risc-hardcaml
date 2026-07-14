@@ -100,6 +100,9 @@ let create
   let viddata = wire 32 in
   let vid_ack = wire 1 in
   let vidpar = wire 1 in
+  (* feat/indexbuf v2: the display-mode status word (vblank + frame counter), read at MMIO
+     slot 10 — zero unless the Indexbuf elaboration below drives it *)
+  let ixb_status = wire 32 in
   let vid =
     Video.create
       ~viddata_valid:vid_ack
@@ -201,12 +204,13 @@ let create
         ; vidadr
         }
     in
-    (* feat/indexbuf: the 8bpp indexed-colour framebuffer + scanout dither ({!Indexbuf}),
-       taps the same store transaction the Framebuf shadow and the cache snoop ride. Its
-       own mode bit muxes which shadow answers the DMA at RUNTIME — mode 0 leaves the
-       proven Framebuf path selected, so with the control word never written this
-       elaboration is display-identical to [indexbuf:false] (the do-no-harm gate below is
-       the visual golden). *)
+    (* feat/indexbuf v2: the generalized 8bpp display mode ({!Indexbuf}), taps the same
+       store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
+       per accepted request: mode on AND the fetch word inside the client's rect — muxes
+       which shadow answers the DMA, so the mono path serves everything outside the rect
+       (v1 muxed on the whole-screen mode bit). With the control word never written no
+       request ever claims, and this elaboration is display-identical to [indexbuf:false]
+       (the do-no-harm gate below is the visual golden). *)
     if indexbuf
     then (
       let ixb =
@@ -220,14 +224,17 @@ let create
           ; vidadr
           }
       in
-      assign viddata (mux2 ixb.mode ixb.viddata fb.viddata);
-      assign vid_ack (mux2 ixb.mode ixb.vid_ack fb.vid_ack);
-      assign vidpar (mux2 ixb.mode ixb.vidpar fb.vidpar))
+      assign ixb_status ixb.status;
+      assign viddata (mux2 ixb.claim ixb.viddata fb.viddata);
+      assign vid_ack (mux2 ixb.claim ixb.vid_ack fb.vid_ack);
+      assign vidpar (mux2 ixb.claim ixb.vidpar fb.vidpar))
     else (
+      assign ixb_status (zero 32);
       assign viddata fb.viddata;
       assign vid_ack fb.vid_ack;
       assign vidpar fb.vidpar))
   else (
+    assign ixb_status (zero 32);
     assign viddata cellram.viddata;
     assign vid_ack cellram.vid_ack;
     assign vidpar cellram.vidpar);
@@ -386,8 +393,9 @@ let create
        ; uresize kbd.data ~width:32
        ; uresize i.gpio_in ~width:32
        ; uresize gpoc.value ~width:32
+       ; ixb_status (* slot 10, 0xFFFFE8 — Indexbuf vblank + frame counter (v2 seam) *)
        ]
-       @ List.init 6 ~f:(fun _ -> zero 32))
+       @ List.init 5 ~f:(fun _ -> zero 32))
   in
   (* fetch: ROM in the top 16 KiB, else PSRAM; load: MMIO in the top 64 B, else PSRAM *)
   assign codebus (mux2 rom_region prom.data mem_rdata);
