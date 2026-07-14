@@ -5,7 +5,7 @@
     baked the 320x200 → fullscreen geometry into ROMs; v2 keeps only MECHANISM in hardware
     — every policy (tone, thresholds, and now geometry) arrives from the client at
     runtime, so DOOM is one client among any Oberon program that wants grayscale pixels
-    (draft seam: the DOOM repo's halftone-seam.md, v2).
+    (the seam spec: the DOOM repo's ABI.md §11).
 
     The Phase-10c {!Framebuf} trick still: a write-through shadow of the himem windows
     below serves {!Risc5.Video}'s [vidreq] with a compose FSM; the board muxes
@@ -94,7 +94,7 @@
 
 open Hardcaml
 
-(** Byte base of the 64 KiB pixel window: [0x310000] (draft seam halftone-seam.md v2). *)
+(** Byte base of the 64 KiB pixel window: [0x310000] (ABI.md §11, the DOOM repo). *)
 val base : int
 
 (** Pixel window size in bytes (64 KiB — decode is [adr[23:16] = base >> 16]). *)
