@@ -18,6 +18,9 @@ how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/
 | `cellram.{ml,mli}` | PSRAM memory controller + CPU/video arbiter (the memory path) |
 | `cache.{ml,mli}` | Phase-10a/b direct-mapped instruction/read cache in front of Cellram |
 | `framebuf.{ml,mli}` | Phase-10c framebuffer BRAM shadow — video DMA served on-chip, off the PSRAM port |
+| `halftone.{ml,mli}` | the Halftone display mode (AGENT.md §5 row 11) — 8bpp window → 1-bit panel rect, ordered dithering at scanout, claim-muxed against `Framebuf` |
+| `Mod/Halftone.Mod` | the display mode's **Oberon driver** (not built here — see below) |
+| `Mod/Mandel.Mod` | the driver's demo client — a cooperative Mandelbrot-zoom viewer citizen |
 | `cellram_model.{ml,mli}` | behavioural sim double of the external PSRAM chip (**test-only**) |
 | `emit_verilog.ml` | emit the board SoC as Verilog (module name `soc_board`), boot ROM from `Risc5.Rom` |
 | `nexys4_top.v` | hand-written vendor shim: MMCM / IOBUF / POR — the **only** vendor code |
@@ -144,6 +147,22 @@ same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at t
   equal the PSRAM window (the coherence invariant, asserted rather than inferred).
 
 Full detail in `framebuf.mli`. Optional (`?fb_bram`, default off — the board emit turns it on).
+
+## Mod/ — the display mode's Oberon driver + demo
+
+`Mod/Halftone.Mod` is the Oberon-07 face of the `Halftone` unit: the thin system service
+any Oberon program uses to put grayscale pixels on the 1-bit panel (`Open` + `LinearRows`
++ a threshold upload + `On` gets a working window; single-owner by construction — one
+rect in hardware). `Mod/Mandel.Mod` is its demo client — a cooperative Mandelbrot
+infinite-zoom in an ordinary viewer, zero DOOM code or content: the display mode's
+generality witness. They live **here, next to the hardware they drive**, so one commit —
+and one submodule pin in a consuming repo — captures design, emulator, driver and demo
+together; the driver's address/register constants mirror `halftone.mli`, which carries
+the full register-map detail. This repo never compiles them (not dune material): the
+sibling `DOOM-on-Oberon`'s `script/mkdisk.sh` reads them from this directory and compiles
+them in-image (norebo ORP) into the bootable `DOOM.dsk`, where `DOOM.Window` is the
+driver's other client — and the on-system tests over there (`dskrun`) are what exercise
+them.
 
 ## The 16 KiB icache — DOOM's capacity lever (feat/more-cache)
 
