@@ -1,15 +1,13 @@
 (* Public API and behaviour spec live in [soc.mli].
 
-   Implementation note. Wires the core to [Rom] + [Ram] with RISC5Top's decode. The core's
-   [adr] / [codebus] / [inbus] form a loop broken by the core's registers: [adr] is
-   combinational from registered state ([pc], the regfile, [ir]), the memories read
-   combinationally, and [codebus]/[inbus] only reach [ir] on the next edge — no
-   combinational cycle. So [codebus]/[inbus] are Hardcaml wires, assigned after the core
-   is built. Stores go to RAM unconditionally, faithful to the SRAM (no [ioenb] gate). The
-   {!Spi} master is wired per RISC5Top: a store to MMIO word 4 pulses [start]
-   ([spiStart]); word 5 is the 4-bit [spiCtrl] (bit 2 = [fast]); reads of words 4/5 return
-   [data_rx]/[rdy]. Word 1 reads [{btn, sw}] and latches the LEDs ([lreg]) on a store; the
-   read mux is an [iowadr]-indexed [mux] with one labelled slot per MMIO word. *)
+   Implementation note. Wires the core to [Rom] + [Ram] with RISC5Top's decode, and hangs
+   the shared {!Peripherals} cluster (timer, SPI, UART, PS/2 kbd + mouse, LEDs/switches,
+   GPIO, the io_data read mux — the per-word map lives there) off it. The core's [adr] /
+   [codebus] / [inbus] form a loop broken by the core's registers: [adr] is combinational
+   from registered state ([pc], the regfile, [ir]), the memories read combinationally, and
+   [codebus]/[inbus] only reach [ir] on the next edge — no combinational cycle. So
+   [codebus]/[inbus] are Hardcaml wires, assigned after the core is built. Stores go to
+   RAM unconditionally, faithful to the SRAM (no [ioenb] gate). *)
 
 (* bind the machine's RAM (lib/ram.ml) before the opens — [open Hardcaml] shadows the bare
    sibling name with [Hardcaml.Ram] (the BRAM primitive helpers) — and rebind after *)
@@ -65,40 +63,14 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* The MMIO word map (RISC5Top's [iowadr] decode). One name per word, shared by the write
-   strobes, the writable registers and the read-mux slot below, so a word can't drift
-   between its decode site and its read slot. *)
-let w_ms_timer = 0 (* R: ms counter *)
-let w_switches_leds = 1 (* R: {btn, sw}; W: the LED latch *)
-let w_uart_data = 2 (* R: dataRx (pulses doneRx); W: start a transmit *)
-let w_uart_status = 3 (* R: {rdyTx, rdyRx}; W: the bitrate select *)
-let w_spi_data = 4 (* R: data_rx; W: start a transfer *)
-let w_spi_ctrl = 5 (* R: rdy; W: the 4-bit spiCtrl *)
-let w_mouse_kbd = 6 (* R: {rdyKbd, dataMs} *)
-let w_kbd_data = 7 (* R: dataKbd (pops the FIFO) *)
-let w_gpio = 8 (* R: gpin; W: gpout *)
-let w_gpio_dir = 9 (* R/W: gpoc *)
-
 let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : _ O.t =
-  if clocks_per_ms < 1 || clocks_per_ms > 1 lsl 16
-  then failwith "Soc: clocks_per_ms must fit the 16-bit cnt0 prescaler (1..65536)";
-  let spec = Reg_spec.create () ~clock:i.clock in
-  (* Millisecond timer — free-running (no reset), like RISC5Top's. A [clocks_per_ms]
-     prescaler [cnt0] raises [limit] once per ms; [limit] both pulses the core's [irq] and
-     ticks the ms counter [cnt1] (read at MMIO word 0). *)
-  let cnt0 = Always.Variable.reg spec ~width:16 in
-  let cnt1 = Always.Variable.reg spec ~width:32 in
-  let limit = (cnt0.value ==:. clocks_per_ms - 1) -- "limit" in
-  Always.(
-    compile
-      [ cnt0 <-- mux2 limit (zero 16) (cnt0.value +:. 1)
-      ; cnt1 <-- cnt1.value +: uresize limit ~width:32
-      ]);
-  let cnt1_v = cnt1.value -- "cnt1" in
   (* Core + memory; the fetch/load feedback is broken by the core's pc/ir registers, so
-     [codebus]/[inbus] are wires assigned below. *)
+     [codebus]/[inbus] are wires assigned below. [irq] closes the same kind of loop with
+     {!Peripherals} (built after the core, whose strobes it consumes): its [ms_tick] comes
+     straight off the timer register, so nothing combinational cycles. *)
   let codebus = wire 32 in
   let inbus = wire 32 in
+  let irq = wire 1 in
   (* Video controller (RISC5Top's [VID]). Two clocks: the system [clk] and the
      DCM/MMCM-generated pixel clock [pclk] (a Phase-7 board-shim input). [inv] = switch 7
      (RISC5Top [~nswi[7]], here the de-inverted [sw[7]]). Its framebuffer-read data
@@ -118,13 +90,7 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
   let core =
     Cpu.create
       ~fast_mul
-      { Cpu.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; irq = limit
-      ; stall_x = vidreq
-      ; inbus
-      ; codebus
-      }
+      { Cpu.I.clock = i.clock; rst_n = i.rst_n; irq; stall_x = vidreq; inbus; codebus }
   in
   let prom = Rom.create ~contents { Rom.I.adr = select core.adr ~high:10 ~low:2 } in
   (* SRAM address arbitration ([SRadr = vidreq ? vidadr : adr[19:2]]). [vidadr] is an
@@ -148,117 +114,34 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
   let rom_region = select core.adr ~high:23 ~low:14 ==:. Cpu.start_adr lsr 12 in
   let ioenb = select core.adr ~high:23 ~low:6 ==:. 0x3FFFF in
   let iowadr = select core.adr ~high:5 ~low:2 in
-  (* the per-word MMIO strobes, and the one writable-register shape (RISC5Top l.138-144):
-     loaded from [outbus]'s low bits on a store to [word]; reset (which beats a same-cycle
-     write) clears it unless [rst:false] — the faithful no-reset exception ([gpout]
-     below). *)
-  let io_wr word = core.wr &: ioenb &: (iowadr ==:. word) in
-  let io_rd word = core.rd &: ioenb &: (iowadr ==:. word) in
-  let io_reg ?(rst = true) ~word ~width () =
-    let r = Always.Variable.reg spec ~width in
-    let load = mux2 (io_wr word) (sel_bottom core.outbus ~width) r.value in
-    Always.(compile [ (r <-- if rst then mux2 ~:(i.rst_n) (zero width) load else load) ]);
-    r.value
-  in
-  (* SPI master (RISC5Top wiring): a store to [w_spi_data] pulses [start] ([spiStart]);
-     [w_spi_ctrl] is the 4-bit control register ([fast] = bit 2, reset to 0). [miso] is
-     the already-ANDed SD/net line, driven test-side by the disk model. *)
-  let spi_ctrl = io_reg ~word:w_spi_ctrl ~width:4 () -- "spi_ctrl" in
-  let spi =
-    Spi.create
-      { Spi.I.clock = i.clock
+  (* The whole peripheral/MMIO cluster ({!Peripherals} — shared with the board SoC). All
+     defaults = the 25 MHz RISC5Top constants; [ms_tick] is the core's [irq], directly
+     (the board wraps it in a ce-domain stretch instead). *)
+  let per =
+    Peripherals.create
+      ~clocks_per_ms
+      { Peripherals.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; start = io_wr w_spi_data
-      ; fast = bit spi_ctrl ~pos:2
-      ; data_tx = core.outbus
+      ; wr = core.wr
+      ; rd = core.rd
+      ; ioenb
+      ; iowadr
+      ; outbus = core.outbus
       ; miso = i.miso
-      }
-  in
-  (* UART: RS232R receiver + RS232T transmitter at [bitrate] baud. A [w_uart_data] read
-     returns the received byte [dataRx] and pulses [done_] (acks it, clearing rdyRx); a
-     write starts a transmit ([start], [data] = outbus[7:0]). [w_uart_status] reads
-     [{rdyTx, rdyRx}]; a write sets the 1-bit [bitrate] select (0 = 19200, 1 = 115200;
-     reset 0). *)
-  let bitrate = io_reg ~word:w_uart_status ~width:1 () in
-  let uart_rx =
-    Uart_rx.create
-      { Uart_rx.I.clock = i.clock
-      ; rst_n = i.rst_n
       ; rxd = i.rxd
-      ; fsel = bitrate
-      ; done_ = io_rd w_uart_data
-      }
-  in
-  let uart_tx =
-    Uart_tx.create
-      { Uart_tx.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; start = io_wr w_uart_data
-      ; fsel = bitrate
-      ; data = select core.outbus ~high:7 ~low:0
-      }
-  in
-  (* PS/2 keyboard ({!Ps2}) + mouse ({!Mouse}). A [w_mouse_kbd] read carries the mouse
-     state [dataMs] in bits [27:0] and the keyboard-ready bit [rdyKbd] at bit 28; a
-     [w_kbd_data] read returns the keyboard byte [dataKbd] and pulses [doneKbd] (pops the
-     keyboard FIFO). The mouse's open-drain [msclk]/[msdat] split into resolved-line
-     inputs and drive-low [*_oe] outputs (the Phase-7 pad / a testbench does the
-     wired-AND). *)
-  let kbd =
-    Ps2.create
-      { Ps2.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; done_ = io_rd w_kbd_data
+      ; btn = i.btn
+      ; sw = i.sw
+      ; gpio_in = i.gpio_in
       ; ps2c = i.ps2c
       ; ps2d = i.ps2d
+      ; msclk = i.msclk
+      ; msdat = i.msdat
       }
   in
-  let mouse =
-    Mouse.create
-      { Mouse.I.clock = i.clock; rst_n = i.rst_n; msclk = i.msclk; msdat = i.msdat }
-  in
-  let mouse_out = mouse.out -- "mouse_out" in
-  (* Switches/buttons (word 1 read): [{btn, sw}] zero-extended to 32 bits. RISC5Top reads
-     [~nswi] — the OberonStation switches are active-low (board pullups); we take the
-     already-logical [sw] (Nexys switches are active-high) and leave that pad inversion to
-     the Phase-7 shim. Default 0 = all-off = the oracle's [switches], so disk boot is
-     unaffected. *)
-  let switches = uresize (i.btn @: i.sw) ~width:32 in
-  (* LEDs ([w_switches_leds] write): [Lreg] — cleared by reset, else latched from
-     [outbus[7:0]]; driven out on [leds]. *)
-  let lreg = io_reg ~word:w_switches_leds ~width:8 () in
-  (* GPIO: [gpout] (drive value) and [gpoc] (direction), each 8-bit. [gpoc] is
-     reset-cleared; [gpout] is NOT (faithful — a pin powers up as input, drive value
-     undefined). The bidirectional pad is split mouse-style: [gpio_in] in, [gpio_out] =
-     [gpout] and [gpio_oe] = [gpoc] out; the Phase-7 shim rebuilds the IOBUFs ([.T(~oe)]). *)
-  let gpout = io_reg ~rst:false ~word:w_gpio ~width:8 () in
-  let gpoc = io_reg ~word:w_gpio_dir ~width:8 () in
-  (* MMIO read map, muxed by the word address [iowadr] (RISC5Top's [iowadr ==] chain);
-     unmapped words read 0, like the RTL's [: 0]. *)
-  let io_read_map =
-    [ w_ms_timer, cnt1_v
-    ; w_switches_leds, switches
-    ; w_uart_data, uresize uart_rx.data ~width:32
-    ; w_uart_status, uresize (uart_tx.rdy @: uart_rx.rdy) ~width:32
-    ; w_spi_data, spi.data_rx
-    ; w_spi_ctrl, uresize spi.rdy ~width:32
-    ; w_mouse_kbd, uresize (kbd.rdy @: mouse_out) ~width:32
-    ; w_kbd_data, uresize kbd.data ~width:32
-    ; w_gpio, uresize i.gpio_in ~width:32
-    ; w_gpio_dir, uresize gpoc ~width:32
-    ]
-  in
-  let io_data =
-    mux
-      iowadr
-      (List.init 16 ~f:(fun w ->
-         match List.Assoc.find io_read_map w ~equal:Int.equal with
-         | Some s -> s
-         | None -> zero 32))
-  in
+  assign irq per.ms_tick;
   (* fetch: ROM in the top 16 KiB, else RAM; load: MMIO in the top 64 B, else RAM *)
   assign codebus (mux2 rom_region prom.data ram.rdata);
-  assign inbus (mux2 ioenb io_data ram.rdata);
+  assign inbus (mux2 ioenb per.io_data ram.rdata);
   { O.adr = core.adr
   ; rd = core.rd
   ; wr = core.wr
@@ -266,17 +149,17 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
   ; outbus = core.outbus
   ; codebus
   ; inbus
-  ; mosi = spi.mosi
-  ; sclk = spi.sclk
-  ; txd = uart_tx.txd
-  ; leds = lreg
-  ; gpio_out = gpout
-  ; gpio_oe = gpoc
+  ; mosi = per.mosi
+  ; sclk = per.sclk
+  ; txd = per.txd
+  ; leds = per.leds
+  ; gpio_out = per.gpio_out
+  ; gpio_oe = per.gpio_oe
   ; hsync = vid.hsync
   ; vsync = vid.vsync
   ; rgb = vid.rgb
-  ; msclk_oe = mouse.msclk_oe
-  ; msdat_oe = mouse.msdat_oe
+  ; msclk_oe = per.msclk_oe
+  ; msdat_oe = per.msdat_oe
   }
 ;;
 
