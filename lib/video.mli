@@ -43,6 +43,15 @@ end
     span this module can address, with no second copy of the constant. *)
 val org : int
 
+(** The [vidadr] packing's field widths: [cols_log2] column bits (words per row) under
+    [span_log2 - cols_log2] row bits — the whole DMA span is [2^span_log2] words above
+    {!org}. Exported for the same reason as [org]: the board shadows size and decode their
+    windows against this packing (which the [vid_addr] formal check pins) instead of
+    keeping second copies. *)
+val cols_log2 : int
+
+val span_log2 : int
+
 (** [pulse_sync ~src_spec ~dst_spec ~pulse] crosses a 1-cycle [pulse] in the [src_spec]
     clock domain into the [dst_spec] domain as a 1-cycle pulse, metastability-safe: a
     toggle flop in the source domain turns the pulse into a level, a 3-FF [dst_spec]

@@ -63,6 +63,10 @@ let size = 0x10000
 let lut_off = 64000
 let ctl_off = 64256
 
+(* the status word's MMIO read slot (byte 0xFFFFE8) — the SoC passes [status_slot, status]
+   to {!Risc5.Peripherals}, whose collision check guards it *)
+let status_slot = 10
+
 (* the table window (thresholds + row map), carved from the ABI §8 spare row just below
    the pixel window — the hardware ships CONTENT-FREE, every client uploads its rendition
    AND its geometry before mode-on *)
@@ -128,8 +132,12 @@ let create (i : _ I.t) : _ O.t =
      these; y >= 768 = a blanking-row fetch (the prefetch's wrap rows) *)
   let cnt = Always.Variable.reg spec ~width:5 in
   let accept = cnt.value ==:. 0 &: i.vidreq in
-  let word_off = select (i.vidadr -:. Risc5.Video.org) ~high:14 ~low:0 in
-  let y_req = ~:(select word_off ~high:14 ~low:5) in
+  let word_off =
+    select (i.vidadr -:. Risc5.Video.org) ~high:(Risc5.Video.span_log2 - 1) ~low:0
+  in
+  let y_req =
+    ~:(select word_off ~high:(Risc5.Video.span_log2 - 1) ~low:Risc5.Video.cols_log2)
+  in
   let col_req = select word_off ~high:4 ~low:0 in
   let in_blank = bit y_req ~pos:9 &: bit y_req ~pos:8 in
   (* vblank detection. Video GATES its request pulse with ~vblank (lib/video.ml [req0]) —
@@ -171,7 +179,7 @@ let create (i : _ I.t) : _ O.t =
     (multiport_memory
        1024
        ~name:"ht_rowmap"
-       ~initialize_to:(Array.init 1024 ~f:(fun _ -> Bits.zero 22))
+       ~initialize_to:(Array.create ~len:1024 (Bits.zero 22))
        ~write_ports:
          [| { Write_port.write_clock = i.clock
             ; write_address = select i.adr ~high:11 ~low:2
@@ -202,7 +210,7 @@ let create (i : _ I.t) : _ O.t =
   (* threshold reads pair up: one aligned 4-byte group serves TWO 2-px beats — issued at
      the odd cnt before the pair (data holds two cycles: no read lands in between) *)
   let t_thr = select (cnt.value -:. 3) ~high:3 ~low:1 in
-  (* ── the 4-step DDA chain for this beat (combinational; state regs in, next state out).
+  (* ── the 2-step DDA chain for this beat (combinational; state regs in, next state out).
      acc rests in [1, XNUM]: the 13-bit transient acc+XDEN <= 8190 never wraps *)
   let xnum13 = uresize xnum ~width:13 in
   let xden13 = uresize xden ~width:13 in
@@ -234,6 +242,12 @@ let create (i : _ I.t) : _ O.t =
       (mux2 (cnt.value ==:. 2) (a0_word +:. 1) (wbase.value +:. 2))
   in
   let pix_issue = cnt.value >=:. 1 &: (cnt.value <=:. 19) in
+  (* one byte lane of a CPU-written RAM: a word store writes all four lanes, a byte store
+     only the addressed one; lane k carries wdata's k-th byte (the lib/ram.ml idiom) —
+     shared by the pixel shadow, the threshold map and the tone LUT below, so their
+     byte-store semantics cannot drift apart *)
+  let lane_we strobe k = strobe &: (~:(i.ben) |: (lane ==:. k)) in
+  let lane_byte k = select i.wdata ~high:((8 * k) + 7) ~low:(8 * k) in
   let pix_lane k =
     (Ram.create
        ~name:(Printf.sprintf "ht_pix%d" k)
@@ -242,8 +256,8 @@ let create (i : _ I.t) : _ O.t =
        ~write_ports:
          [| { Write_port.write_clock = i.clock
             ; write_address = select i.adr ~high:15 ~low:2
-            ; write_enable = wr_win &: (~:(i.ben) |: (lane ==:. k))
-            ; write_data = select i.wdata ~high:((8 * k) + 7) ~low:(8 * k)
+            ; write_enable = lane_we wr_win k
+            ; write_data = lane_byte k
             }
          |]
        ~read_ports:
@@ -267,8 +281,8 @@ let create (i : _ I.t) : _ O.t =
        ~write_ports:
          [| { Write_port.write_clock = i.clock
             ; write_address = select i.adr ~high:11 ~low:2
-            ; write_enable = wr_thr &: (~:(i.ben) |: (lane ==:. k))
-            ; write_data = select i.wdata ~high:((8 * k) + 7) ~low:(8 * k)
+            ; write_enable = lane_we wr_thr k
+            ; write_data = lane_byte k
             }
          |]
        ~read_ports:
@@ -280,14 +294,12 @@ let create (i : _ I.t) : _ O.t =
        ()).(0)
   in
   let thr_lanes = Array.init 4 ~f:thr_lane in
-  (* ── the tone LUT: async LUTRAM (keeps the compute stage one cycle), REPLICATED x4 —
-     the four per-beat lookups are independent bytes. 4 byte lanes per replica, one shared
+  (* ── the tone LUT: async LUTRAM (keeps the compute stage one cycle), REPLICATED x2 —
+     the two per-clock lookups are independent bytes. 4 byte lanes per replica, one shared
      write port shape (the v1 register-file idiom) ── *)
+  let window = w1.value @: w0.value in
   let win_bytes =
-    Array.init 8 ~f:(fun j ->
-      if j < 4
-      then select w0.value ~high:((8 * j) + 7) ~low:(8 * j)
-      else select w1.value ~high:((8 * (j - 4)) + 7) ~low:(8 * (j - 4)))
+    Array.init 8 ~f:(fun j -> select window ~high:((8 * j) + 7) ~low:(8 * j))
   in
   let lut_rep r byte =
     let lut_lane k =
@@ -297,8 +309,8 @@ let create (i : _ I.t) : _ O.t =
          ~write_ports:
            [| { Write_port.write_clock = i.clock
               ; write_address = select off ~high:7 ~low:2
-              ; write_enable = wr_win &: is_lut &: (~:(i.ben) |: (lane ==:. k))
-              ; write_data = select i.wdata ~high:((8 * k) + 7) ~low:(8 * k)
+              ; write_enable = lane_we (wr_win &: is_lut) k
+              ; write_data = lane_byte k
               }
            |]
          ~read_addresses:[| select byte ~high:7 ~low:2 |]).(0)
@@ -756,11 +768,18 @@ let%expect_test "halftone — reference model ≡ gcc-compiled dither.c (full fr
   [%expect {| b66f831b508c374f |}]
 ;;
 
-let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" =
-  let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim = Sim.create create in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
+(* ── The shared hardware testbench (both hardware tests drive the same closed loop):
+   [store] presents one CPU store cycle; [fetch] issues a video-bus request for output row
+   y, word column col, then polls for the ack; [pulse] is a fire-and-forget request;
+   [latch] rides a vblank entry so the geometry shadows take. One harness per sim. *)
+type harness =
+  { store : adr:int -> ben:int -> wdata:int -> unit
+  ; fetch : y:int -> col:int -> int option
+  ; pulse : y:int -> col:int -> unit
+  ; latch : unit -> unit
+  }
+
+let harness sim (inp : _ I.t) (outp : _ O.t) =
   let b1 v = Bits.of_unsigned_int ~width:1 v in
   let store ~adr ~ben ~wdata =
     inp.adr := Bits.of_unsigned_int ~width:24 adr;
@@ -807,6 +826,15 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
   in
   inp.write := b1 0;
   inp.vidreq := b1 0;
+  { store; fetch; pulse; latch }
+;;
+
+let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let outp = Cyclesim.outputs sim in
+  let { store; fetch; pulse; latch } = harness sim inp outp in
   let st = Stdlib.Random.State.make [| 47 |] in
   let rnd n = Stdlib.Random.State.int st n in
   let pixels = Array.create ~len:65536 0 in
@@ -999,52 +1027,7 @@ let%expect_test "halftone — mode, byte stores, zero-rect do-no-harm, identity 
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let b1 v = Bits.of_unsigned_int ~width:1 v in
-  let store ~adr ~ben ~wdata =
-    inp.adr := Bits.of_unsigned_int ~width:24 adr;
-    inp.ben := b1 ben;
-    inp.wdata := Bits.of_unsigned_int ~width:32 wdata;
-    inp.write := b1 1;
-    Cyclesim.cycle sim;
-    inp.write := b1 0
-  in
-  let request ~y ~col =
-    let rr = 1023 - y in
-    inp.vidadr := Bits.of_unsigned_int ~width:18 (Risc5.Video.org + (rr * 32) + col);
-    inp.vidreq := b1 1;
-    Cyclesim.cycle sim;
-    inp.vidreq := b1 0
-  in
-  let fetch ~y ~col =
-    request ~y ~col;
-    let word = ref None in
-    (* poll unconditionally: the FSM needs the post-ack cycle to return to idle, and a
-       parked sim would drop the next request (the board never sees this — requests are
-       ~29.5 cycles apart) *)
-    for _ = 1 to 30 do
-      Cyclesim.cycle sim;
-      if Bits.to_unsigned_int !(outp.vid_ack) = 1 && Option.is_none !word
-      then word := Some (Bits.to_unsigned_int !(outp.viddata))
-    done;
-    !word
-  in
-  let pulse ~y ~col =
-    request ~y ~col;
-    for _ = 1 to 24 do
-      Cyclesim.cycle sim
-    done
-  in
-  (* a vblank ENTRY latches the geometry shadows. Video never requests during blanking, so
-     the hardware detects vblank as a >4095-cycle request gap: issue one request (ending
-     any prior gap), then hold the bus idle past the threshold. *)
-  let latch () =
-    pulse ~y:100 ~col:0;
-    for _ = 1 to 4200 do
-      Cyclesim.cycle sim
-    done
-  in
-  inp.write := b1 0;
-  inp.vidreq := b1 0;
+  let { store; fetch; pulse = _; latch } = harness sim inp outp in
   (* mode: off at power-up, set by a CTL store, cleared by a CTL byte store *)
   store ~adr:(base + ctl_off) ~ben:0 ~wdata:1;
   (* zero-rect do-no-harm: mode on, power-up (zero-sized) geometry — nothing claims *)

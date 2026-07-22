@@ -107,7 +107,8 @@ val create
   -> ?write_update:bool
        (** Phase-10b cache snoop policy (default [false] = the proven Phase-10a
            snoop-invalidate): word store-hits update the cached line in place instead of
-           dropping it — see {!Cache.create} *)
+           dropping it — see {!Cache.create}. Like [lines_log2], consulted only when
+           [icache]. *)
   -> ?video:bool
        (** sim-only A/B seam (default [true] = the board): [false] gates [vidreq], taking
            the video DMA off the PSRAM port — the framebuffer-in-BRAM counterfactual for
@@ -122,14 +123,14 @@ val create
            shadow mirrors the same PSRAM-bound stores the cache snoops, so it equals the
            PSRAM framebuffer window at every instant — see {!Framebuf}. *)
   -> ?halftone:bool
-       (** feat/halftone v2 (default [false]; requires [fb_bram]): instantiate {!Halftone}
-           — the generalized 8bpp display mode (client-uploaded tone LUT, threshold map,
-           row map, scale registers, overlay rect). Its per-request [claim] (mode on AND
-           the fetch word inside the client's rect) selects which shadow answers the video
-           DMA: unclaimed = {!Framebuf} (the proven mono path, bit-identical to
-           [halftone:false] while the control word is never written), claimed = the
-           Halftone compose FSM. Also wires the vblank/frame-counter status word at MMIO
-           slot 10 ([0xFFFFE8]). *)
+       (** feat/halftone v2 (default [false]; requires [fb_bram] — enforced at
+           elaboration): instantiate {!Halftone} — the generalized 8bpp display mode
+           (client-uploaded tone LUT, threshold map, row map, scale registers, overlay
+           rect). Its per-request [claim] (mode on AND the fetch word inside the client's
+           rect) selects which shadow answers the video DMA: unclaimed = {!Framebuf} (the
+           proven mono path, bit-identical to [halftone:false] while the control word is
+           never written), claimed = the Halftone compose FSM. Also wires the
+           vblank/frame-counter status word at MMIO slot 10 ([0xFFFFE8]). *)
   -> ?write_buffer:bool
        (** Phase-10d (default [false] = the proven synchronous write path): a 1-entry
            write buffer in {!Cellram} — a PSRAM store retires in one [ce] cycle and the
@@ -139,7 +140,8 @@ val create
            frame stale) — see {!Cellram.create}. *)
   -> ?wbuf_depth:int
        (** write-buffer FIFO depth 1..4 (default 1 = the proven Phase-10d slot); bursts up
-           to the depth retire back-to-back — see {!Cellram.create} *)
+           to the depth retire back-to-back — see {!Cellram.create}. Consulted only when
+           [write_buffer]. *)
   -> ?uart_baud_slow:int
   -> ?uart_baud_fast:int
   -> Signal.t I.t

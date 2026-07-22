@@ -70,7 +70,7 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
     multiport_memory
       lines
       ~name:"icache_mem"
-      ~initialize_to:(Array.init lines ~f:(fun _ -> Bits.of_unsigned_int ~width:line_w 0))
+      ~initialize_to:(Array.create ~len:lines (Bits.zero line_w))
       ~write_ports:[| write_port |]
       ~read_addresses:[| index |]
   in
@@ -108,6 +108,23 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
    cycle; the [fill] write enable is latched from the *pre*-edge [hit] (= 0 on the miss),
    so a read miss fills exactly once. *)
 
+(* Shared drivers for the four tests below: [set] pokes one input ref; [step] presents one
+   cycle's inputs and clocks. [read]/[write] default to a plain cacheable read; omitted
+   optional inputs are left untouched — the 2a test latches [fill_data] once outside its
+   steps. *)
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
+let step sim (inp : _ I.t) ?(read = 1) ?(write = 0) ?ben ?fill ?wdata ~adr ~ce () =
+  set inp.adr adr 24;
+  set inp.cacheable_read read 1;
+  set inp.write write 1;
+  Option.iter ben ~f:(fun v -> set inp.ben v 1);
+  set inp.ce ce 1;
+  Option.iter fill ~f:(fun v -> set inp.fill_data v 32);
+  Option.iter wdata ~f:(fun v -> set inp.wdata v 32);
+  Cyclesim.cycle sim
+;;
+
 let%expect_test "icache — fill hits, tag-mismatch misses, store snoop-invalidates \
                  [coherence]"
   =
@@ -115,31 +132,23 @@ let%expect_test "icache — fill hits, tag-mismatch misses, store snoop-invalida
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  let step ~read ~write ~adr ~ce ~fill =
-    set inp.adr adr 24;
-    set inp.cacheable_read read 1;
-    set inp.write write 1;
-    set inp.ce ce 1;
-    set inp.fill_data fill 32;
-    Cyclesim.cycle sim
-  in
+  let step = step sim inp in
   let hit () = Bits.to_int_trunc !(outp.hit) in
   let rdata () = Bits.to_unsigned_int !(outp.rdata) in
   (* A and C share index 0x10 but differ in tag (0 vs 1), so C must not false-hit on A. *)
   let a = 0x40 (* word 0x10: index 0x10, tag 0 *)
   and c = 0x1040 (* word 0x410: index 0x10, tag 1 *) in
-  step ~read:1 ~write:0 ~adr:a ~ce:1 ~fill:0xDEADBEEF;
+  step ~read:1 ~write:0 ~adr:a ~ce:1 ~fill:0xDEADBEEF ();
   (* miss on A → fill *)
-  step ~read:1 ~write:0 ~adr:a ~ce:0 ~fill:0;
+  step ~read:1 ~write:0 ~adr:a ~ce:0 ~fill:0 ();
   (* A → hit, serves the filled word *)
   Stdlib.Printf.printf "A after fill        : hit=%d rdata=0x%X\n" (hit ()) (rdata ());
-  step ~read:1 ~write:0 ~adr:c ~ce:0 ~fill:0;
+  step ~read:1 ~write:0 ~adr:c ~ce:0 ~fill:0 ();
   (* C: same index, other tag → miss *)
   Stdlib.Printf.printf "C (same idx, tag+1) : hit=%d\n" (hit ());
-  step ~read:0 ~write:1 ~adr:a ~ce:0 ~fill:0;
+  step ~read:0 ~write:1 ~adr:a ~ce:0 ~fill:0 ();
   (* store to A → snoop-invalidate *)
-  step ~read:1 ~write:0 ~adr:a ~ce:0 ~fill:0;
+  step ~read:1 ~write:0 ~adr:a ~ce:0 ~fill:0 ();
   (* A → miss (line dropped) *)
   Stdlib.Printf.printf "A after store to A  : hit=%d\n" (hit ());
   [%expect
@@ -160,31 +169,21 @@ let%expect_test "icache — write-update: word store refreshes in place, byte st
   let sim = Sim.create (create ~write_update:true) in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  let step ~read ~write ~ben ~adr ~ce ~fill ~wdata =
-    set inp.adr adr 24;
-    set inp.cacheable_read read 1;
-    set inp.write write 1;
-    set inp.ben ben 1;
-    set inp.ce ce 1;
-    set inp.fill_data fill 32;
-    set inp.wdata wdata 32;
-    Cyclesim.cycle sim
-  in
+  let step = step sim inp in
   let hit () = Bits.to_int_trunc !(outp.hit) in
   let rdata () = Bits.to_unsigned_int !(outp.rdata) in
   let a = 0x40 in
-  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:1 ~fill:0xAAAA0001 ~wdata:0;
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:1 ~fill:0xAAAA0001 ~wdata:0 ();
   (* miss on A -> fill *)
-  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0 ();
   Stdlib.Printf.printf "A after fill       : hit=%d rdata=0x%X\n" (hit ()) (rdata ());
-  step ~read:0 ~write:1 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0xBBBB0002;
+  step ~read:0 ~write:1 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0xBBBB0002 ();
   (* WORD store to A -> update in place *)
-  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0 ();
   Stdlib.Printf.printf "A after word store : hit=%d rdata=0x%X\n" (hit ()) (rdata ());
-  step ~read:0 ~write:1 ~ben:1 ~adr:a ~ce:0 ~fill:0 ~wdata:0xCC;
+  step ~read:0 ~write:1 ~ben:1 ~adr:a ~ce:0 ~fill:0 ~wdata:0xCC ();
   (* BYTE store to A -> invalidate *)
-  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0;
+  step ~read:1 ~write:0 ~ben:0 ~adr:a ~ce:0 ~fill:0 ~wdata:0 ();
   Stdlib.Printf.printf "A after byte store : hit=%d\n" (hit ());
   [%expect
     {|
@@ -204,20 +203,13 @@ let%expect_test "icache — 2a: a himem [1 MB, 16 MB) line does not alias low me
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  let step ~adr ~ce =
-    set inp.adr adr 24;
-    set inp.cacheable_read 1 1;
-    set inp.write 0 1;
-    set inp.ce ce 1;
-    Cyclesim.cycle sim
-  in
+  let step = step sim inp in
   let hit () = Bits.to_int_trunc !(outp.hit) in
   set inp.fill_data 0xD00DF00D 32;
-  step ~adr:0x40 ~ce:1 (* miss on low word 0x10 → fill *);
-  step ~adr:0x40 ~ce:0;
+  step ~adr:0x40 ~ce:1 () (* miss on low word 0x10 → fill *);
+  step ~adr:0x40 ~ce:0 ();
   Stdlib.Printf.printf "low line filled    : hit=%d\n" (hit ());
-  step ~adr:0x100040 ~ce:0 (* himem word 0x40010: same index, wider tag → miss *);
+  step ~adr:0x100040 ~ce:0 () (* himem word 0x40010: same index, wider tag → miss *);
   Stdlib.Printf.printf
     "himem alias of low : hit=%d (0 = distinct tag, no false hit)\n"
     (hit ());
@@ -235,22 +227,14 @@ let%expect_test "icache — fill/hit/invalidate timing [waveform]" =
   let sim = Sim.create create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  let step ~read ~write ~adr ~ce ~fill =
-    set inp.adr adr 24;
-    set inp.cacheable_read read 1;
-    set inp.write write 1;
-    set inp.ce ce 1;
-    set inp.fill_data fill 32;
-    Cyclesim.cycle sim
-  in
+  let step = step sim inp in
   (* c0 miss+fill A, c1 hit A, c2 miss C (same index other tag), c3 store A (snoop), c4
      miss A *)
-  step ~read:1 ~write:0 ~adr:0x40 ~ce:1 ~fill:0xDEADBEEF;
-  step ~read:1 ~write:0 ~adr:0x40 ~ce:0 ~fill:0;
-  step ~read:1 ~write:0 ~adr:0x1040 ~ce:0 ~fill:0;
-  step ~read:0 ~write:1 ~adr:0x40 ~ce:0 ~fill:0;
-  step ~read:1 ~write:0 ~adr:0x40 ~ce:0 ~fill:0;
+  step ~read:1 ~write:0 ~adr:0x40 ~ce:1 ~fill:0xDEADBEEF ();
+  step ~read:1 ~write:0 ~adr:0x40 ~ce:0 ~fill:0 ();
+  step ~read:1 ~write:0 ~adr:0x1040 ~ce:0 ~fill:0 ();
+  step ~read:0 ~write:1 ~adr:0x40 ~ce:0 ~fill:0 ();
+  step ~read:1 ~write:0 ~adr:0x40 ~ce:0 ~fill:0 ();
   Waveform.print
     ~display_rules:
       D.

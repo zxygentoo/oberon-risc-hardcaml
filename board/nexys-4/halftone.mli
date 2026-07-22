@@ -116,6 +116,11 @@ val thr_size : int
     [{thr_row[21:16], row_base[15:0]}], word stores only. *)
 val rowmap_off : int
 
+(** The status word's MMIO read slot: [10] (byte [0xFFFFE8]). The one authority — the SoC
+    passes [status_slot, status] to {!Risc5.Peripherals.create}, whose collision check
+    then guards the value; the Oberon driver mirrors it (ABI §11). *)
+val status_slot : int
+
 module I : sig
   type 'a t =
     { clock : 'a

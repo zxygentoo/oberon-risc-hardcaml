@@ -64,6 +64,12 @@ end
 (* framebuffer base Org = DFF00H >> 2 (word address); rows 0..255 sit off-screen *)
 let org = 0x37FC0
 
+(* the DMA span: [vidadr] packs [{~vcnt(10), col(5)}] above [org] — 5 column bits under 10
+   row bits, a 2^15-word window. The packing itself is pinned by the [vid_addr] formal
+   check; these just name its field widths for the board shadows. *)
+let cols_log2 = 5
+let span_log2 = 10 + cols_log2
+
 (* Toggle pulse synchroniser — cross a 1-cycle [pulse] in the [src_spec] clock domain into
    the [dst_spec] domain as a 1-cycle pulse, metastability-safe. [pulse] TOGGLES a flop in
    the source domain (so the request becomes a LEVEL change, never a narrow pulse a

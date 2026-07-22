@@ -67,14 +67,14 @@ expect:
 - **On-chip fast path (`cpu_internal`):** boot-ROM fetches and MMIO accesses never touch PSRAM —
   served in a single `ce` cycle, which also keeps each MMIO store one CPU-cycle long so the
   peripheral write strobes fire exactly once.
-- **Write buffer (Phase-10d, `?write_buffer` — board emit on):** a 1-entry buffer in front of the
+- **Write buffer (Phase-10d, `?write_buffer` × `?wbuf_depth` — board ships depth 2):** a small store FIFO in front of the
   write path — a PSRAM store retires in **one `ce` cycle** (the slot captures `{adr, ben, wdata}`
   whenever it is free, even mid-video-op) and the write **drains in the background** as an
   `op_wb`-tagged op on the same machinery (excluded from the CPU's `ce` like a video op; never
   preempted, because it is a write). PSRAM reads wait out a pending drain (**drain-before-read**,
   measured +0.4% of clocks), so every read sees fully-drained memory and coherence needs no
   forwarding logic; a second store while the slot is full waits frozen (measured 7.5% of clocks —
-  a deeper FIFO's whole remaining ceiling is 1.08×, deferred). One ordering relaxation, documented
+  a deeper FIFO's whole remaining ceiling from there was 1.08× — the shipped depth-2 below collects most of it). One ordering relaxation, documented
   in `cellram.mli`: an MMIO store can become visible before an earlier buffered RAM store lands in
   PSRAM — benign here (no peripheral reads RAM; video reads the `Framebuf` shadow). Landed
   **1.237× same-work** (CPI 1.90→1.53), long-window CPI 1.64→**1.45**, frozen clocks 19.9→9.5%.
@@ -241,12 +241,12 @@ vivado -mode batch -source board/nexys-4/flash.tcl
 
 `nexys4_top.v` wraps the emitted `soc_board` with the **MMCM** (100 MHz board oscillator → 60 MHz
 system + 65 MHz pixel), the bidirectional PSRAM data-bus **IOBUFs**, the mouse open-drain IOBUFs
-(on the Pmod PS/2 pins — see the PS/2 topology above), and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles`, the SPI divider, and
-`icache`/`lines_log2:12`/`write_update`/`fb_bram`/`write_buffer`/`wbuf_depth:2` and `read_cycles:6` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
-(One synthesis note, Phase-10d: the rc=5 PSRAM I/O budget (13.3 ns split across the address-out and
-data-in groups) became a standing knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then
-two builds grazed at +0.130 and +0.009. `build.tcl` runs Explore-class implementation directives,
-and the structural fix is in: `read_cycles:6` re-derives the budget to 30 ns (12/12 split, ~5 ns
-measured headroom per group), for a measured 0.86% same-work cost — the worst path is back on the
-internal cache-write path, where it has lived since 10b.)
-outputs land in the git-ignored `board/_build/nexys-4/`.
+(on the Pmod PS/2 pins — see the PS/2 topology above), and a power-on **reset**. The tuning knobs — 60 MHz clocking, `read_cycles:6`, the SPI divider, and
+`icache`/`lines_log2:12`/`write_update`/`fb_bram`/`halftone`/`write_buffer`/`wbuf_depth:2` — live in `emit_verilog.ml`. Part `xc7a100tcsg324-1`, top `nexys4_top`;
+outputs land in the git-ignored `board/_build/nexys-4/`. (One synthesis note, Phase-10d: the rc=5
+PSRAM I/O budget (13.3 ns split across the address-out and data-in groups) became a standing
+knife-edge as the design grew — `RamUBn` failed by 0.163 ns, then two builds grazed at +0.130 and
++0.009. `build.tcl` runs Explore-class implementation directives, and the structural fix is in:
+`read_cycles:6` re-derives the budget to 30 ns (12/12 split, ~5 ns measured headroom per group),
+for a measured 0.86% same-work cost — the worst path is back on the internal cache-write path,
+where it has lived since 10b.)

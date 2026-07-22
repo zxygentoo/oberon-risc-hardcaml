@@ -7,9 +7,9 @@
    gen_verilog.sh / build.tcl / nexys4_top.v that consume it. The ROM image comes from the
    design library ({!Risc5.Rom}), so the board emit needs no software oracle.
 
-   Parameters baked into the netlist: 60000 clocks/ms (1 ms at 60 MHz); 5-cycle PSRAM
-   phases (83 ns > the chip's 70 ns at 60 MHz). Tune read/write cycles here if hardware
-   needs it.
+   Parameters baked into the netlist: 60000 clocks/ms (1 ms at 60 MHz); PSRAM phases read
+   6 / write 5 cycles (100 / 83 ns vs the chip's 70 ns — the read deliberately one over
+   spec; rationale at the knob below). Tune read/write cycles here if hardware needs it.
 
    NB (feat/fast-clock): retuned for a 60 MHz system clock (nexys4_top.v MMCM VCO 780,
    CLKOUT0_DIVIDE_F = 13.000). Enabled by the pipelined DSP multiplies (mul_stages:2) that
@@ -96,11 +96,12 @@ let () =
               against Framebuf per request; with the control word never written the
               scanout is the proven mono path (golden byte-identical, HALFTONE=1).
               Cyclesim (v1 measure): 3.38 Mcyc/tick = 17.8 fps (was 7.20/8.3), scanout
-              frame ≡ host golden bit-exact. Synth watch: the four ht_pix* arrays must
-              infer BLOCK RAM (~16 RAMB36 on top of Framebuf's 32) + the two constant ROMs
-              (row map 1024x14, slot thresholds 2048x32 — BRAM or LUT, either fine);
-              all-new logic is clk-domain BRAM-to-BRAM, must not disturb the cache-write
-              or PSRAM-I/O critical paths at 60 MHz. *)
+              frame ≡ host golden bit-exact. Synth watch: the four ht_pix* byte-lane
+              arrays must infer BLOCK RAM (~16 RAMB36 on top of Framebuf's 32) and the
+              four ht_thr* byte-lane BRAMs (1024x8) alongside; the CPU-written row map
+              (768x22) and the 2x4 ht_lut* tone-LUT replicas stay distributed RAM; all-new
+              logic is clk-domain BRAM-to-BRAM, must not disturb the cache-write or
+              PSRAM-I/O critical paths at 60 MHz. *)
          ~halftone:true
            (* Phase-10d: the 1-entry write buffer — a PSRAM store retires in one ce cycle
               and drains in the background; reads wait out a pending drain

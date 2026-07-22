@@ -12,7 +12,7 @@ open Hardcaml
 open Signal
 
 let base = Risc5.Video.org
-let span_log2 = 15
+let span_log2 = Risc5.Video.span_log2
 let size = 1 lsl span_log2
 
 module I = struct

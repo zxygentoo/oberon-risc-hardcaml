@@ -79,6 +79,11 @@ let create
   (i : _ I.t)
   : _ O.t
   =
+  (* [halftone] without [fb_bram] would silently elaborate with no Halftone at all (its
+     claim muxes against the Framebuf shadow) — an A/B run would then "measure" a build
+     that never instantiated the module. Fail loudly instead, like the lib guards. *)
+  if halftone && not fb_bram
+  then failwith "Soc: halftone requires fb_bram (the claim muxes the Framebuf shadow)";
   let spec = Reg_spec.create () ~clock:i.clock in
   (* fetch/load feedback, broken by the core's pc/ir registers; [ms_tick] closes the same
      kind of loop with the shared {!Peripherals} cluster (built after the core, whose
@@ -154,6 +159,9 @@ let create
   let cpu_internal =
     (rom_region &: is_fetch |: (ioenb &: data_access)) -- "cpu_internal"
   in
+  (* the one store transaction every shadow rides (the cache snoop, Framebuf, Halftone) —
+     bound once so their write-coherence cannot drift apart *)
+  let psram_store = core_wr &: ~:cpu_internal in
   (* Phase-10a: an optional direct-mapped read/I-cache in front of Cellram. On a hit we
      drop [mem_pend] to Cellram — its [ce] is [~mem_pend | …], so it rises this cycle (a
      0-stall hit) — and serve the word from the cache; misses and stores flow through
@@ -184,55 +192,53 @@ let create
   (* Phase-10c: [fb_bram] serves the video DMA from the {!Framebuf} BRAM shadow (a 1-cycle
      on-chip read) instead of the PSRAM port — Cellram's [vidreq] is tied low above, so
      its video FSM + read-preemption logic go dead (pruned at synthesis). The shadow's
-     write port taps exactly the store the cache snoops ([wr & ~cpu_internal]) in the same
+     write port taps exactly the store the cache snoops ([psram_store]) in the same
      write-through transaction, so shadow ≡ PSRAM framebuffer window at every instant. *)
-  if fb_bram
-  then (
-    let fb =
-      Framebuf.create
-        { Framebuf.I.clock = i.clock
-        ; adr = core_adr
-        ; write = core.wr &: ~:cpu_internal
-        ; ben = core_ben
-        ; wdata = core.outbus
-        ; vidreq
-        ; vidadr
-        }
-    in
-    (* feat/halftone v2: the generalized 8bpp display mode ({!Halftone}), taps the same
-       store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
-       per accepted request: mode on AND the fetch word inside the client's rect — muxes
-       which shadow answers the DMA, so the mono path serves everything outside the rect
-       (v1 muxed on the whole-screen mode bit). With the control word never written no
-       request ever claims, and this elaboration is display-identical to [halftone:false]
-       (the do-no-harm gate below is the visual golden). *)
-    if halftone
+  let viddata_src, vid_ack_src, vidpar_src, ht_status_src =
+    if fb_bram
     then (
-      let ht =
-        Halftone.create
-          { Halftone.I.clock = i.clock
+      let fb =
+        Framebuf.create
+          { Framebuf.I.clock = i.clock
           ; adr = core_adr
-          ; write = core.wr &: ~:cpu_internal
+          ; write = psram_store
           ; ben = core_ben
           ; wdata = core.outbus
           ; vidreq
           ; vidadr
           }
       in
-      assign ht_status ht.status;
-      assign viddata (mux2 ht.claim ht.viddata fb.viddata);
-      assign vid_ack (mux2 ht.claim ht.vid_ack fb.vid_ack);
-      assign vidpar (mux2 ht.claim ht.vidpar fb.vidpar))
-    else (
-      assign ht_status (zero 32);
-      assign viddata fb.viddata;
-      assign vid_ack fb.vid_ack;
-      assign vidpar fb.vidpar))
-  else (
-    assign ht_status (zero 32);
-    assign viddata cellram.viddata;
-    assign vid_ack cellram.vid_ack;
-    assign vidpar cellram.vidpar);
+      (* feat/halftone v2: the generalized 8bpp display mode ({!Halftone}), taps the same
+         store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
+         per accepted request: mode on AND the fetch word inside the client's rect — muxes
+         which shadow answers the DMA, so the mono path serves everything outside the rect
+         (v1 muxed on the whole-screen mode bit). With the control word never written no
+         request ever claims, and this elaboration is display-identical to
+         [halftone:false] (the do-no-harm gate below is the visual golden). *)
+      if halftone
+      then (
+        let ht =
+          Halftone.create
+            { Halftone.I.clock = i.clock
+            ; adr = core_adr
+            ; write = psram_store
+            ; ben = core_ben
+            ; wdata = core.outbus
+            ; vidreq
+            ; vidadr
+            }
+        in
+        ( mux2 ht.claim ht.viddata fb.viddata
+        , mux2 ht.claim ht.vid_ack fb.vid_ack
+        , mux2 ht.claim ht.vidpar fb.vidpar
+        , ht.status ))
+      else fb.viddata, fb.vid_ack, fb.vidpar, zero 32)
+    else cellram.viddata, cellram.vid_ack, cellram.vidpar, zero 32
+  in
+  assign viddata viddata_src;
+  assign vid_ack vid_ack_src;
+  assign vidpar vidpar_src;
+  assign ht_status ht_status_src;
   (* Phase-10a: drive [cache_hit] and pick the CPU read word. When on, a fetch/load to
      PSRAM (not ROM/MMIO — [cpu_internal] takes the 1-cycle path) can hit the cache; a
      store to PSRAM snoops. When off, [cache_hit] is tied low and the word is Cellram's,
@@ -249,7 +255,7 @@ let create
           { Cache.I.clock = i.clock
           ; adr = core_adr
           ; cacheable_read
-          ; write = core.wr &: ~:cpu_internal
+          ; write = psram_store
           ; ben = core_ben
           ; ce = cellram.ce
           ; fill_data = cellram.rdata
@@ -274,7 +280,7 @@ let create
       ~slow_div_log2:spi_slow_div_log2
       ~baud_slow:uart_baud_slow
       ~baud_fast:uart_baud_fast
-      ~extra_read_slots:[ 10, ht_status ]
+      ~extra_read_slots:[ Halftone.status_slot, ht_status ]
       { Peripherals.I.clock = i.clock
       ; rst_n = i.rst_n
       ; wr = core_wr
@@ -365,7 +371,10 @@ module Tb = struct
     type 'a t = { leds : 'a [@bits 8] } [@@deriving hardcaml]
   end
 
-  let create ~contents ?clocks_per_ms (i : _ I.t) : _ O.t =
+  (* [addr_bits] defaults to a tiny 2^12-halfword model: these tests confine CPU stimulus
+     under byte 0x200, and the faithful 1 MB model cost seconds of runtest. The video DMA
+     reads alias in the shrunk model, but nothing observes [viddata] in these tests. *)
+  let create ~contents ?clocks_per_ms ?(addr_bits = 12) (i : _ I.t) : _ O.t =
     let dq = wire 16 in
     let soc =
       sb_create
@@ -390,6 +399,7 @@ module Tb = struct
     in
     let m =
       Cellram_model.create
+        ~addr_bits
         { Cellram_model.I.clock = i.clock
         ; mem_adr = soc.mem_adr
         ; mem_dq_o = soc.mem_dq_o
