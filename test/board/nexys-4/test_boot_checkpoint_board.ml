@@ -44,14 +44,8 @@ let run_soc_to_handoff () =
   and spi_ctrl = reg "spi_ctrl" in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
-  (* drive the idle levels for the unused serial / open-drain lines *)
-  inp.rxd := hi;
-  inp.ps2c := hi;
-  inp.ps2d := hi;
-  inp.msclk := hi;
-  inp.msdat := hi;
+  Board_tb.drive_idle inp;
   inp.rst_n := lo;
-  inp.miso := hi;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
   let cycle = ref 0

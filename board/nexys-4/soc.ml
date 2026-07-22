@@ -344,95 +344,148 @@ module Sb_I = I
 
 let sb_create = create
 
-module Tb = struct
-  (* the board SoC closed with the behavioural cellular-RAM on its pins; PSRAM phases
-     small (the model answers at once — only the control flow is under test). [leds] is
-     surfaced for the MMIO test; the core's [regfile]/[cnt1]/[core_ce] are reached by name
-     via [trace_all]. *)
-  module I = struct
-    type 'a t =
-      { clock : 'a
-      ; pclk : 'a [@bits 1]
-      ; rst_n : 'a [@bits 1]
-      ; miso : 'a [@bits 1]
-      ; rxd : 'a [@bits 1]
-      ; btn : 'a [@bits 4]
-      ; sw : 'a [@bits 8]
-      ; gpio_in : 'a [@bits 8]
-      ; ps2c : 'a [@bits 1]
-      ; ps2d : 'a [@bits 1]
-      ; msclk : 'a [@bits 1]
-      ; msdat : 'a [@bits 1]
+module For_tests = struct
+  module Tb = struct
+    (* the board SoC closed with the behavioural cellular-RAM double on its PSRAM pins —
+       the ONE closure shared by the co-located tests below and the test/board harnesses
+       (board_tb: the board gates + bench_boot). [leds] serves the MMIO test; [sclk]
+       drives the gates' SD bridge; [hsync]/[vsync]/[rgb] keep the whole video pixel path
+       (the Framebuf shadow BRAMs included) live under Cyclesim's dead-code elimination —
+       with them unobserved the fetched-word path drives no output and is pruned, and a
+       [lookup_mem_by_name "fb0".."fb3"] readback finds nothing. Internal state
+       ([regfile]/[cnt1]/[core_ce]/...) is reached by name via [trace_all]. *)
+    module I = struct
+      type 'a t =
+        { clock : 'a
+        ; pclk : 'a [@bits 1]
+        ; rst_n : 'a [@bits 1]
+        ; miso : 'a [@bits 1]
+        ; rxd : 'a [@bits 1]
+        ; btn : 'a [@bits 4]
+        ; sw : 'a [@bits 8]
+        ; gpio_in : 'a [@bits 8]
+        ; ps2c : 'a [@bits 1]
+        ; ps2d : 'a [@bits 1]
+        ; msclk : 'a [@bits 1]
+        ; msdat : 'a [@bits 1]
+        }
+      [@@deriving hardcaml]
+    end
+
+    module O = struct
+      type 'a t =
+        { leds : 'a [@bits 8]
+        ; sclk : 'a [@bits 1]
+        ; hsync : 'a [@bits 1]
+        ; vsync : 'a [@bits 1]
+        ; rgb : 'a [@bits 6]
+        }
+      [@@deriving hardcaml]
+    end
+
+    (* [addr_bits] defaults to a tiny 2^12-halfword model: the co-located tests confine
+       CPU stimulus under byte 0x200, and the faithful 1 MB model cost seconds of runtest
+       (the video DMA reads alias in the shrunk model, but nothing observes [viddata]
+       here). The boot gates pass 19 — the full 1 MiB — to load the real disk image. *)
+    let create
+      ~contents
+      ?clocks_per_ms
+      ?(read_cycles = 2)
+      ?(write_cycles = 2)
+      ?icache
+      ?lines_log2
+      ?write_update
+      ?video
+      ?fb_bram
+      ?halftone
+      ?write_buffer
+      ?wbuf_depth
+      ?fast_mul
+      ?mul_stages
+      ?(addr_bits = 12)
+      (i : _ I.t)
+      : _ O.t
+      =
+      let dq = wire 16 in
+      let soc =
+        sb_create
+          ~contents
+          ?clocks_per_ms
+          ~read_cycles
+          ~write_cycles
+          ?icache
+          ?lines_log2
+          ?write_update
+          ?video
+          ?fb_bram
+          ?halftone
+          ?write_buffer
+          ?wbuf_depth
+          ?fast_mul
+          ?mul_stages
+          { Sb_I.clock = i.clock
+          ; pclk = i.pclk
+          ; rst_n = i.rst_n
+          ; miso = i.miso
+          ; rxd = i.rxd
+          ; btn = i.btn
+          ; sw = i.sw
+          ; gpio_in = i.gpio_in
+          ; ps2c = i.ps2c
+          ; ps2d = i.ps2d
+          ; msclk = i.msclk
+          ; msdat = i.msdat
+          ; mem_dq_i = dq
+          }
+      in
+      let m =
+        Cellram_model.create
+          ~addr_bits
+          { Cellram_model.I.clock = i.clock
+          ; mem_adr = soc.mem_adr
+          ; mem_dq_o = soc.mem_dq_o
+          ; ce_n = soc.ram_ce_n
+          ; we_n = soc.ram_we_n
+          ; ub_n = soc.ram_ub_n
+          ; lb_n = soc.ram_lb_n
+          }
+      in
+      assign dq m.mem_dq_i;
+      { O.leds = soc.leds
+      ; sclk = soc.sclk
+      ; hsync = soc.hsync
+      ; vsync = soc.vsync
+      ; rgb = soc.rgb
       }
-    [@@deriving hardcaml]
+    ;;
   end
 
-  module O = struct
-    type 'a t = { leds : 'a [@bits 8] } [@@deriving hardcaml]
-  end
-
-  (* [addr_bits] defaults to a tiny 2^12-halfword model: these tests confine CPU stimulus
-     under byte 0x200, and the faithful 1 MB model cost seconds of runtest. The video DMA
-     reads alias in the shrunk model, but nothing observes [viddata] in these tests. *)
-  let create ~contents ?clocks_per_ms ?(addr_bits = 12) (i : _ I.t) : _ O.t =
-    let dq = wire 16 in
-    let soc =
-      sb_create
-        ~contents
-        ?clocks_per_ms
-        ~read_cycles:2
-        ~write_cycles:2
-        { Sb_I.clock = i.clock
-        ; pclk = i.pclk
-        ; rst_n = i.rst_n
-        ; miso = i.miso
-        ; rxd = i.rxd
-        ; btn = i.btn
-        ; sw = i.sw
-        ; gpio_in = i.gpio_in
-        ; ps2c = i.ps2c
-        ; ps2d = i.ps2d
-        ; msclk = i.msclk
-        ; msdat = i.msdat
-        ; mem_dq_i = dq
-        }
-    in
-    let m =
-      Cellram_model.create
-        ~addr_bits
-        { Cellram_model.I.clock = i.clock
-        ; mem_adr = soc.mem_adr
-        ; mem_dq_o = soc.mem_dq_o
-        ; ce_n = soc.ram_ce_n
-        ; we_n = soc.ram_we_n
-        ; ub_n = soc.ram_ub_n
-        ; lb_n = soc.ram_lb_n
-        }
-    in
-    assign dq m.mem_dq_i;
-    { O.leds = soc.leds }
+  (* drive every line to its idle level ([rst_n] excluded — reset sequencing is the test's
+     own). NB [pclk] low does NOT quiet the video DMA: under Cyclesim's one-domain
+     semantics the pclk-clocked raster advances 1:1 with [clk] whatever this input holds
+     (lib/soc.ml's video test relies on exactly that), so video contends for the PSRAM
+     port in every board sim — gate it with [create]'s [?video] if a test needs the bus to
+     itself. *)
+  let drive_idle (inp : _ Tb.I.t) =
+    let lo = Bits.gnd
+    and hi = Bits.vdd in
+    inp.pclk := lo;
+    inp.miso := hi;
+    inp.rxd := hi;
+    inp.ps2c := hi;
+    inp.ps2d := hi;
+    inp.msclk := hi;
+    inp.msdat := hi;
+    inp.btn := Bits.of_unsigned_int ~width:4 0;
+    inp.sw := Bits.of_unsigned_int ~width:8 0;
+    inp.gpio_in := Bits.of_unsigned_int ~width:8 0
   ;;
 end
 
-(* drive every line to its idle level. NB [pclk] low does NOT quiet the video DMA: under
-   Cyclesim's one-domain semantics the pclk-clocked raster advances 1:1 with [clk]
-   whatever this input holds (lib/soc.ml's video test relies on exactly that), so video
-   contends for the PSRAM port in every board sim — gate it with [create]'s [?video] if a
-   test needs the bus to itself. *)
-let drive_idle (inp : _ Tb.I.t) =
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
-  inp.pclk := lo;
-  inp.miso := hi;
-  inp.rxd := hi;
-  inp.ps2c := hi;
-  inp.ps2d := hi;
-  inp.msclk := hi;
-  inp.msdat := hi;
-  inp.btn := Bits.of_unsigned_int ~width:4 0;
-  inp.sw := Bits.of_unsigned_int ~width:8 0;
-  inp.gpio_in := Bits.of_unsigned_int ~width:8 0
-;;
+(* the co-located tests keep their short names *)
+module Tb = For_tests.Tb
+
+let drive_idle = For_tests.drive_idle
 
 let%expect_test "board soc — fetch ROM, store + load round-trip through PSRAM" =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in

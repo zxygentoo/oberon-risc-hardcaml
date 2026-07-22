@@ -60,13 +60,8 @@ let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   and hits = ref 0 in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
-  inp.rxd := hi;
-  inp.ps2c := hi;
-  inp.ps2d := hi;
-  inp.msclk := hi;
-  inp.msdat := hi;
+  Board_tb.drive_idle inp;
   inp.rst_n := lo;
-  inp.miso := hi;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
   let cycle = ref 0
@@ -202,13 +197,8 @@ let make_os
   let ci = Cyclesim.Node.to_int in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
-  inp.rxd := hi;
-  inp.ps2c := hi;
-  inp.ps2d := hi;
-  inp.msclk := hi;
-  inp.msdat := hi;
+  Board_tb.drive_idle inp;
   inp.rst_n := lo;
-  inp.miso := hi;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
   let step () =

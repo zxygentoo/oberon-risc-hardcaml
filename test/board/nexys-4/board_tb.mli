@@ -3,39 +3,12 @@
     board boot checkpoint, the board visual golden, and bench_boot (all this dir). *)
 
 open Hardcaml
+module I = Nexys4_board.Soc.For_tests.Tb.I
+module O = Nexys4_board.Soc.For_tests.Tb.O
 
-module I : sig
-  type 'a t =
-    { clock : 'a
-    ; pclk : 'a
-    ; rst_n : 'a
-    ; miso : 'a
-    ; rxd : 'a
-    ; btn : 'a
-    ; sw : 'a
-    ; gpio_in : 'a
-    ; ps2c : 'a
-    ; ps2d : 'a
-    ; msclk : 'a
-    ; msdat : 'a
-    }
-  [@@deriving hardcaml]
-end
-
-module O : sig
-  type 'a t =
-    { sclk : 'a (** SPI clock — the output the harness drives the SD bridge from *)
-    ; hsync : 'a (** VGA horizontal sync *)
-    ; vsync : 'a (** VGA vertical sync *)
-    ; rgb : 'a
-    (** the 1 bpp pixel on the RGB pins. [hsync]/[vsync]/[rgb] are exposed to keep the
-        whole video pixel path — {!Nexys4_board.Framebuf}'s shadow BRAMs included —
-        {e live} under Cyclesim's dead-code elimination: with only [sclk] observable the
-        fetched-word path drives no output and is pruned, and the visual golden's
-        [lookup_mem_by_name "fb0".."fb3"] shadow readback finds nothing. *)
-    }
-  [@@deriving hardcaml]
-end
+(** [drive_idle inp] = {!Nexys4_board.Soc.For_tests.drive_idle}: every input to its idle
+    level ([rst_n] excluded — reset sequencing belongs to the test). *)
+val drive_idle : Bits.t ref I.t -> unit
 
 (** [create ?read_cycles ?write_cycles ?icache ?lines_log2 ?write_update ?video ?fast_mul ?mul_stages ?contents i]
     wires the board SoC to the PSRAM model. [contents] defaults to the design ROM

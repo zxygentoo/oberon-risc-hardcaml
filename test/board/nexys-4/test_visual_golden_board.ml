@@ -198,13 +198,8 @@ let boot_board
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
+  Board_tb.drive_idle inp;
   inp.rst_n := lo;
-  inp.miso := hi;
-  inp.rxd := hi;
-  inp.ps2c := hi;
-  inp.ps2d := hi;
-  inp.msclk := hi;
-  inp.msdat := hi;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
   let cyc = ref 0

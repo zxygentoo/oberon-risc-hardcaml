@@ -146,3 +146,73 @@ val create
   -> ?uart_baud_fast:int
   -> Signal.t I.t
   -> Signal.t O.t
+
+(** Test scaffolding, not hardware (the {!Risc5.Ps2.For_tests} precedent): the board SoC
+    closed with the behavioural {!Cellram_model} on its PSRAM pins, plus the idle-level
+    driver — the one closure shared by the co-located tests and every test/board harness
+    (board_tb: the boot checkpoint, the visual golden, bench_boot), so the input list and
+    the idle levels live in exactly one place. *)
+module For_tests : sig
+  module Tb : sig
+    module I : sig
+      type 'a t =
+        { clock : 'a
+        ; pclk : 'a
+        ; rst_n : 'a
+        ; miso : 'a
+        ; rxd : 'a
+        ; btn : 'a
+        ; sw : 'a
+        ; gpio_in : 'a
+        ; ps2c : 'a
+        ; ps2d : 'a
+        ; msclk : 'a
+        ; msdat : 'a
+        }
+      [@@deriving hardcaml]
+    end
+
+    module O : sig
+      type 'a t =
+        { leds : 'a (** the [Lreg] latch (the MMIO test's observable) *)
+        ; sclk : 'a (** SPI clock — the boot gates drive their SD bridge from it *)
+        ; hsync : 'a
+        ; vsync : 'a
+        ; rgb : 'a
+        (** [hsync]/[vsync]/[rgb] keep the whole video pixel path — the {!Framebuf} shadow
+            BRAMs included — {e live} under Cyclesim's dead-code elimination: unobserved,
+            the fetched-word path drives no output and is pruned, and a
+            [lookup_mem_by_name "fb0".."fb3"] readback finds nothing. *)
+        }
+      [@@deriving hardcaml]
+    end
+
+    (** [create ~contents i] closes {!Soc.create} with the {!Cellram_model}; the
+        structural knobs forward. [?addr_bits] sizes the model: default [12] (a 4 KiB
+        double — the co-located tests stay under byte 0x200; the video DMA aliases in it,
+        unobserved); the boot gates pass [19], the full 1 MiB, to load the real disk. *)
+    val create
+      :  contents:int array
+      -> ?clocks_per_ms:int
+      -> ?read_cycles:int
+      -> ?write_cycles:int
+      -> ?icache:bool
+      -> ?lines_log2:int
+      -> ?write_update:bool
+      -> ?video:bool
+      -> ?fb_bram:bool
+      -> ?halftone:bool
+      -> ?write_buffer:bool
+      -> ?wbuf_depth:int
+      -> ?fast_mul:bool
+      -> ?mul_stages:int
+      -> ?addr_bits:int
+      -> Signal.t I.t
+      -> Signal.t O.t
+  end
+
+  (** drive every input to its idle level ([rst_n] excluded — reset sequencing belongs to
+      the test). NB [pclk] low does not quiet the video DMA under Cyclesim's one-domain
+      semantics; gate with {!Soc.create}'s [?video] if a test needs the bus alone. *)
+  val drive_idle : Bits.t ref Tb.I.t -> unit
+end
