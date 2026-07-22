@@ -2,9 +2,10 @@
 
    Implementation note. This is [Soc] (lib/soc.ml) with the memory layer swapped for the
    PSRAM controller {!Cellram} and the core run on its clock-enable. The peripheral / MMIO
-   block (timer, SPI, UART, PS/2 kbd + mouse, GPIO, LEDs, switches, the io_data read mux)
-   is a faithful copy of soc.ml — see there for the per-MMIO-word rationale; only the
-   comments load-bearing for the board differences are repeated here. *)
+   block is the shared {!Risc5.Peripherals} cluster (the per-MMIO-word rationale lives
+   there); the board's departures ride its seams — [slow_div_log2]/[baud_*] retunes, the
+   Halftone status word as an extra read slot — and its exports ([sd_cs] from [spi_ctrl],
+   the ce-domain IRQ stretch on [ms_tick], both below). *)
 
 open! Base
 open Hardcaml
@@ -79,21 +80,13 @@ let create
   : _ O.t
   =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* ── Millisecond timer (free-running, like soc.ml / RISC5Top) ── peripherals run on the
-     system clock, NOT ce-gated: a slow (wait-stated) CPU polling full-speed peripherals,
-     exactly as on real hardware. *)
-  let cnt0 = Always.Variable.reg spec ~width:16 in
-  let cnt1 = Always.Variable.reg spec ~width:32 in
-  let limit = (cnt0.value ==:. clocks_per_ms - 1) -- "limit" in
-  Always.(
-    compile
-      [ cnt0 <-- mux2 limit (zero 16) (cnt0.value +:. 1)
-      ; cnt1 <-- cnt1.value +: uresize limit ~width:32
-      ]);
-  let cnt1_v = cnt1.value -- "cnt1" in
-  (* fetch/load feedback, broken by the core's pc/ir registers *)
+  (* fetch/load feedback, broken by the core's pc/ir registers; [ms_tick] closes the same
+     kind of loop with the shared {!Peripherals} cluster (built after the core, whose
+     strobes it consumes) — it comes straight off the timer register, so nothing
+     combinational cycles *)
   let codebus = wire 32 in
   let inbus = wire 32 in
+  let ms_tick = wire 1 in
   (* ── Video ── two clocks; the framebuffer word is supplied by the arbiter and latched
      on its [vid_ack] (the PSRAM read is multi-cycle, so not on [req] as the BRAM SoC
      does). *)
@@ -133,8 +126,8 @@ let create
      co-located [irq stretch] test pins the delivery count. *)
   let irq_pend = Always.Variable.reg spec ~width:1 in
   let irq_pend_v = irq_pend.value -- "irq_pend" in
-  Always.(compile [ irq_pend <-- (i.rst_n &: ~:core_ce &: (limit |: irq_pend_v)) ]);
-  let irq = (limit |: irq_pend_v) -- "irq" in
+  Always.(compile [ irq_pend <-- (i.rst_n &: ~:core_ce &: (ms_tick |: irq_pend_v)) ]);
+  let irq = (ms_tick |: irq_pend_v) -- "irq" in
   let core =
     Cpu.create
       ~ce:core_ce
@@ -145,7 +138,9 @@ let create
   (* ── Address decode ── (same constants as soc.ml / RISC5Top) *)
   let core_adr = core.adr -- "core_adr" in
   let core_ben = core.ben -- "core_ben" in
-  let rom_region = (select core_adr ~high:23 ~low:14 ==:. 0x3FF) -- "rom_region" in
+  let rom_region =
+    (select core_adr ~high:23 ~low:14 ==:. Cpu.start_adr lsr 12) -- "rom_region"
+  in
   let ioenb = (select core_adr ~high:23 ~low:6 ==:. 0x3FFFF) -- "ioenb" in
   let iowadr = select core_adr ~high:5 ~low:2 in
   (* on-chip fast path: a ROM-region fetch (codebus from PROM) or any MMIO load/store (top
@@ -268,151 +263,55 @@ let create
       cellram.rdata)
   in
   let prom = Rom.create ~contents { Rom.I.adr = select core_adr ~high:10 ~low:2 } in
-  (* ── SPI master (words 4/5) ── *)
-  let spi_ctrl = Always.Variable.reg spec ~width:4 in
-  Always.(
-    compile
-      [ spi_ctrl
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 4)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 5))
-                 (select core.outbus ~high:3 ~low:0)
-                 spi_ctrl.value)
-      ]);
-  let spi =
-    Spi.create
+  (* ── The shared peripheral/MMIO cluster ({!Peripherals}) ── never ce-gated: a slow
+     (wait-stated) CPU polls full-speed peripherals, exactly as on real hardware. Board
+     seams: the SPI slow divider + UART bauds retuned for the 60 MHz clock
+     (emit_verilog.ml), and the Halftone status word (vblank + frame counter, the v2 seam)
+     at read slot 10 (0xFFFFE8). *)
+  let per =
+    Peripherals.create
+      ~clocks_per_ms
       ~slow_div_log2:spi_slow_div_log2
-      { Spi.I.clock = i.clock
+      ~baud_slow:uart_baud_slow
+      ~baud_fast:uart_baud_fast
+      ~extra_read_slots:[ 10, ht_status ]
+      { Peripherals.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; start = core.wr &: ioenb &: (iowadr ==:. 4)
-      ; fast = select (spi_ctrl.value -- "spi_ctrl") ~high:2 ~low:2
-      ; data_tx = core.outbus
+      ; wr = core_wr
+      ; rd = core_rd
+      ; ioenb
+      ; iowadr
+      ; outbus = core.outbus
       ; miso = i.miso
-      }
-  in
-  (* SD chip select = ~spiCtrl[0] (RISC5Top's SS[0]); active low *)
-  let sd_cs = ~:(lsb spi_ctrl.value) in
-  (* ── UART (words 2/3) ── *)
-  let bitrate = Always.Variable.reg spec ~width:1 in
-  Always.(
-    compile
-      [ bitrate
-        <-- mux2
-              ~:(i.rst_n)
-              gnd
-              (mux2 (core.wr &: ioenb &: (iowadr ==:. 3)) (lsb core.outbus) bitrate.value)
-      ]);
-  let uart_rx =
-    Uart_rx.create
-      ~baud_slow:uart_baud_slow
-      ~baud_fast:uart_baud_fast
-      { Uart_rx.I.clock = i.clock
-      ; rst_n = i.rst_n
       ; rxd = i.rxd
-      ; fsel = bitrate.value
-      ; done_ = core.rd &: ioenb &: (iowadr ==:. 2)
-      }
-  in
-  let uart_tx =
-    Uart_tx.create
-      ~baud_slow:uart_baud_slow
-      ~baud_fast:uart_baud_fast
-      { Uart_tx.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; start = core.wr &: ioenb &: (iowadr ==:. 2)
-      ; fsel = bitrate.value
-      ; data = select core.outbus ~high:7 ~low:0
-      }
-  in
-  (* ── PS/2 keyboard + mouse (words 6/7) ── the mouse's open-drain [msclk]/[msdat] split
-     into resolved-line inputs + drive-low [*_oe] outputs (the board IOBUF does the
-     wired-AND). Plain decode for M1 boot; the listen-only PIC override is an M3 concern. *)
-  let kbd =
-    Ps2.create
-      { Ps2.I.clock = i.clock
-      ; rst_n = i.rst_n
-      ; done_ = core.rd &: ioenb &: (iowadr ==:. 7)
+      ; btn = i.btn
+      ; sw = i.sw
+      ; gpio_in = i.gpio_in
       ; ps2c = i.ps2c
       ; ps2d = i.ps2d
+      ; msclk = i.msclk
+      ; msdat = i.msdat
       }
   in
-  let mouse =
-    Mouse.create
-      { Mouse.I.clock = i.clock; rst_n = i.rst_n; msclk = i.msclk; msdat = i.msdat }
-  in
-  let mouse_out = mouse.out -- "mouse_out" in
-  (* ── Switches/buttons (word 1 read) + LEDs (word 1 write) ── *)
-  let switches = uresize (i.btn @: i.sw) ~width:32 in
-  let lreg = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ lreg
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 8)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 1))
-                 (select core.outbus ~high:7 ~low:0)
-                 lreg.value)
-      ]);
-  (* ── GPIO (words 8/9) ── *)
-  let gpout = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ gpout
-        <-- mux2
-              (core.wr &: ioenb &: (iowadr ==:. 8))
-              (select core.outbus ~high:7 ~low:0)
-              gpout.value
-      ]);
-  let gpoc = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ gpoc
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 8)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 9))
-                 (select core.outbus ~high:7 ~low:0)
-                 gpoc.value)
-      ]);
-  (* ── MMIO read mux (RISC5Top's iowadr chain) ── *)
-  let io_data =
-    mux
-      iowadr
-      ([ cnt1_v
-       ; switches
-       ; uresize uart_rx.data ~width:32
-       ; uresize (uart_tx.rdy @: uart_rx.rdy) ~width:32
-       ; spi.data_rx
-       ; uresize spi.rdy ~width:32
-       ; uresize (kbd.rdy @: mouse_out) ~width:32
-       ; uresize kbd.data ~width:32
-       ; uresize i.gpio_in ~width:32
-       ; uresize gpoc.value ~width:32
-       ; ht_status (* slot 10, 0xFFFFE8 — Halftone vblank + frame counter (v2 seam) *)
-       ]
-       @ List.init 5 ~f:(fun _ -> zero 32))
-  in
+  assign ms_tick per.ms_tick;
+  (* SD chip select = ~spiCtrl[0] (RISC5Top's SS[0]); active low *)
+  let sd_cs = ~:(lsb per.spi_ctrl) in
   (* fetch: ROM in the top 16 KiB, else PSRAM; load: MMIO in the top 64 B, else PSRAM *)
   assign codebus (mux2 rom_region prom.data mem_rdata);
-  assign inbus (mux2 ioenb io_data mem_rdata);
-  { O.mosi = spi.mosi
-  ; sclk = spi.sclk
+  assign inbus (mux2 ioenb per.io_data mem_rdata);
+  { O.mosi = per.mosi
+  ; sclk = per.sclk
   ; sd_cs
-  ; txd = uart_tx.txd
-  ; leds = lreg.value
-  ; gpio_out = gpout.value
-  ; gpio_oe = gpoc.value
+  ; txd = per.txd
+  ; leds = per.leds
+  ; gpio_out = per.gpio_out
+  ; gpio_oe = per.gpio_oe
   ; hsync = vid.hsync
   ; vsync = vid.vsync
   ; rgb = vid.rgb
-  ; msclk_oe = mouse.msclk_oe
-  ; msdat_oe = mouse.msdat_oe
-  ; mouse_dbg = mouse_out
+  ; msclk_oe = per.msclk_oe
+  ; msdat_oe = per.msdat_oe
+  ; mouse_dbg = per.mouse_out
   ; mem_adr = cellram.mem_adr
   ; mem_dq_o = cellram.mem_dq_o
   ; mem_dq_t = cellram.mem_dq_t
