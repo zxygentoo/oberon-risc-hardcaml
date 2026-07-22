@@ -19,8 +19,10 @@ are *proven*, not just tested).
 
 ## Docs
 
-- [`AGENT.md`](AGENT.md) — the working spec: architecture, the phase plan (0–10), and the
-  verification strategy.
+- [`AGENT.md`](AGENT.md) — the working manual: architecture, the locked design rules,
+  and the verification strategy.
+- [`build-log.md`](build-log.md) — the phase-by-phase build log (phases 0–11): what each
+  phase delivered, how it was proven, and what was measured.
 - [`board/nexys-4/README.md`](board/nexys-4/README.md) — the board layer: how the SoC
   maps onto the Nexys 4, and the build/program flow.
 
