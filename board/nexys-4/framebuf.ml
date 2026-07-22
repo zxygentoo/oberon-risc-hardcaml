@@ -89,10 +89,10 @@ let create (i : _ I.t) : _ O.t =
 let%expect_test "framebuf — vidreq timing: ack/par/viddata one cycle after req [waveform]"
   =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let b1 v = Bits.of_unsigned_int ~width:1 v in
   inp.write := b1 0;

@@ -212,10 +212,10 @@ let%expect_test "rs232r — random byte round-trips [qcheck]" =
    frame. (The mid-bit sample is ~limit/2 cycles later, past a tight window.) *)
 let%expect_test "rs232r — start detect [waveform: rxd↓ → q0/q1 → start_edge → run]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
   inp.fsel := hi;

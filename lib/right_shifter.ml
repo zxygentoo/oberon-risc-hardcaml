@@ -69,9 +69,9 @@ let%expect_test "ASR/ROR = references [qcheck, 10k cases]" =
 
 let%expect_test "right-shift waveform — ASR sign-floods, then ROR wraps" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let drive ~x ~sc ~md =
     inp.x := Bits.of_unsigned_int ~width:32 x;
@@ -90,14 +90,14 @@ let%expect_test "right-shift waveform — ASR sign-floods, then ROR wraps" =
   [%expect
     {|
     ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
-    │md             ││                              ┌─────────────────── │
-    │               ││──────────────────────────────┘                    │
-    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
-    │sc             ││ 00       │04       │08       │04       │10        │
-    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
     │               ││──────────────────────────────┬─────────────────── │
     │x              ││ F0000000                     │DEADBEEF            │
     │               ││──────────────────────────────┴─────────────────── │
+    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
+    │sc             ││ 00       │04       │08       │04       │10        │
+    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
+    │md             ││                              ┌─────────────────── │
+    │               ││──────────────────────────────┘                    │
     │               ││──────────┬─────────┬─────────┬─────────┬───────── │
     │y              ││ F0000000 │FF000000 │FFF00000 │FDEADBEE │BEEFDEAD  │
     │               ││──────────┴─────────┴─────────┴─────────┴───────── │

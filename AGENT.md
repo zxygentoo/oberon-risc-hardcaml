@@ -418,20 +418,22 @@ different images.
 **Toolchain.** **OxCaml** — opam switch **`5.2.0+ox`**, dune `3.22+ox`, Hardcaml
 **`v0.18~preview`** (+ `ppx_hardcaml`, `hardcaml_waveterm`, `hardcaml_verify`). We
 track the preview on purpose — `docs.hardcaml.org` documents exactly this build — and
-it rolls forward under us. `hardcaml_of_verilog` needs a forked-`jsonaf` pin on the
-preview (its tarball's `@@ portable` annotations are unsatisfiable; fixed upstream in
-`130.100+614` — drop the pin when the tracked preview passes it):
-
-```
-opam pin add jsonaf.v0.18~preview.130.91+190 \
-  'git+https://github.com/zxygentoo/jsonaf.git#528a015' --yes
-opam install hardcaml_of_verilog hardcaml_verify --yes
-```
+it rolls forward under us. `opam install hardcaml_of_verilog hardcaml_verify --yes`
+installs the proof stack — plain upstream: the forked-`jsonaf` pin the preview once
+needed (unsatisfiable `@@ portable` annotations in its tarball) became unnecessary at
+`130.100+614` and was dropped 2026-07 on the roll-forward to `130.106+341` (all gates
+re-proven).
 
 Runtime deps for the opt-in gates: **verilator** (`@cosim`), **yosys** + **z3**
-(`@formal`). One yosys-version shim: yosys 0.65 emits binary-string cell parameters the
+(`@formal`). Two version shims. yosys 0.65 emits binary-string cell parameters the
 importer rejects — `test/formal` drives yosys with `write_json -compat-int` and feeds
-the JSON through the public `Yosys_netlist.of_string` path (no fork). Compiled-sim
+the JSON through the public `Yosys_netlist.of_string` path (no fork). ppx_expect
+≥ `130.100` resolves expect-test sources as `<source-tree-root>/<basename>` while
+dune's inline-tests backend passes `%{workspace_root}` — the directory component is
+lost and every inline-tests library in a subdirectory crashes at exit
+(`Sys_error "../foo.ml"`); each such library re-points the root at its own dir with
+`(inline_tests (flags -source-tree-root .))` (see `lib/dune`; drop when upstream
+re-agrees). Compiled-sim
 backends (`hardcaml_c`, `hardcaml_verilator`) were evaluated and **rejected** — modest
 speedups at the cost of multi-minute recompiles or the `lookup_*` introspection the
 harnesses live on; the boot gates run the plain Cyclesim interpreter (~0.39 M cycles/s).
@@ -460,7 +462,11 @@ Don't revisit without new evidence.
   ~by:sc`); `select x ~high ~low`, `uresize x ~width`; explicit int conversions
   (`to_int_trunc`/`to_unsigned_int`/`to_signed_int`, `of_unsigned_int ~width`/
   `of_signed_int ~width`); `mux`/`mux2` stay positional. Hardcaml → Verilog:
-  `Rtl.print Rtl.Language.Verilog circuit`.
+  `Rtl.print Rtl.Language.Verilog circuit`. Since preview `130.106` waveform capture
+  lives in core Hardcaml — `Cyclesim.Waveform.create sim` returns the `Wave_data.t`
+  that `Hardcaml_waveterm.Waveform.print` renders (`Hardcaml_waveterm.For_cyclesim`
+  is gone), and rendered signal order follows interface declaration order (was
+  alphabetical — a one-time reflow of frozen waveform expects).
 - **Running tests:** `dune runtest` (fast suite, seconds); opt-in gates per the §6
   table; `dune build @check` = the type-check/pre-commit gate.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** (the

@@ -7,6 +7,11 @@
 (library
  (name risc5)
  (libraries hardcaml hardcaml_waveterm qcheck-core)
- (inline_tests)
+ ; -source-tree-root: ppx_expect >= 130.100 resolves sources as
+ ; <source-tree-root>/<basename>, but dune's ppx_inline_test backend passes
+ ; %{workspace_root}, losing this subdirectory. Re-point it at the library dir
+ ; (the runner's cwd; last flag wins). Drop when upstream agrees again.
+ (inline_tests
+  (flags -source-tree-root .))
  (preprocess
   (pps ppx_hardcaml ppx_expect)))

@@ -217,10 +217,10 @@ let%expect_test "MUL create_opt_pipelined ≡ create (differential qcheck, stage
 
 let%expect_test "MUL timing — signed -3*5: stall envelope head/tail + product" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   (* one idle cycle (run=0) so the run/stall rising edges are visible, then a full signed

@@ -121,10 +121,10 @@ let%expect_test "ram = word-array model, word + byte writes [qcheck, 500 sequenc
 
 let%expect_test "ram — word store, byte store, async read [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let drive ~wr ~ben ~adr ~wdata =
     inp.wr := Bits.of_unsigned_int ~width:1 wr;

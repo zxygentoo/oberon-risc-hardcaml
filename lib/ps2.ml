@@ -224,10 +224,10 @@ let%expect_test "ps2 — random scancode round-trips [qcheck]" =
    ...0,0,1,1,1,0,0; here the start bit then d0=0, d1=0). *)
 let%expect_test "ps2 — clock recovery [waveform: ps2c edge → shift → shreg]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
   send_bit sim inp false;

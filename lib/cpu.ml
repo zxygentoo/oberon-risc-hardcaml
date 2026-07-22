@@ -536,10 +536,10 @@ let some = function
 
 let%expect_test "fetch spine — reset, PC march, load stall, external stall [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let step ~rst_n ~stall_x ~codebus =
     set inp.rst_n rst_n 1;
@@ -612,10 +612,10 @@ let%expect_test "fetch spine — reset, PC march, load stall, external stall [wa
 
 let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let step ~rst_n ~codebus =
     set inp.rst_n rst_n 1;
@@ -679,10 +679,10 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
                  [waveform]"
   =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let regfile = some (Cyclesim.lookup_mem_by_name sim "regfile") in
   let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
@@ -766,10 +766,10 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
 let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through) [waveform]"
   =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
   inp.rst_n := Bits.of_unsigned_int ~width:1 1;
@@ -820,10 +820,10 @@ let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through)
 
 let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let mem = some (Cyclesim.lookup_mem_by_name sim "regfile") in
   let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
@@ -898,10 +898,10 @@ let%expect_test "interrupts — STI enable, IRQ to intAck (vector 1), RTI restor
                  [waveform]"
   =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let reg name = some (Cyclesim.lookup_reg_by_name sim name) in
   inp.rst_n := Bits.of_unsigned_int ~width:1 1;

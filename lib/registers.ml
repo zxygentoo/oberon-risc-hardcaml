@@ -123,10 +123,10 @@ let%expect_test "registers = 16×32 array model [qcheck, 500 sequences]" =
 
 let%expect_test "registers — writes, 3-port read, wr=0 holds [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let drive ~wr ~rno0 ~rno1 ~rno2 ~din =

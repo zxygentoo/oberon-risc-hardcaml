@@ -222,10 +222,10 @@ let%expect_test "icache — 2a: a himem [1 MB, 16 MB) line does not alias low me
 
 let%expect_test "icache — fill/hit/invalidate timing [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let step = step sim inp in
   (* c0 miss+fill A, c1 hit A, c2 miss C (same index other tag), c3 store A (snoop), c4

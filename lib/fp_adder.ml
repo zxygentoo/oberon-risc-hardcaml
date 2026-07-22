@@ -187,10 +187,10 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
 
 let%expect_test "FPAdder timing — stall envelope (State 0->3) + FAD 1.0 + 1.0 = 2.0" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let set r v w = r := Bits.of_unsigned_int ~width:w v in

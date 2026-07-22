@@ -217,10 +217,10 @@ let%expect_test "FML create_opt_pipelined ≡ create (differential qcheck, stage
 
 let%expect_test "FPMultiplier timing — stall envelope (S 0->25) + FML 2.0 * 2.0 = 4.0" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   (* one idle cycle so the run/stall rising edges show, then a FML run with operands held

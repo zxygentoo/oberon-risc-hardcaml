@@ -454,14 +454,14 @@ let%expect_test "cellram — word store then load, two halfword phases + ce puls
                  [waveform]"
   =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
       (Tb.create ~read_cycles:2 ~write_cycles:2)
   in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   inp.cpu_internal := b1 false;
   inp.vidreq := b1 false;
@@ -1019,14 +1019,14 @@ let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write dra
                  it; a read waits for the slot [waveform]"
   =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
       (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true)
   in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   inp.cpu_internal := b1 false;
   inp.vidreq := b1 false;

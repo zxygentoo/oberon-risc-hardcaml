@@ -52,9 +52,9 @@ let%expect_test "LSL = (x lsl sc) reference [qcheck, 10k cases]" =
 
 let%expect_test "LSL waveform — 1 << {0,1,4,16}, then 0xDEADBEEF << 4" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let drive ~x ~sc =
     inp.x := Bits.of_unsigned_int ~width:32 x;
@@ -70,12 +70,12 @@ let%expect_test "LSL waveform — 1 << {0,1,4,16}, then 0xDEADBEEF << 4" =
   [%expect
     {|
     ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
-    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
-    │sc             ││ 00       │01       │04       │10       │04        │
-    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
     │               ││────────────────────────────────────────┬───────── │
     │x              ││ 00000001                               │DEADBEEF  │
     │               ││────────────────────────────────────────┴───────── │
+    │               ││──────────┬─────────┬─────────┬─────────┬───────── │
+    │sc             ││ 00       │01       │04       │10       │04        │
+    │               ││──────────┴─────────┴─────────┴─────────┴───────── │
     │               ││──────────┬─────────┬─────────┬─────────┬───────── │
     │y              ││ 00000001 │00000002 │00000010 │00010000 │EADBEEF0  │
     │               ││──────────┴─────────┴─────────┴─────────┴───────── │

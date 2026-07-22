@@ -225,10 +225,10 @@ let%expect_test "rs232t — random byte round-trips [qcheck]" =
    cycle-accurate heart of the port. *)
 let%expect_test "rs232t — bit boundary [waveform: endtick shifts shreg, txd start→d0]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
   inp.fsel := hi;

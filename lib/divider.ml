@@ -179,10 +179,10 @@ let%expect_test "DIV = floored/unsigned reference [qcheck, 2000 cases]" =
 
 let%expect_test "DIV timing — signed -7/2 = -4 rem 1: stall envelope + outputs" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   (* one idle cycle so the run/stall edges show, then signed −7 / 2 → quot −4, rem 1

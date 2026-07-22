@@ -454,10 +454,10 @@ let%expect_test "rom reads back its image [exhaustive, 512 words]" =
 
 let%expect_test "rom — asynchronous read, data tracks adr [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create (create ~contents:test_image) in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let read a =
     inp.adr := Bits.of_unsigned_int ~width:9 a;

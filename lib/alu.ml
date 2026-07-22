@@ -216,10 +216,10 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
 
 let%expect_test "ADD/SUB flags — carry-out vs overflow [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let drive ~op ~b ~c1 =
     set inp.op op 4;
@@ -270,10 +270,10 @@ let%expect_test "ADD/SUB flags — carry-out vs overflow [waveform]" =
 
 let%expect_test "ADD/SUB vs ADD'/SUB' — the carry-in [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let drive ~op ~u ~c ~b ~c1 =
     set inp.op op 4;
@@ -326,10 +326,10 @@ let%expect_test "ADD/SUB vs ADD'/SUB' — the carry-in [waveform]" =
 
 let%expect_test "MOV forms [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let mov
     ?(u = 0)
