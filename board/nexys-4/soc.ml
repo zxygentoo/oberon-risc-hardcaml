@@ -325,14 +325,14 @@ let create
 
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── [Soc] is
    [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the core on a
-   clock-enable — a hand-copy of soc.ml's peripheral block that can drift from it. These
-   mirror soc.ml's own co-located integration tests (a hand-assembled boot stub in the
-   boot ROM, run on the interpreter, read back through the core's named [regfile] — no
-   oracle, so the board library stays oracle-free, §3/§6), here closed with the
-   behavioural {!Cellram_model} on the PSRAM pins. They guard the board-specific paths:
-   the Cellram memory round-trip, the free-running (non-ce-gated) timer under wait-states,
-   and the MMIO read/write path through the on-chip fast path. (The full boot through this
-   SoC is the opt-in [@boot_checkpoint_board].) *)
+   clock-enable, sharing the {!Peripherals} cluster. These mirror soc.ml's own co-located
+   integration tests (a hand-assembled boot stub in the boot ROM, run on the interpreter,
+   read back through the core's named [regfile] — no oracle, so the board library stays
+   oracle-free, §3/§6), here closed with the behavioural {!Cellram_model} on the PSRAM
+   pins. They guard the board-specific paths: the Cellram memory round-trip, the shared
+   timer's free-run under wait-states (ce interplay the lib SoC can't see), and the MMIO
+   read/write path through the on-chip fast path. (The full boot through this SoC is the
+   opt-in [@boot_checkpoint_board].) *)
 
 module Sb_I = I
 
@@ -553,11 +553,11 @@ let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still 
 ;;
 
 let%expect_test "board soc — ms timer free-runs across a mid-run reset (RESET-FINDINGS)" =
-  (* The board SoC's timer is a hand-copy of lib/soc.ml's and can drift from it, so guard
-     it here too: RISC5Top's cnt0/cnt1 carry no rst term (l.139-140), and EO's
-     abort-recovery relies on [Kernel.Time()] never rewinding across a button reset. Same
-     property as the lib guard, through the PSRAM harness (a ce-gated core underneath — a
-     reset term would show as a rewind AND undercount). *)
+  (* The timer is the shared {!Peripherals}' now, but the property stays guarded through
+     THIS harness too: RISC5Top's cnt0/cnt1 carry no rst term (l.139-140), EO's
+     abort-recovery relies on [Kernel.Time()] never rewinding across a button reset, and
+     only the board composition has a ce-gated core underneath (a reset term would show as
+     a rewind AND undercount here). *)
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let nop = 0x40080000 in
   let sim =
