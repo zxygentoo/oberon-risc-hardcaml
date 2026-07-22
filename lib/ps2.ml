@@ -58,7 +58,7 @@ let create (i : _ I.t) : _ O.t =
   let shreg_v = shreg.value -- "shreg" in
   let inptr_v = inptr.value -- "inptr" in
   let outptr_v = outptr.value -- "outptr" in
-  let endbit = ~:(select shreg_v ~high:0 ~low:0) -- "endbit" in
+  let endbit = ~:(lsb shreg_v) -- "endbit" in
   let shift = q1_v &: ~:q0_v in
   let rdy = ~:(inptr_v ==: outptr_v) in
   (* 16x8 FIFO: synchronous write of shreg[8:1] at inptr on endbit, asynchronous read at
@@ -94,6 +94,21 @@ let create (i : _ I.t) : _ O.t =
   { O.rdy; shift; data }
 ;;
 
+module For_tests = struct
+  let odd_parity data =
+    let ones = ref 0 in
+    for j = 0 to 7 do
+      ones := !ones + ((data lsr j) land 1)
+    done;
+    1 - (!ones land 1)
+  ;;
+
+  let frame_bits data =
+    (false :: List.init 8 ~f:(fun j -> (data lsr j) land 1 = 1))
+    @ [ odd_parity data = 1; true ]
+  ;;
+end
+
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
    testbench plays the keyboard: clock 11-bit frames on ps2c/ps2d and read the recovered
    bytes back through the FIFO. Functional decode + a multi-byte FIFO order check + a
@@ -101,8 +116,8 @@ let create (i : _ I.t) : _ O.t =
    shreg walking). The exhaustive bit-for-bit fidelity check vs [PS2.v] is the Verilator
    co-sim. *)
 
-let lo = Bits.of_unsigned_int ~width:1 0
-let hi = Bits.of_unsigned_int ~width:1 1
+let lo = Bits.gnd
+let hi = Bits.vdd
 let bit b = if b then hi else lo
 let h = 4 (* ps2c half-period in clocks (>=2 for the synchronizer to see the edge) *)
 
@@ -116,35 +131,24 @@ let reset_idle sim (inp : _ I.t) =
   Cyclesim.cycle sim
 ;;
 
-(* odd parity over the 8 data bits (the DUT ignores it — it occupies one frame slot) *)
-let odd_parity data =
-  let ones = ref 0 in
-  for j = 0 to 7 do
-    ones := !ones + ((data lsr j) land 1)
+(* one device clock: present the data bit, then a ps2c falling edge (h high + h low) so
+   the DUT's synchronizer sees it *)
+let send_bit sim (inp : _ I.t) b =
+  inp.ps2d := bit b;
+  inp.ps2c := hi;
+  for _ = 1 to h do
+    Cyclesim.cycle sim
   done;
-  1 - (!ones land 1)
+  inp.ps2c := lo;
+  for _ = 1 to h do
+    Cyclesim.cycle sim
+  done
 ;;
 
-(* play the keyboard: clock the 11 frame bits (start, 8 data LSbit-first, parity, stop) on
-   ps2c/ps2d; the DUT shifts ps2d in on each ps2c falling edge. Leaves ps2c idle high. *)
+(* play the keyboard: clock the 11 frame bits ({!For_tests.frame_bits}) on ps2c/ps2d; the
+   DUT shifts ps2d in on each ps2c falling edge. Leaves ps2c idle high. *)
 let send_byte sim (inp : _ I.t) ~data =
-  let send_bit b =
-    inp.ps2d := bit b;
-    inp.ps2c := hi;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done;
-    inp.ps2c := lo;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done
-  in
-  send_bit false;
-  for j = 0 to 7 do
-    send_bit ((data lsr j) land 1 = 1)
-  done;
-  send_bit (odd_parity data = 1);
-  send_bit true;
+  List.iter (For_tests.frame_bits data) ~f:(send_bit sim inp);
   inp.ps2c := hi;
   for _ = 1 to h do
     Cyclesim.cycle sim
@@ -226,19 +230,8 @@ let%expect_test "ps2 — clock recovery [waveform: ps2c edge → shift → shreg
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
-  let send_bit b =
-    inp.ps2d := bit b;
-    inp.ps2c := hi;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done;
-    inp.ps2c := lo;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done
-  in
-  send_bit false;
-  send_bit false;
+  send_bit sim inp false;
+  send_bit sim inp false;
   Waveform.print
     ~start_cycle:2
     ~wave_width:2

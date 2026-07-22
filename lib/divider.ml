@@ -101,10 +101,11 @@ let reference ~u ~x ~y =
   else mask32 (x / y), mask32 (x - (x / y * y))
 ;;
 
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
 let run_div sim ~u ~x ~y =
   let inp = (Cyclesim.inputs sim : _ I.t) in
   let outp = (Cyclesim.outputs sim : _ O.t) in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   set inp.u u 1;
   set inp.x x 32;
   set inp.y y 32;
@@ -184,7 +185,6 @@ let%expect_test "DIV timing — signed -7/2 = -4 rem 1: stall envelope + outputs
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   (* one idle cycle so the run/stall edges show, then signed −7 / 2 → quot −4, rem 1
      (floored, non-negative remainder); run releases the cycle stall clears, as the core
      sequences it. quot/rem are 32-bit so they render fully; the .mli covers the

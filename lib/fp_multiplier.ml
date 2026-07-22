@@ -130,10 +130,7 @@ let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
   let xm = vdd @: select i.x ~high:22 ~low:0 in
   let ym = vdd @: select i.y ~high:22 ~low:0 in
   (* [stages] registers on the mantissa product; Vivado pulls them into the DSP *)
-  let p =
-    List.fold (List.init stages ~f:Fn.id) ~init:(xm *: ym) ~f:(fun acc _ ->
-      Signal.reg spec ~enable:ce acc)
-  in
+  let p = Fn.apply_n_times ~n:stages (Signal.reg spec ~enable:ce) (xm *: ym) in
   let s =
     Signal.reg_fb spec ~enable:ce ~width:4 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 4))
   in
@@ -149,6 +146,29 @@ let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
    window, so two tight windows — the head (run -> stall asserts) and the tail (stall
    drops, run releases) — bracket the uniform stall=1 middle. *)
 
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
+(* Run one FML through the run/stall handshake, as the core sequences it: run asserts,
+   cycle until stall drops, read z, then a run=0 cycle to clear S for the next case. Also
+   drives the combinational [create_opt] (stall never asserts; the first cycle evaluates
+   it). Guards against a wedged stall. *)
+let run_fml (inp : _ I.t) (out : _ O.t) sim ~x ~y =
+  set inp.x x 32;
+  set inp.y y 32;
+  set inp.run 1 1;
+  let safety = ref 0 in
+  Cyclesim.cycle sim;
+  while Bits.to_int_trunc !(out.stall) = 1 do
+    Cyclesim.cycle sim;
+    Int.incr safety;
+    if !safety > 40 then failwith "fp multiplier did not terminate"
+  done;
+  let z = Bits.to_unsigned_int !(out.z) in
+  set inp.run 0 1;
+  Cyclesim.cycle sim;
+  z
+;;
+
 let%expect_test "FML create_opt ≡ create (differential qcheck, 32-bit z, 20000 cases)" =
   (* The Phase-9 fast variant rides [create]'s Phase-8 proof: show the combinational DSP
      mantissa multiply is bit-identical to the formally-proven iterative unit over random
@@ -162,34 +182,13 @@ let%expect_test "FML create_opt ≡ create (differential qcheck, 32-bit z, 20000
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* iterative: run to retirement, then a run=0 cycle to clear S for the next case *)
-  let z_ref ~x ~y =
-    set ri.x x 32;
-    set ri.y y 32;
-    set ri.run 1 1;
-    Cyclesim.cycle ref_sim;
-    while Bits.to_int_trunc !(ro.stall) = 1 do
-      Cyclesim.cycle ref_sim
-    done;
-    let z = Bits.to_unsigned_int !(ro.z) in
-    set ri.run 0 1;
-    Cyclesim.cycle ref_sim;
-    z
-  in
-  (* combinational: set inputs, one eval, read z *)
-  let z_opt ~x ~y =
-    set oi.x x 32;
-    set oi.y y 32;
-    Cyclesim.cycle opt_sim;
-    Bits.to_unsigned_int !(oo.z)
-  in
   QCheck.Test.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"fp_create_opt=create"
        QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
-       (fun (x, y) -> Int.equal (z_ref ~x ~y) (z_opt ~x ~y)));
+       (fun (x, y) ->
+         Int.equal (run_fml ri ro ref_sim ~x ~y) (run_fml oi oo opt_sim ~x ~y)));
   [%expect {| |}]
 ;;
 
@@ -206,20 +205,6 @@ let%expect_test "FML create_opt_pipelined ≡ create (differential qcheck, stage
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  let run_fml (inp : _ I.t) (out : _ O.t) sim ~x ~y =
-    set inp.x x 32;
-    set inp.y y 32;
-    set inp.run 1 1;
-    Cyclesim.cycle sim;
-    while Bits.to_int_trunc !(out.stall) = 1 do
-      Cyclesim.cycle sim
-    done;
-    let z = Bits.to_unsigned_int !(out.z) in
-    set inp.run 0 1;
-    Cyclesim.cycle sim;
-    z
-  in
   QCheck.Test.check_exn
     (QCheck.Test.make
        ~count:20_000
@@ -238,7 +223,6 @@ let%expect_test "FPMultiplier timing — stall envelope (S 0->25) + FML 2.0 * 2.
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   (* one idle cycle so the run/stall rising edges show, then a FML run with operands held
      stable across the run (as the core guarantees); z is read when stall drops (S==25),
      then run releases the next cycle, exactly as the core sequences it. *)

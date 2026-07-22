@@ -56,7 +56,10 @@ end
 let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
   (* tick must hold the slow terminal 2^slow_div_log2-1 and the fast terminal 2, so the
      counter is [slow_div_log2] bits wide (>= 3 in practice; 6 = SPI.v, 8 = clk÷256 = the
-     60 MHz board). *)
+     60 MHz board). Below 2 the fast terminal no longer fits and the divider is silently
+     wrong — fail at elaboration instead. *)
+  if slow_div_log2 < 2
+  then failwith "Spi: slow_div_log2 < 2 cannot hold the fast terminal (tick == 2)";
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let tick = Always.Variable.reg spec ~width:slow_div_log2 in
@@ -118,9 +121,10 @@ let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
    round-trips the data and exercises the full shift + [rdy] handshake + cycle-accurate
    timing — plus a short structural waveform of a fast transfer's first bits. *)
 
+let lo = Bits.gnd
+let hi = Bits.vdd
+
 let reset_then_idle sim (inp : _ I.t) =
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
   inp.rst_n := lo;
   inp.start := lo;
   inp.fast := lo;
@@ -134,8 +138,6 @@ let reset_then_idle sim (inp : _ I.t) =
 (* one transfer with MISO looped back from MOSI; returns (cycles-from-start-to-rdy,
    data_rx) *)
 let loopback_transfer sim (inp : _ I.t) (outp : _ O.t) ~fast ~data =
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
   inp.fast := if fast then hi else lo;
   inp.data_tx := Bits.of_unsigned_int ~width:32 data;
   inp.start := hi;
@@ -195,8 +197,6 @@ let%expect_test "spi — fast transfer, first bits [waveform: tick÷3, sclk puls
   let sim = Sim.create create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
   reset_then_idle sim inp;
   inp.fast := hi;
   inp.data_tx := Bits.of_unsigned_int ~width:32 0xCC;

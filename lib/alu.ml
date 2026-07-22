@@ -99,8 +99,8 @@ let create (i : _ I.t) : _ O.t =
      re-evaluates the corrupted flag on its stall cycle (the phase-6b boot trap). The
      result mux above stays op-only, like [aluRes]: its value for a branch is simply never
      selected by the core's [regmux]. *)
-  let is_add = ~:(i.p) &: (i.op ==: of_unsigned_int ~width:4 8) in
-  let is_sub = ~:(i.p) &: (i.op ==: of_unsigned_int ~width:4 9) in
+  let is_add = ~:(i.p) &: (i.op ==:. 8) in
+  let is_sub = ~:(i.p) &: (i.op ==:. 9) in
   let c = mux2 is_add add_c (mux2 is_sub sub_c i.c_in) in
   let ov = mux2 is_add add_ov (mux2 is_sub sub_ov i.ov_in) in
   { O.res; c; ov }
@@ -112,6 +112,8 @@ let create (i : _ I.t) : _ O.t =
    and MUL/DIV/FP (10..15) are peer units tested in their own modules and muxed at the
    core, out of scope here. Behaviour: curated waveforms for the subtle bits — the
    ADD'/SUB' carry-in, the MOV forms, and carry-vs-overflow. *)
+
+let set r v w = r := Bits.of_unsigned_int ~width:w v
 
 let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -219,7 +221,6 @@ let%expect_test "ADD/SUB flags — carry-out vs overflow [waveform]" =
   let sim = Sim.create create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let drive ~op ~b ~c1 =
     set inp.op op 4;
     set inp.b b 32;
@@ -274,7 +275,6 @@ let%expect_test "ADD/SUB vs ADD'/SUB' — the carry-in [waveform]" =
   let sim = Sim.create create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let drive ~op ~u ~c ~b ~c1 =
     set inp.op op 4;
     set inp.u u 1;
@@ -331,7 +331,6 @@ let%expect_test "MOV forms [waveform]" =
   let sim = Sim.create create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let mov
     ?(u = 0)
     ?(q = 0)

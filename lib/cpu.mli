@@ -83,6 +83,12 @@ val create
   -> Signal.t I.t
   -> Signal.t O.t
 
+(** the reset vector ([RISC5.v]'s [StartAdr]) as a word address — [pc] is pulled here
+    while [rst_n] is low. Exported so the SoC's ROM-window decode
+    ([adr[23:14] == start_adr lsr 12]) derives from the same constant instead of keeping a
+    second copy. *)
+val start_adr : int
+
 (** The eight submodule constructors the core wires up — the modules [RISC5.v]
     instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven
     as part of the glue). Made injectable so the Phase-8 in-situ core proof (test/formal)

@@ -36,3 +36,14 @@ end
     synchronizer + [shift] edge detect, the walking-start-bit 11-bit frame assembly, and
     the 16-byte FIFO (an inferred RAM, async-read like the register file). *)
 val create : Signal.t I.t -> Signal.t O.t
+
+(** Test scaffolding, not hardware: the device-side PS/2 frame shape, shared by every
+    testbench that plays a PS/2 device (this module's keyboard tests, the {!Mouse} device
+    model, the SoC keyboard test). *)
+module For_tests : sig
+  (** odd parity over the 8 data bits *)
+  val odd_parity : int -> int
+
+  (** the 11 frame bits in wire order: start (0), 8 data LSbit-first, odd parity, stop (1) *)
+  val frame_bits : int -> bool list
+end

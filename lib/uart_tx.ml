@@ -42,7 +42,15 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
+(* RS232T.v's 25 MHz constants (clk/1302 = 19200 baud, clk/217 = 115200). {!Uart_rx}
+   shares these defaults: the SoC's single [bitrate] bit drives both directions, so the
+   pair must stay equal. *)
+let default_baud_slow = 1302
+let default_baud_fast = 217
+
+let create ?(baud_slow = default_baud_slow) ?(baud_fast = default_baud_fast) (i : _ I.t)
+  : _ O.t
+  =
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let run = Always.Variable.reg spec ~width:1 in
@@ -54,15 +62,20 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
   (* combinational: end-of-bit / end-of-frame, line driver, ready *)
-  (* [baud_fast]/[baud_slow] default to RS232T.v's 25 MHz constants (clk/217 = 115200,
-     clk/1302 = 19200); the board passes clock-scaled values (feat/fast-clock: 60 MHz ⇒
-     521/521, both ~115200) so the wire stays at a standard rate. *)
-  let endtick =
-    mux2 i.fsel (tick_v ==:. baud_fast) (tick_v ==:. baud_slow) -- "endtick"
+  (* The board passes clock-scaled baud values (feat/fast-clock: 60 MHz ⇒ 521/521, both
+     ~115200) so the wire stays at a standard rate. Built via [of_unsigned_int] so a
+     retune past the (faithful) 12-bit [tick] fails loudly at elaboration, like
+     {!Uart_rx}'s [limit]. *)
+  let limit =
+    mux2
+      i.fsel
+      (of_unsigned_int ~width:12 baud_fast)
+      (of_unsigned_int ~width:12 baud_slow)
   in
+  let endtick = (tick_v ==: limit) -- "endtick" in
   let endbit = bitcnt_v ==:. 9 in
   let rdy = ~:run_v in
-  let txd = select shreg_v ~high:0 ~low:0 in
+  let txd = lsb shreg_v in
   (* {data, 1'b0} loads the start bit; {1'b1, shreg[8:1]} shifts a 1 in for stop/idle *)
   let load = concat_msb [ i.data; gnd ] in
   let shifted = concat_msb [ vdd; select shreg_v ~high:8 ~low:1 ] in
@@ -91,8 +104,8 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
    instead. The exhaustive bit-for-bit fidelity check vs [RS232T.v] is the Verilator
    co-sim (layer 3). *)
 
-let lo = Bits.of_unsigned_int ~width:1 0
-let hi = Bits.of_unsigned_int ~width:1 1
+let lo = Bits.gnd
+let hi = Bits.vdd
 let w8 v = Bits.of_unsigned_int ~width:8 v
 
 let reset_idle sim (inp : _ I.t) =

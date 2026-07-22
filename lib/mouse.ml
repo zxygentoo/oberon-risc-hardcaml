@@ -66,21 +66,12 @@ let create (i : _ I.t) : _ O.t =
   let req_v = req.value -- "req" in
   (* ── combinational ────────────────────────────────────────────────────────── *)
   let run = (sent_v ==:. 7) -- "run" in
-  (* the init command sequence, 9-bit (incl. odd parity); 0x1F3 = "set sample rate" *)
+  (* the init command sequence by [sent] slot, 9-bit (incl. odd parity): even slots are
+     the payload bytes (0xF4 enable, then the IntelliMouse rates 200/100/80+scroll magic),
+     odd slots are 0x1F3 "set sample rate" (slot 7 is dead — [run] holds [tx] at all-1s) *)
   let cmd =
-    mux2
-      (sent_v ==:. 0)
-      (of_unsigned_int ~width:9 0x0F4)
-      (mux2
-         (sent_v ==:. 2)
-         (of_unsigned_int ~width:9 0x0C8)
-         (mux2
-            (sent_v ==:. 4)
-            (of_unsigned_int ~width:9 0x064)
-            (mux2
-               (sent_v ==:. 6)
-               (of_unsigned_int ~width:9 0x150)
-               (of_unsigned_int ~width:9 0x1F3))))
+    let c = of_unsigned_int ~width:9 in
+    mux sent_v [ c 0x0F4; c 0x1F3; c 0x0C8; c 0x1F3; c 0x064; c 0x1F3; c 0x150; c 0x1F3 ]
   in
   let endcount = (select count_v ~high:14 ~low:12 ==:. 7) -- "endcount" in
   let shift = (~:req_v &: (filter_v ==:. 1)) -- "shift" in
@@ -249,27 +240,13 @@ let%expect_test "mouse — device model: init handshake, then a movement report 
   done;
   Stdlib.Printf.printf "init: run=%d\n" (if run () then 1 else 0);
   (* REPORT: the device streams 3-byte movement packets (drives msdat + clocks), then
-     idles so the DUT's [endcount]/[done] assembles each. Each byte is framed
-     start/8-data-LSB-first/odd-parity/stop; status 0x08 = no buttons, +ve, no overflow. *)
-  let parity b =
-    let n = ref 0 in
-    for i = 0 to 7 do
-      n := !n + ((b lsr i) land 1)
-    done;
-    1 - (!n land 1)
-  in
+     idles so the DUT's [endcount]/[done] assembles each. Each byte is framed per
+     [Ps2.For_tests.frame_bits]; status 0x08 = no buttons, +ve, no overflow. *)
   let send_bit v =
     dev_msdat_low := not v;
     pulse ()
   in
-  let send_byte b =
-    send_bit false;
-    for i = 0 to 7 do
-      send_bit ((b lsr i) land 1 = 1)
-    done;
-    send_bit (parity b = 1);
-    send_bit true
-  in
+  let send_byte b = List.iter send_bit (Ps2.For_tests.frame_bits b) in
   let send_report ~status ~mx ~my =
     let x0 = xpos ()
     and y0 = ypos () in

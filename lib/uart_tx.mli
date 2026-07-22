@@ -35,8 +35,16 @@ end
     register whose implicit framing emits start/data/stop.
 
     [?baud_slow]/[?baud_fast] are the bit-window lengths in clocks for the two [fsel]
-    rates (default [1302]/[217] = [RS232T.v]'s 19200/115200 at 25 MHz); the 60 MHz board
-    passes [521]/[521] (both settings ~115200; see emit_verilog.ml) so the wire stays at a
+    rates (default {!default_baud_slow}/{!default_baud_fast}); the 60 MHz board passes
+
+    [521]/[521] (both settings ~115200; see emit_verilog.ml) so the wire stays at a
     standard baud. Must match the receiver ({!Uart_rx.create}) and fit the 12-bit [tick]
-    (< 4096). *)
+    (< 4096; enforced at elaboration). *)
 val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t
+
+(** [RS232T.v]'s 25 MHz constants — [1302] (19200 baud) and [217] (115200).
+    {!Uart_rx.create} defaults to the same pair: the SoC's single [bitrate] bit drives
+    both directions, so the defaults must stay equal. *)
+val default_baud_slow : int
+
+val default_baud_fast : int

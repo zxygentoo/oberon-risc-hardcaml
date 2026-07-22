@@ -100,10 +100,7 @@ let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
   let y' = sresize i.y ~width:33 in
   let prod = sel_bottom (x' *+ y') ~width:64 in
   (* [stages] registers on the product; Vivado pulls them into the DSP (PREG/MREG/…) *)
-  let z =
-    List.fold (List.init stages ~f:Fn.id) ~init:prod ~f:(fun acc _ ->
-      Signal.reg spec ~enable:ce acc)
-  in
+  let z = Fn.apply_n_times ~n:stages (Signal.reg spec ~enable:ce) prod in
   (* counter: run-gated (run=0 ⇒ S:=0, no reset); [stall] high until S reaches [stages] *)
   let s =
     Signal.reg_fb spec ~enable:ce ~width:4 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 4))
@@ -121,31 +118,37 @@ let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
    −3×5 — the head (run→stall asserts) and the tail (stall drops, run releases) — bracket
    the uniform middle; the 64-bit product is too wide for the wave, so it's printed below. *)
 
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
+(* Run one multiply through the run/stall handshake, exactly as the core sequences it: run
+   asserts, cycle until stall drops, read the 64-bit product, then a run=0 cycle to clear
+   S for the next case. Also drives the combinational [create_opt] (stall never asserts;
+   the first cycle evaluates it). Guards against a wedged stall. *)
+let run_mul (inp : _ I.t) (out : _ O.t) sim ~u ~x ~y =
+  set inp.u u 1;
+  set inp.x x 32;
+  set inp.y y 32;
+  set inp.run 1 1;
+  let safety = ref 0 in
+  Cyclesim.cycle sim;
+  while Bits.to_int_trunc !(out.stall) = 1 do
+    Cyclesim.cycle sim;
+    Int.incr safety;
+    if !safety > 40 then failwith "multiplier did not terminate"
+  done;
+  let z = Bits.to_signed_int64 !(out.z) in
+  set inp.run 0 1;
+  Cyclesim.cycle sim;
+  (* clears S back to 0 *)
+  z
+;;
+
 let%expect_test "MUL = x*y reference (signed & unsigned) [qcheck, 2000 cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* run one full multiply on the shared sim, returning the 64-bit product as Int64 *)
-  let mul ~u ~x ~y =
-    set inp.u u 1;
-    set inp.x x 32;
-    set inp.y y 32;
-    set inp.run 1 1;
-    let safety = ref 0 in
-    Cyclesim.cycle sim;
-    while Bits.to_int_trunc !(outp.stall) = 1 do
-      Cyclesim.cycle sim;
-      Int.incr safety;
-      if !safety > 40 then failwith "multiplier did not terminate"
-    done;
-    let z = Bits.to_signed_int64 !(outp.z) in
-    set inp.run 0 1;
-    Cyclesim.cycle sim;
-    (* clears S back to 0 *)
-    z
-  in
+  let mul = run_mul inp outp sim in
   let reference ~u ~x ~y =
     let to_s32 v =
       if v >= 0x8000_0000 then Int64.(of_int v - 0x1_0000_0000L) else Int64.of_int v
@@ -177,36 +180,13 @@ let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* iterative: run to retirement, then a run=0 cycle to clear S for the next case *)
-  let z_ref ~u ~x ~y =
-    set ri.u u 1;
-    set ri.x x 32;
-    set ri.y y 32;
-    set ri.run 1 1;
-    Cyclesim.cycle ref_sim;
-    while Bits.to_int_trunc !(ro.stall) = 1 do
-      Cyclesim.cycle ref_sim
-    done;
-    let z = Bits.to_signed_int64 !(ro.z) in
-    set ri.run 0 1;
-    Cyclesim.cycle ref_sim;
-    z
-  in
-  (* combinational: set inputs, one eval, read z *)
-  let z_opt ~u ~x ~y =
-    set oi.u u 1;
-    set oi.x x 32;
-    set oi.y y 32;
-    Cyclesim.cycle opt_sim;
-    Bits.to_signed_int64 !(oo.z)
-  in
   QCheck.Test.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"create_opt=create"
        QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
-       (fun (u, x, y) -> Int64.equal (z_ref ~u ~x ~y) (z_opt ~u ~x ~y)));
+       (fun (u, x, y) ->
+         Int64.equal (run_mul ri ro ref_sim ~u ~x ~y) (run_mul oi oo opt_sim ~u ~x ~y)));
   [%expect {| |}]
 ;;
 
@@ -225,22 +205,6 @@ let%expect_test "MUL create_opt_pipelined ≡ create (differential qcheck, stage
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* run one multiply through a run/stall handshake, then a run=0 cycle to clear S *)
-  let run_mul (inp : _ I.t) (out : _ O.t) sim ~u ~x ~y =
-    set inp.u u 1;
-    set inp.x x 32;
-    set inp.y y 32;
-    set inp.run 1 1;
-    Cyclesim.cycle sim;
-    while Bits.to_int_trunc !(out.stall) = 1 do
-      Cyclesim.cycle sim
-    done;
-    let z = Bits.to_signed_int64 !(out.z) in
-    set inp.run 0 1;
-    Cyclesim.cycle sim;
-    z
-  in
   QCheck.Test.check_exn
     (QCheck.Test.make
        ~count:20_000
@@ -259,7 +223,6 @@ let%expect_test "MUL timing — signed -3*5: stall envelope head/tail + product"
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   (* one idle cycle (run=0) so the run/stall rising edges are visible, then a full signed
      −3 × 5 = −15; run is released the cycle stall clears, exactly as the core sequences
      it (otherwise S would tick past 33 and re-stall). z is 64-bit — too wide to render at

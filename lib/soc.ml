@@ -65,7 +65,23 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+(* The MMIO word map (RISC5Top's [iowadr] decode). One name per word, shared by the write
+   strobes, the writable registers and the read-mux slot below, so a word can't drift
+   between its decode site and its read slot. *)
+let w_ms_timer = 0 (* R: ms counter *)
+let w_switches_leds = 1 (* R: {btn, sw}; W: the LED latch *)
+let w_uart_data = 2 (* R: dataRx (pulses doneRx); W: start a transmit *)
+let w_uart_status = 3 (* R: {rdyTx, rdyRx}; W: the bitrate select *)
+let w_spi_data = 4 (* R: data_rx; W: start a transfer *)
+let w_spi_ctrl = 5 (* R: rdy; W: the 4-bit spiCtrl *)
+let w_mouse_kbd = 6 (* R: {rdyKbd, dataMs} *)
+let w_kbd_data = 7 (* R: dataKbd (pops the FIFO) *)
+let w_gpio = 8 (* R: gpin; W: gpout *)
+let w_gpio_dir = 9 (* R/W: gpoc *)
+
 let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : _ O.t =
+  if clocks_per_ms < 1 || clocks_per_ms > 1 lsl 16
+  then failwith "Soc: clocks_per_ms must fit the 16-bit cnt0 prescaler (1..65536)";
   let spec = Reg_spec.create () ~clock:i.clock in
   (* Millisecond timer — free-running (no reset), like RISC5Top's. A [clocks_per_ms]
      prescaler [cnt0] raises [limit] once per ms; [limit] both pulses the core's [irq] and
@@ -127,76 +143,72 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
       }
   in
   assign viddata ram.rdata;
-  let rom_region = select core.adr ~high:23 ~low:14 ==:. 0x3FF in
+  (* the ROM window: the top 16 KiB of the 24-bit map — [adr[23:14]] of the reset vector's
+     byte address ([Cpu.start_adr] is a word address: <<2 then >>14 = >>12) *)
+  let rom_region = select core.adr ~high:23 ~low:14 ==:. Cpu.start_adr lsr 12 in
   let ioenb = select core.adr ~high:23 ~low:6 ==:. 0x3FFFF in
   let iowadr = select core.adr ~high:5 ~low:2 in
-  (* SPI master (RISC5Top wiring): a store to word 4 pulses [start] ([spiStart]); word 5
-     is the 4-bit control register ([fast] = bit 2, reset to 0). [miso] is the
-     already-ANDed SD/net line, driven test-side by the disk model. *)
-  let spi_ctrl = Always.Variable.reg spec ~width:4 in
-  Always.(
-    compile
-      [ spi_ctrl
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 4)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 5))
-                 (select core.outbus ~high:3 ~low:0)
-                 spi_ctrl.value)
-      ]);
+  (* the per-word MMIO strobes, and the one writable-register shape (RISC5Top l.138-144):
+     loaded from [outbus]'s low bits on a store to [word]; reset (which beats a same-cycle
+     write) clears it unless [rst:false] — the faithful no-reset exception ([gpout]
+     below). *)
+  let io_wr word = core.wr &: ioenb &: (iowadr ==:. word) in
+  let io_rd word = core.rd &: ioenb &: (iowadr ==:. word) in
+  let io_reg ?(rst = true) ~word ~width () =
+    let r = Always.Variable.reg spec ~width in
+    let load = mux2 (io_wr word) (sel_bottom core.outbus ~width) r.value in
+    Always.(compile [ (r <-- if rst then mux2 ~:(i.rst_n) (zero width) load else load) ]);
+    r.value
+  in
+  (* SPI master (RISC5Top wiring): a store to [w_spi_data] pulses [start] ([spiStart]);
+     [w_spi_ctrl] is the 4-bit control register ([fast] = bit 2, reset to 0). [miso] is
+     the already-ANDed SD/net line, driven test-side by the disk model. *)
+  let spi_ctrl = io_reg ~word:w_spi_ctrl ~width:4 () -- "spi_ctrl" in
   let spi =
     Spi.create
       { Spi.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; start = core.wr &: ioenb &: (iowadr ==:. 4)
-      ; fast = select (spi_ctrl.value -- "spi_ctrl") ~high:2 ~low:2
+      ; start = io_wr w_spi_data
+      ; fast = bit spi_ctrl ~pos:2
       ; data_tx = core.outbus
       ; miso = i.miso
       }
   in
-  (* UART (words 2/3): RS232R receiver + RS232T transmitter at [bitrate] baud. Word 2 read
-     returns the received byte [dataRx] and pulses [done_] (acks it, clearing rdyRx); word
-     2 write starts a transmit ([start], [data] = outbus[7:0]). Word 3 read =
-     [{rdyTx, rdyRx}]; word 3 write sets the 1-bit [bitrate] select (0 = 19200, 1 =
-     115200; reset 0). *)
-  let bitrate = Always.Variable.reg spec ~width:1 in
-  Always.(
-    compile
-      [ bitrate
-        <-- mux2
-              ~:(i.rst_n)
-              gnd
-              (mux2 (core.wr &: ioenb &: (iowadr ==:. 3)) (lsb core.outbus) bitrate.value)
-      ]);
+  (* UART: RS232R receiver + RS232T transmitter at [bitrate] baud. A [w_uart_data] read
+     returns the received byte [dataRx] and pulses [done_] (acks it, clearing rdyRx); a
+     write starts a transmit ([start], [data] = outbus[7:0]). [w_uart_status] reads
+     [{rdyTx, rdyRx}]; a write sets the 1-bit [bitrate] select (0 = 19200, 1 = 115200;
+     reset 0). *)
+  let bitrate = io_reg ~word:w_uart_status ~width:1 () in
   let uart_rx =
     Uart_rx.create
       { Uart_rx.I.clock = i.clock
       ; rst_n = i.rst_n
       ; rxd = i.rxd
-      ; fsel = bitrate.value
-      ; done_ = core.rd &: ioenb &: (iowadr ==:. 2)
+      ; fsel = bitrate
+      ; done_ = io_rd w_uart_data
       }
   in
   let uart_tx =
     Uart_tx.create
       { Uart_tx.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; start = core.wr &: ioenb &: (iowadr ==:. 2)
-      ; fsel = bitrate.value
+      ; start = io_wr w_uart_data
+      ; fsel = bitrate
       ; data = select core.outbus ~high:7 ~low:0
       }
   in
-  (* PS/2 keyboard ({!Ps2}) + mouse ({!Mouse}), words 6/7. Word 6 read carries the mouse
-     state [dataMs] in bits [27:0] and the keyboard-ready bit [rdyKbd] at bit 28; word 7
-     read returns the keyboard byte [dataKbd] and pulses [doneKbd] (pops the keyboard
-     FIFO). The mouse's open-drain [msclk]/[msdat] split into resolved-line inputs and
-     drive-low [*_oe] outputs (the Phase-7 pad / a testbench does the wired-AND). *)
+  (* PS/2 keyboard ({!Ps2}) + mouse ({!Mouse}). A [w_mouse_kbd] read carries the mouse
+     state [dataMs] in bits [27:0] and the keyboard-ready bit [rdyKbd] at bit 28; a
+     [w_kbd_data] read returns the keyboard byte [dataKbd] and pulses [doneKbd] (pops the
+     keyboard FIFO). The mouse's open-drain [msclk]/[msdat] split into resolved-line
+     inputs and drive-low [*_oe] outputs (the Phase-7 pad / a testbench does the
+     wired-AND). *)
   let kbd =
     Ps2.create
       { Ps2.I.clock = i.clock
       ; rst_n = i.rst_n
-      ; done_ = core.rd &: ioenb &: (iowadr ==:. 7)
+      ; done_ = io_rd w_kbd_data
       ; ps2c = i.ps2c
       ; ps2d = i.ps2d
       }
@@ -212,65 +224,37 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
      the Phase-7 shim. Default 0 = all-off = the oracle's [switches], so disk boot is
      unaffected. *)
   let switches = uresize (i.btn @: i.sw) ~width:32 in
-  (* LEDs (word 1 write): [Lreg] — cleared by reset, else loaded from [outbus[7:0]] on a
-     store to word 1 (same shape as [spi_ctrl]); driven out on [leds]. *)
-  let lreg = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ lreg
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 8)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 1))
-                 (select core.outbus ~high:7 ~low:0)
-                 lreg.value)
-      ]);
-  (* GPIO (words 8/9): [gpout] (drive value, word 8) and [gpoc] (direction, word 9), each
-     8-bit. [gpoc] is reset-cleared; [gpout] is NOT (faithful — a pin powers up as input,
-     drive value undefined). The bidirectional pad is split mouse-style: [gpio_in] in,
-     [gpio_out] = [gpout] and [gpio_oe] = [gpoc] out; the Phase-7 shim rebuilds the IOBUFs
-     ([.T(~oe)]). *)
-  let gpout = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ gpout
-        <-- mux2
-              (core.wr &: ioenb &: (iowadr ==:. 8))
-              (select core.outbus ~high:7 ~low:0)
-              gpout.value
-      ]);
-  let gpoc = Always.Variable.reg spec ~width:8 in
-  Always.(
-    compile
-      [ gpoc
-        <-- mux2
-              ~:(i.rst_n)
-              (zero 8)
-              (mux2
-                 (core.wr &: ioenb &: (iowadr ==:. 9))
-                 (select core.outbus ~high:7 ~low:0)
-                 gpoc.value)
-      ]);
-  (* MMIO read mux, indexed by the word address [iowadr] (RISC5Top's [iowadr ==] chain).
-     Slots fill in as their peripherals land; unmapped words read 0, like the RTL's [: 0]. *)
+  (* LEDs ([w_switches_leds] write): [Lreg] — cleared by reset, else latched from
+     [outbus[7:0]]; driven out on [leds]. *)
+  let lreg = io_reg ~word:w_switches_leds ~width:8 () in
+  (* GPIO: [gpout] (drive value) and [gpoc] (direction), each 8-bit. [gpoc] is
+     reset-cleared; [gpout] is NOT (faithful — a pin powers up as input, drive value
+     undefined). The bidirectional pad is split mouse-style: [gpio_in] in, [gpio_out] =
+     [gpout] and [gpio_oe] = [gpoc] out; the Phase-7 shim rebuilds the IOBUFs ([.T(~oe)]). *)
+  let gpout = io_reg ~rst:false ~word:w_gpio ~width:8 () in
+  let gpoc = io_reg ~word:w_gpio_dir ~width:8 () in
+  (* MMIO read map, muxed by the word address [iowadr] (RISC5Top's [iowadr ==] chain);
+     unmapped words read 0, like the RTL's [: 0]. *)
+  let io_read_map =
+    [ w_ms_timer, cnt1_v
+    ; w_switches_leds, switches
+    ; w_uart_data, uresize uart_rx.data ~width:32
+    ; w_uart_status, uresize (uart_tx.rdy @: uart_rx.rdy) ~width:32
+    ; w_spi_data, spi.data_rx
+    ; w_spi_ctrl, uresize spi.rdy ~width:32
+    ; w_mouse_kbd, uresize (kbd.rdy @: mouse_out) ~width:32
+    ; w_kbd_data, uresize kbd.data ~width:32
+    ; w_gpio, uresize i.gpio_in ~width:32
+    ; w_gpio_dir, uresize gpoc ~width:32
+    ]
+  in
   let io_data =
     mux
       iowadr
-      ([ cnt1_v (* 0 ms counter *)
-       ; switches (* 1  {btn, switches} *)
-       ; uresize uart_rx.data ~width:32 (* 2 RS-232 data (dataRx) *)
-       ; uresize
-           (uart_tx.rdy @: uart_rx.rdy)
-           ~width:32 (* 3 RS-232 status {rdyTx,rdyRx} *)
-       ; spi.data_rx (* 4 SPI data *)
-       ; uresize spi.rdy ~width:32 (* 5 SPI status *)
-       ; uresize (kbd.rdy @: mouse_out) ~width:32 (* 6 {rdyKbd, dataMs} *)
-       ; uresize kbd.data ~width:32 (* 7 keyboard data (dataKbd) *)
-       ; uresize i.gpio_in ~width:32 (* 8 gpio data (gpin) *)
-       ; uresize gpoc.value ~width:32 (* 9 gpio tristate (gpoc) *)
-       ]
-       @ List.init 6 ~f:(fun _ -> zero 32) (* 10..15 unmapped *))
+      (List.init 16 ~f:(fun w ->
+         match List.Assoc.find io_read_map w ~equal:Int.equal with
+         | Some s -> s
+         | None -> zero 32))
   in
   (* fetch: ROM in the top 16 KiB, else RAM; load: MMIO in the top 64 B, else RAM *)
   assign codebus (mux2 rom_region prom.data ram.rdata);
@@ -285,9 +269,9 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
   ; mosi = spi.mosi
   ; sclk = spi.sclk
   ; txd = uart_tx.txd
-  ; leds = lreg.value
-  ; gpio_out = gpout.value
-  ; gpio_oe = gpoc.value
+  ; leds = lreg
+  ; gpio_out = gpout
+  ; gpio_oe = gpoc
   ; hsync = vid.hsync
   ; vsync = vid.vsync
   ; rgb = vid.rgb
@@ -730,8 +714,8 @@ let%expect_test "soc — UART loopback through MMIO words 2/3" =
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
+  let lo = Bits.gnd
+  and hi = Bits.vdd in
   inp.rst_n := lo;
   inp.rxd := hi (* idle high *);
   Cyclesim.cycle sim;
@@ -769,11 +753,11 @@ let%expect_test "soc — PS/2 keyboard: a scancode frame surfaces at words 6/7" 
   let inp = Cyclesim.inputs sim in
   let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
   let b1 v = Bits.of_unsigned_int ~width:1 v in
-  (* Drive a device->host PS/2 frame: start(0), 8 data LSbit-first, odd parity, stop(1).
-     [ps2c] idles high; the module samples [ps2d] on each ps2c falling edge (2-FF
-     synchronized), so hold each level a few clk cycles. The CPU runs throughout. *)
+  (* Drive a device->host PS/2 frame ([Ps2.For_tests.frame_bits]). [ps2c] idles high; the
+     module samples [ps2d] on each ps2c falling edge (2-FF synchronized), so hold each
+     level a few clk cycles. The CPU runs throughout. *)
   let feed_bit b =
-    inp.ps2d := b1 b;
+    inp.ps2d := b1 (Bool.to_int b);
     inp.ps2c := b1 1;
     for _ = 1 to 4 do
       Cyclesim.cycle sim
@@ -783,17 +767,7 @@ let%expect_test "soc — PS/2 keyboard: a scancode frame surfaces at words 6/7" 
       Cyclesim.cycle sim
     done
   in
-  let feed_byte byte =
-    let ones = ref 0 in
-    feed_bit 0;
-    for k = 0 to 7 do
-      let d = (byte lsr k) land 1 in
-      ones := !ones + d;
-      feed_bit d
-    done;
-    feed_bit ((!ones + 1) land 1) (* odd parity *);
-    feed_bit 1 (* stop *)
-  in
+  let feed_byte byte = List.iter (Ps2.For_tests.frame_bits byte) ~f:feed_bit in
   inp.rst_n := b1 0;
   inp.ps2c := b1 1;
   inp.ps2d := b1 1;

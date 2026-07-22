@@ -79,10 +79,10 @@ type decoded =
   }
 
 let decode ir : decoded =
-  let p = select ir ~high:31 ~low:31 in
-  let q = select ir ~high:30 ~low:30 in
-  let u = select ir ~high:29 ~low:29 in
-  let v = select ir ~high:28 ~low:28 in
+  let p = bit ir ~pos:31 in
+  let q = bit ir ~pos:30 in
+  let u = bit ir ~pos:29 in
+  let v = bit ir ~pos:28 in
   let op = select ir ~high:19 ~low:16 in
   let br = p &: q in
   let is_op k = ~:p &: (op ==:. k) in
@@ -96,14 +96,14 @@ let decode ir : decoded =
   ; irc = select ir ~high:3 ~low:0
   ; imm = select ir ~high:15 ~low:0
   ; cc = select ir ~high:26 ~low:24
-  ; neg = select ir ~high:27 ~low:27
+  ; neg = bit ir ~pos:27
   ; disp = select ir ~high:21 ~low:0
   ; off = select ir ~high:19 ~low:0
   ; ldr = p &: ~:q &: ~:u
   ; str = p &: ~:q &: u
   ; br
-  ; rti = br &: ~:u &: ~:v &: select ir ~high:4 ~low:4
-  ; sti_cli = br &: ~:u &: ~:v &: select ir ~high:5 ~low:5
+  ; rti = br &: ~:u &: ~:v &: bit ir ~pos:4
+  ; sti_cli = br &: ~:u &: ~:v &: bit ir ~pos:5
   ; mul = is_op 10
   ; div = is_op 11
   ; fad = is_op 12
@@ -265,32 +265,21 @@ let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
      Verilog/C intuition (ocamlformat strips clarifying parens as redundant) *)
   let ld_or_st = dec.ldr |: dec.str in
   let stall_l0 = ld_or_st &: ~:stall_l1 in
+  let not_stalled = ~:stall_x &: ~:stall_l1 in
   let data_adr = sel_bottom b ~width:24 +: sresize dec.off ~width:24 in
-  let ben = dec.p &: ~:(dec.q) &: dec.v &: ~:stall_x &: ~:stall_l1 in
+  let ben = ld_or_st &: dec.v &: not_stalled in
   let byte_lane = sel_bottom data_adr ~width:2 in
-  let load_byte =
-    mux
-      byte_lane
-      [ select inbus ~high:7 ~low:0
-      ; select inbus ~high:15 ~low:8
-      ; select inbus ~high:23 ~low:16
-      ; select inbus ~high:31 ~low:24
-      ]
-  in
+  (* byte load: pick the addressed lane (zero-extended below); byte store: lift a's low
+     byte into that lane, zeros elsewhere *)
+  let load_byte = mux byte_lane (split_lsb inbus ~part_width:8) in
   let inbus1 = mux2 ben (zero 24 @: load_byte) inbus in
   let a8 = sel_bottom a ~width:8 in
   let store_byte =
-    mux
-      byte_lane
-      [ zero 24 @: a8 (* lane 0 *)
-      ; zero 16 @: a8 @: zero 8 (* lane 1 *)
-      ; zero 8 @: a8 @: zero 16 (* lane 2 *)
-      ; a8 @: zero 24 (* lane 3 *)
-      ]
+    mux byte_lane (List.init 4 (fun lane -> sll (uresize a8 ~width:32) ~by:(8 * lane)))
   in
   let outbus = mux2 ben store_byte a in
-  let rd = dec.ldr &: ~:stall_x &: ~:stall_l1 in
-  let wr = dec.str &: ~:stall_x &: ~:stall_l1 in
+  let rd = dec.ldr &: not_stalled in
+  let wr = dec.str &: not_stalled in
   { load_data = inbus1
   ; data_adr
   ; read = rd
@@ -300,6 +289,11 @@ let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
   ; store_data = outbus
   }
 ;;
+
+(* the reset vector ([RISC5.v]'s [StartAdr]), a word address. Exported so the SoC's ROM
+   window derives from the same constant (its adr[23:14] tag = [start_adr lsr 12]) instead
+   of a second copy. *)
+let start_adr = 0x3F_F800
 
 let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
@@ -427,12 +421,10 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
      when [ce] is high, so a memory wait can't let the write commit (the board freeze). *)
   assign regwr_w (regwr &: ce);
   (* N/Z from the written value, C/OV from the ALU — except RTI restores all four from SPC *)
-  let nn = mux2 dec.rti (select spc_v ~high:25 ~low:25) (mux2 regwr (msb regmux) n_v) in
-  let zz =
-    mux2 dec.rti (select spc_v ~high:24 ~low:24) (mux2 regwr (regmux ==:. 0) z_v)
-  in
-  let cx = mux2 dec.rti (select spc_v ~high:23 ~low:23) exe.alu_c in
-  let vv = mux2 dec.rti (select spc_v ~high:22 ~low:22) exe.alu_ov in
+  let nn = mux2 dec.rti (bit spc_v ~pos:25) (mux2 regwr (msb regmux) n_v) in
+  let zz = mux2 dec.rti (bit spc_v ~pos:24) (mux2 regwr (regmux ==:. 0) z_v) in
+  let cx = mux2 dec.rti (bit spc_v ~pos:23) exe.alu_c in
+  let vv = mux2 dec.rti (bit spc_v ~pos:22) exe.alu_ov in
   let h_next = mux2 dec.mul exe.product_hi (mux2 dec.div exe.remainder h_v) in
   (* ── Interrupt next-state ── on intAck, SPC latches [{flags, return PC}]; intPnd sets
      on a rising IRQ edge and clears on intAck; intMd marks "in handler" (set on intAck,
@@ -445,14 +437,14 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   (* ── Next PC ── priority reset > stall > intAck (the interrupt vector, address 1) > RTI
      (restore SPC[21:0]) > branch/step; intAck is [~stall]-gated so it never collides with
      the stall term above it. *)
-  let start_adr = of_unsigned_int ~width:22 0x3F_F800 in
+  let start_pc = of_unsigned_int ~width:22 start_adr in
   (* the reset vector, StartAdr *)
   let spc_pc = select spc_v ~high:21 ~low:0 in
   (* the return PC lives in SPC[21:0] *)
   let pcmux =
     mux2
       ~:(i.rst_n)
-      start_adr
+      start_pc
       (mux2
          stall
          pc_v
@@ -534,6 +526,14 @@ let create ?(ce = vdd) ?(fast_mul = false) ?(mul_stages = 0) i =
    same way. The internal pc/ir/stall are traced (Cyclesim.Config.trace_all + the (--)
    names above). *)
 
+(* shared by the waveform tests below: the input poke and the fail-loud lookup unwrap *)
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
+let some = function
+  | Some x -> x
+  | None -> failwith "lookup"
+;;
+
 let%expect_test "fetch spine — reset, PC march, load stall, external stall [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
@@ -541,7 +541,6 @@ let%expect_test "fetch spine — reset, PC march, load stall, external stall [wa
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let step ~rst_n ~stall_x ~codebus =
     set inp.rst_n rst_n 1;
     set inp.stall_x stall_x 1;
@@ -618,7 +617,6 @@ let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [wa
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   let step ~rst_n ~codebus =
     set inp.rst_n rst_n 1;
     set inp.stall_x 0 1;
@@ -683,10 +681,6 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
-  let some = function
-    | Some x -> x
-    | None -> failwith "lookup"
-  in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
@@ -774,10 +768,6 @@ let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
-  let some = function
-    | Some x -> x
-    | None -> failwith "lookup"
-  in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
@@ -832,10 +822,6 @@ let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [wave
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
-  let some = function
-    | Some x -> x
-    | None -> failwith "lookup"
-  in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in
@@ -914,10 +900,6 @@ let%expect_test "interrupts — STI enable, IRQ to intAck (vector 1), RTI restor
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
-  let some = function
-    | Some x -> x
-    | None -> failwith "lookup"
-  in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Waveform.create sim in
   let inp = Cyclesim.inputs sim in

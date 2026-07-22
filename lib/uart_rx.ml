@@ -46,7 +46,12 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
+let create
+  ?(baud_slow = Uart_tx.default_baud_slow)
+  ?(baud_fast = Uart_tx.default_baud_fast)
+  (i : _ I.t)
+  : _ O.t
+  =
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let q0 = Always.Variable.reg spec ~width:1 in
@@ -63,11 +68,10 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   let tick_v = tick.value -- "tick" in
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
-  (* baud divider thresholds; [midtick] (window centre) = limit/2 =
-     {1 'b0, limit[11:1]}
-     . [baud_fast]/[baud_slow] default to RS232R.v's 25 MHz constants (115200 = clk/217,
-     19200 = clk/1302); the board passes clock-scaled values so the wire stays at a
-     standard rate (feat/fast-clock: 60 MHz ⇒ 521/521, both ~115200), like {!Spi}'s
+  (* baud divider thresholds; [midtick] (window centre) = limit/2. The defaults are
+     {!Uart_tx}'s (= RS232R.v's 25 MHz constants — the SoC's one [bitrate] bit drives both
+     directions); the board passes clock-scaled values so the wire stays at a standard
+     rate (feat/fast-clock: 60 MHz ⇒ 521/521, both ~115200), like {!Spi}'s
      [slow_div_log2]. *)
   let limit =
     mux2
@@ -76,9 +80,7 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
       (of_unsigned_int ~width:12 baud_slow)
   in
   let endtick = (tick_v ==: limit) -- "endtick" in
-  let midtick =
-    (tick_v ==: concat_msb [ gnd; select limit ~high:11 ~low:1 ]) -- "midtick"
-  in
+  let midtick = (tick_v ==: srl limit ~by:1) -- "midtick" in
   let endbit = bitcnt_v ==:. 8 in
   (* end of the 9th window (start + 8 data) = the frame is complete; bound by name so the
      mixed &:/|: uses below stay unambiguous (equal precedence, left-assoc) *)
@@ -110,8 +112,8 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
    distinctive front end (synchronizer + start-edge → [run]). The exhaustive bit-for-bit
    fidelity check vs [RS232R.v] is the Verilator co-sim (layer 3). *)
 
-let lo = Bits.of_unsigned_int ~width:1 0
-let hi = Bits.of_unsigned_int ~width:1 1
+let lo = Bits.gnd
+let hi = Bits.vdd
 let bit b = if b then hi else lo
 
 let reset_idle sim (inp : _ I.t) =
