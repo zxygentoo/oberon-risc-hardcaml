@@ -32,7 +32,12 @@ opt_design
 # margin ever flakes again, the structural fix is registering the byte-enable pins (or
 # re-splitting the 6.7/6.6 out/in budget against the measured input-path use), not more
 # placer effort.
-place_design -directive Explore
+# feat/clock-push: placement Explore -> ExtraTimingOpt for the 64 MHz close — Explore
+# plateaus at WNS -0.071 there (8 recovery passes flat) while ExtraTimingOpt routes to
+# -0.006 and recovers to +0.004. At 60/62.4 either directive closes. If a future design
+# change makes 64 refuse under both, the structural relief is registering the icache
+# fill path (the critical cone), or stepping back a rung (see emit_verilog.ml).
+place_design -directive ExtraTimingOpt
 phys_opt_design -directive AggressiveExplore
 route_design -directive Explore
 

@@ -60,8 +60,14 @@ module nexys4_top (
   output wire        RamCLK
 );
 
-  // ── Clocking: one MMCM, 100 MHz -> 60 MHz (system) + 65 MHz (pixel) ──────────────
-  // VCO = 100/5 * 39 = 780 MHz; 780/13 = 60 MHz, 780/12 = 65 MHz (1024x768@60 pixel clk).
+  // ── Clocking: one MMCM, 100 MHz -> 64 MHz (system) + 65 MHz (pixel) ──────────────
+  // VCO = 100/5 * 52 = 1040 MHz; 1040/16.25 = 64 MHz, 1040/16 = 65 MHz (1024x768@60
+  // pixel clk) — 1040 is the common multiple that keeps BOTH outputs exact (CLKOUT0
+  // fractional 16.250, CLKOUT1 integer 16). feat/clock-push: 60 -> 62.4 (VCO 780,
+  // ÷12.5) -> 64. At 64 the rc=6 PSRAM read phase is 93.75 ns - 70 = 23.75 ns of I/O
+  // budget, so the .xdc groups tighten 12.0 -> 11.7 (measured use ~10.3). 65 MHz
+  // (1040/16 on this VCO) would leave 22.3 — below even the tightened split; that step
+  // needs rc=7.
   // feat/fast-clock: system clock raised 50->60 MHz (enabled by the pipelined DSP
   // multipliers — mul_stages:2 — which move the multiply off the critical path). 780 is the
   // LCM of 60 and 65, so BOTH outputs stay exact (CLKOUT0 fractional 13.000, CLKOUT1 integer
@@ -75,9 +81,9 @@ module nexys4_top (
   MMCME2_BASE #(
     .CLKIN1_PERIOD   (10.000),   // 100 MHz
     .DIVCLK_DIVIDE   (5),        // PFD = 100/5 = 20 MHz
-    .CLKFBOUT_MULT_F (39.000),   // VCO = 20 * 39 = 780 MHz (feat/fast-clock; was 6.5/÷1 = 650)
-    .CLKOUT0_DIVIDE_F(13.000),   // 60 MHz (780/13; feat/fast-clock, was 650/13 = 50)
-    .CLKOUT1_DIVIDE  (12),       // 65 MHz (780/12; was 650/10)
+    .CLKFBOUT_MULT_F (52.000),   // VCO = 20 * 52 = 1040 MHz (feat/clock-push; was 39 = 780)
+    .CLKOUT0_DIVIDE_F(16.250),   // 64 MHz (1040/16.25; was 780/12.5 = 62.4, 780/13 = 60)
+    .CLKOUT1_DIVIDE  (16),       // 65 MHz (1040/16; was 780/12)
     .STARTUP_WAIT    ("FALSE")
   ) mmcm (
     .CLKIN1   (CLK100MHZ),

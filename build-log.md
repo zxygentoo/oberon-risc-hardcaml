@@ -645,3 +645,35 @@ reproduces the old runs cycle-exact (handoff 7,642,731) and `emit_verilog` is un
 Deferred, priced: a fast-divider seam (÷3 → ÷2, ~1.5× on the remaining fast transfers)
 and `bench_boot` adoption (window gauges only — its `boot_cycles` gauges *measure* the
 cycles the knob removes).
+
+---
+
+## Postscript — the 64 MHz clock push (2026-07-24, feat/clock-push)
+
+A post-simplify rebuild landed at WNS +0.174 (vs the recorded +0.019) and looked like
+earned headroom. The measure-first autopsy said otherwise: netlists emitted at
+pre-peripherals-dedup, pre-simplify, and develop are the **same size** (11,242–11,259
+lines — Hardcaml already shares structurally-equal nodes, so OCaml-level dedup is
+netlist-neutral), and rebuilding all three on the same toolchain landed +0.000 / +0.001 /
++0.174 at 60 MHz — the spread is **placement lottery** on the standing critical cone
+(PSRAM-read-capture → 16 KiB-icache LUTRAM write, ~77% route delay). A censoring artifact
+compounds the illusion: `build.tcl`'s recovery loop stops at WNS ≥ 0, so any build that
+routes negative parks at ~+0.00x, while a lucky seed keeps its slack.
+
+The lottery cuts both ways, so the clock got pushed instead. The ladder, all timing-gated:
+**62.4 MHz** (VCO 780 ÷ 12.5) closes at +0.011 under plain Explore; **64 MHz** closes at
+**+0.004** — MMCM re-derived to **VCO 1040** (= 64 × 16.25 = 65 × 16, so the system *and*
+pixel clocks stay exact), PSRAM I/O groups tightened 12.0 → 11.7 ns (the rc=6 read phase
+leaves 23.75 ns at 64 MHz; measured MemDB-in use ~8–10.3 ns), and placement Explore →
+**ExtraTimingOpt** (Explore plateaus at −0.071 there). Constants retuned in
+`emit_verilog.ml` with per-rung revert recipes: clocks_per_ms 64000, UART 555/555
+(115,107 baud — hosts stay at 115200), SPI-init 250 kHz.
+
+**On silicon (the §5 final gate):** boots SD → desktop; DOOM `timedemo demo1` runs
+**15.0 fps with 5026 gametics exact** — vs 14.1 at 60 MHz, +6.4% against a +6.67% clock
+ratio: 1:1 scaling within print granularity, and determinism held. The machine now runs
+at **2.56× the original OberonStation's 25 MHz**. Deferred, priced: **65 MHz** needs
+rc=7 (the read phase would leave 22.3 ns, below any sane I/O split, ~0.5% CPI) *plus*
+~0.4 ns of fabric — the structural lever for that and beyond is **registering the icache
+fill path** (+1 cycle per miss ≈ ~0.1–0.2% CPI), which halves the critical cone; not
+worth it for +1.6%.

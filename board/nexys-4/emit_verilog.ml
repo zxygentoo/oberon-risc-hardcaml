@@ -7,17 +7,24 @@
    gen_verilog.sh / build.tcl / nexys4_top.v that consume it. The ROM image comes from the
    design library ({!Risc5.Rom}), so the board emit needs no software oracle.
 
-   Parameters baked into the netlist: 60000 clocks/ms (1 ms at 60 MHz); PSRAM phases read
-   6 / write 5 cycles (100 / 83 ns vs the chip's 70 ns — the read deliberately one over
+   Parameters baked into the netlist: 64000 clocks/ms (1 ms at 64 MHz); PSRAM phases read
+   6 / write 5 cycles (93.75 / 78.1 ns vs the chip's 70 ns — the read deliberately above
    spec; rationale at the knob below). Tune read/write cycles here if hardware needs it.
 
-   NB (feat/fast-clock): retuned for a 60 MHz system clock (nexys4_top.v MMCM VCO 780,
-   CLKOUT0_DIVIDE_F = 13.000). Enabled by the pipelined DSP multiplies (mul_stages:2) that
-   move the multiply off the critical path. At 60 MHz (16.67 ns/cycle) the memory phase
-   needs 5 cycles for ≥70 ns (4 would be 66.7 ns, under spec) and the SPI slow divider
-   goes ÷256 (÷128 would be 469 kHz, over the 400 kHz SD-init ceiling). Revert to 50 MHz:
-   clocks_per_ms 50000, read/write_cycles 4, spi_slow_div_log2 7, MMCM VCO 650 (DIVCLK 1 /
-   MULT 6.5), CLKOUT1_DIVIDE 10. *)
+   NB (feat/clock-push): retuned for a 64 MHz system clock (nexys4_top.v MMCM VCO 1040,
+   CLKOUT0_DIVIDE_F = 16.250 — the VCO that keeps 64 and the 65 pixel clock both exact);
+   before that, feat/fast-clock's 60 MHz (VCO 780 ÷ 13.000), enabled by the pipelined DSP
+   multiplies (mul_stages:2) that move the multiply off the critical path. At 64 MHz
+   (15.625 ns/cycle) the read phase keeps 6 cycles (93.75 ns = 70 for the chip + 23.75 for
+   the FPGA round trip; the xdc groups tightened 12.0 → 11.7 to fit) and the SPI slow
+   divider stays ÷256 (250 kHz ≤ the 400 kHz SD-init ceiling). Timing note: 64 closes at
+   WNS +0.004 only under build.tcl's ExtraTimingOpt placement (Explore plateaus at −0.071)
+   — the thinnest rung of the ladder; the structural relief if a rebuild ever refuses is
+   registering the icache fill path (or reverting a rung). Revert to 62.4 MHz:
+   clocks_per_ms 62400, uart_baud 541/541, MMCM VCO 780 (MULT_F 39.000) / CLKOUT0 12.500 /
+   CLKOUT1 12, xdc groups back to 12.0. Revert to 60: likewise with clocks_per_ms 60000,
+   uart_baud 521/521, CLKOUT0 13.000. Revert to 50: clocks_per_ms 50000, read/write_cycles
+   4, spi_slow_div_log2 7, MMCM VCO 650 (DIVCLK 1 / MULT 6.5), CLKOUT1_DIVIDE 10. *)
 
 open Hardcaml
 module Soc = Nexys4_board.Soc
@@ -33,20 +40,24 @@ let () =
       ~name:"soc_board"
       (Soc.create
          ~contents:Risc5.Rom.bootloader
-         ~clocks_per_ms:60000
-           (* READ phase 6 cycles = 100 ns at 60 MHz — deliberately one above the 5 (83
-              ns) the 70 ns chip strictly needs. At rc=5 the FPGA I/O round-trip budget
-              was 13.3 ns and became a standing knife-edge as the design grew (failed
-              once, grazed twice: RamUBn -0.163, then +0.130, +0.009 on MemDB-in); rc=6
-              gives the nexys4.xdc groups 30 ns. Cost is bounded by construction — PSRAM
-              reads are only cache misses since 10a — and measured in bench_boot (rc5 vs
-              rc6 same-work lockstep, ~0.5%). WRITE phase stays 5 (83 ns): its group-3
-              budget never pressured, and drains are background since the 10d buffer. *)
+         ~clocks_per_ms:64000
+           (* READ phase 6 cycles = 93.75 ns at 64 MHz — deliberately above the 70 ns the
+              chip strictly needs. At rc=5 the FPGA I/O round-trip budget was 13.3 ns (at
+              60 MHz) and became a standing knife-edge as the design grew (failed once,
+              grazed twice: RamUBn -0.163, then +0.130, +0.009 on MemDB-in); rc=6 gives
+              the nexys4.xdc groups 23.75 ns at 64 MHz (was 30 at 60, 26.2 at 62.4)
+              against their 23.4 ns of constraints (11.7 × 2, tightened from 12.0 for this
+              clock; measured use ~10.3). Cost is bounded by construction — PSRAM reads
+              are only cache misses since 10a — and measured in bench_boot (rc5 vs rc6
+              same-work lockstep, ~0.5%). 65 MHz would leave 22.3 ns — below even the
+              tightened split; that step needs rc=7. WRITE phase stays 5 (78.1 ns): its
+              group-3 budget never pressured, and drains are background since the 10d
+              buffer. *)
          ~read_cycles:6
          ~write_cycles:5
-           (* SPI slow divider clk÷256: SD-init clock = 60 MHz / 256 = 234 kHz (≤ the 400
-              kHz ceiling). ÷128 would be 469 kHz, over the limit at 60 MHz. FAST stays
-              clk÷3 = 20 MHz, under the 25 MHz SD limit. *)
+           (* SPI slow divider clk÷256: SD-init clock = 64 MHz / 256 = 250 kHz (≤ the 400
+              kHz ceiling). ÷128 would be 500 kHz, over the limit. FAST stays clk÷3 = 21.3
+              MHz, under the 25 MHz SD limit. *)
          ~spi_slow_div_log2:8
            (* Phase-9 DSP multipliers: swap the iterative MUL/FML for their DSP48-backed
               variants (proven bit-identical). *)
@@ -116,15 +127,14 @@ let () =
               -> 1.36, storeW -> 1.7%; bench_boot). The all-depths ceiling from there is
               1.02x, so depth 3+ is measured dead. *)
          ~wbuf_depth:2
-           (* UART baud divisors scaled for 60 MHz so the wire is a standard rate — and
-              deliberately 521/521: BOTH [fsel] settings ship ~115200 (60e6/522, −0.2%).
+           (* UART baud divisors scaled for 64 MHz so the wire is a standard rate — and
+              deliberately 555/555: BOTH [fsel] settings ship ~115200 (64e6/556, −0.08%).
               Serial reads are wire-limited, so 115200 is ~5x the throughput of 19200, and
               oat runs 115200 — no 19200 mode is wired on this board. The faithful
-              1302/217 constants are 25 MHz-only — at 60 MHz they'd give 46083 baud
-              (nonstandard), which no host UART can lock to. (Found via oat over the real
-              serial link.) *)
-         ~uart_baud_slow:521
-         ~uart_baud_fast:521)
+              1302/217 constants are 25 MHz-only; the 60 MHz build shipped 521/521, the
+              62.4 rung 541/541. (Baud mismatch found via oat over the real serial link.) *)
+         ~uart_baud_slow:555
+         ~uart_baud_fast:555)
   in
   Rtl.print Verilog circuit
 ;;
