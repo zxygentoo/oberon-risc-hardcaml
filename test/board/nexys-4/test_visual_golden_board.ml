@@ -44,15 +44,18 @@ let boot_board
   ~halftone
   ~write_buffer
   ~wbuf_depth
+  ~target
   ~cap
   ~chunk
   ~settle
   =
   let tmp = BCC.copy_to_temp BCC.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
+  let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2") in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create
+        ?spi_slow_div_log2
         ~read_cycles:6
         ~write_cycles:5
         ~icache
@@ -97,6 +100,7 @@ let boot_board
   inp.rst_n := hi;
   let fb, settled =
     BCC.run_to_settle
+      ~target
       ~cap
       ~chunk
       ~settle
@@ -104,6 +108,7 @@ let boot_board
       ~read_fb
       ~pc:(fun () -> Cyclesim.Reg.to_int pc)
       ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+      ()
   in
   (* the shadow's own invariant, checked over the FULL span at the settled (quiet) point:
      every shadow word equals its PSRAM word — both zero-initialised, and every in-window
@@ -189,6 +194,7 @@ let () =
       ~halftone
       ~write_buffer
       ~wbuf_depth:(max 1 wbuf_depth)
+      ~target:oracle_hash
       ~cap
       ~chunk:2_000_000
       ~settle:3

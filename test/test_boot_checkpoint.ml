@@ -17,11 +17,15 @@ module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
 
 let soc_cycle_cap = 30_000_000
 
+(* SPI_DIV_LOG2 overrides the slow SPI divider depth (default 6 = SPI.v's clk÷64; 2 =
+   clk÷4, a ~4x faster boot — the SD-init/early-read wait is ~80% of boot cycles) *)
+let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2")
+
 let run_soc_to_handoff () =
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Soc.create ~contents:Risc5.Rom.bootloader)
+      (Soc.create ~contents:Risc5.Rom.bootloader ?spi_slow_div_log2)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in

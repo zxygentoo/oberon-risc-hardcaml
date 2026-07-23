@@ -25,7 +25,11 @@ let soc_cycle_cap = 80_000_000
 let run_soc_to_handoff () =
   (* board SoC + PSRAM model at the checkpoint's small wait counts (Board_tb defaults: 2
      read/write cycles, cache off, ROM = Risc5.Rom). *)
-  let sim = Sim.create ~config:Cyclesim.Config.trace_all (fun i -> Board_tb.create i) in
+  let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2") in
+  let sim =
+    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
+      Board_tb.create ?spi_slow_div_log2 i)
+  in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
   let lo = Bits.of_unsigned_int ~width:1 0

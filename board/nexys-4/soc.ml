@@ -402,6 +402,7 @@ module For_tests = struct
       ?wbuf_depth
       ?fast_mul
       ?mul_stages
+      ?spi_slow_div_log2
       ?(addr_bits = 12)
       (i : _ I.t)
       : _ O.t
@@ -423,6 +424,7 @@ module For_tests = struct
           ?wbuf_depth
           ?fast_mul
           ?mul_stages
+          ?spi_slow_div_log2
           { Sb_I.clock = i.clock
           ; pclk = i.pclk
           ; rst_n = i.rst_n
