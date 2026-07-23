@@ -102,5 +102,6 @@ val create
   :  contents:int array
   -> ?clocks_per_ms:int
   -> ?fast_mul:bool
+  -> ?spi_slow_div_log2:int
   -> Signal.t I.t
   -> Signal.t O.t

@@ -23,14 +23,16 @@ module Soc = Risc5.Soc
 module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
 
 (* Boot our SoC from the disk (the {!Sd_bridge} SD card feeding it) and run PAST the
-   handoff until the framebuffer settles or [cap] cycles. Returns (fb words, settled?). *)
-let boot_soc ~cap ~chunk ~settle =
+   handoff until the framebuffer settles — or matches the oracle hash [target], the early
+   exit — or [cap] cycles. Returns (fb words, settled?). *)
+let boot_soc ~target ~cap ~chunk ~settle =
   let tmp = BCC.copy_to_temp BCC.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
+  let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2") in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Soc.create ~contents:Risc5.Rom.bootloader)
+      (Soc.create ~contents:Risc5.Rom.bootloader ?spi_slow_div_log2)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -58,6 +60,7 @@ let boot_soc ~cap ~chunk ~settle =
   inp.rst_n := hi;
   let fb, settled =
     BCC.run_to_settle
+      ~target
       ~cap
       ~chunk
       ~settle
@@ -65,6 +68,7 @@ let boot_soc ~cap ~chunk ~settle =
       ~read_fb
       ~pc:(fun () -> Cyclesim.Reg.to_int pc)
       ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+      ()
   in
   BCC.rm_temp tmp;
   fb, settled
@@ -84,7 +88,7 @@ let () =
     | Some s -> int_of_string s
     | None -> 50_000_000
   in
-  let soc_fb, settled = boot_soc ~cap ~chunk:2_000_000 ~settle:3 in
+  let soc_fb, settled = boot_soc ~target:oracle_hash ~cap ~chunk:2_000_000 ~settle:3 in
   let soc_hash = BCC.fb_fnv soc_fb in
   Printf.printf
     "soc: hash=0x%Lx  %d set px  settled=%b\n%!"

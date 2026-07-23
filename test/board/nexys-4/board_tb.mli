@@ -50,6 +50,9 @@ val create
        (** write-buffer FIFO depth 1..4 (default 1; see {!Nexys4_board.Cellram.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
+  -> ?spi_slow_div_log2:int
+       (** forwards to {!Nexys4_board.Soc.create}: the slow SPI divider depth (default 6 =
+           SPI.v's clk÷64; the gates' SPI_DIV_LOG2=2 turbo knob passes 2 = clk÷4) *)
   -> Signal.t I.t
   -> Signal.t O.t
 

@@ -206,6 +206,7 @@ module For_tests : sig
       -> ?wbuf_depth:int
       -> ?fast_mul:bool
       -> ?mul_stages:int
+      -> ?spi_slow_div_log2:int
       -> ?addr_bits:int
       -> Signal.t I.t
       -> Signal.t O.t

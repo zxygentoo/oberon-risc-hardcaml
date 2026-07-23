@@ -468,7 +468,12 @@ Don't revisit without new evidence.
   is gone), and rendered signal order follows interface declaration order (was
   alphabetical — a one-time reflow of frozen waveform expects).
 - **Running tests:** `dune runtest` (fast suite, seconds); opt-in gates per the §6
-  table; `dune build @check` = the type-check/pre-commit gate.
+  table; `dune build @check` = the type-check/pre-commit gate. NB `@check`
+  type-checks but does **not** link the gate executables — `dune exec` (or
+  `dune build <path>.exe`) before running one from `_build` by hand.
+- **Boot-gate fast mode:** `SPI_DIV_LOG2=2` runs any boot gate ~2–4× faster (turbo
+  SPI divider; same end states). Default = the faithful divider — use it for sparse
+  runs like the pre-commit check. Details: `build-log.md` postscript.
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** (the
   ox `ocamlformat` reports a git-hash version; a pin would mismatch and disable
   formatting). Format with `dune fmt`.

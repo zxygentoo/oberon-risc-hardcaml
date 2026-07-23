@@ -62,18 +62,22 @@ val render : int array -> sx:int -> sy:int -> string
 (** FNV-1a over framebuffer words, matching [Emu.Headless.framebuffer_hash] *)
 val fb_fnv : int array -> int64
 
-(** [run_to_settle ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes] runs [chunk]-cycle
-    bursts of [tick], snapshotting [read_fb] after each, until the framebuffer is drawn
-    and then unchanged for [settle] consecutive chunks, or [cap] cycles. [pc]/[spi_bytes]
-    feed the progress line only. Returns (last framebuffer, settled?). *)
+(** [run_to_settle ?target ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes ()] runs
+    [chunk]-cycle bursts of [tick], snapshotting [read_fb] after each, until the
+    framebuffer is drawn and then unchanged for [settle] consecutive chunks, or [cap]
+    cycles. [?target] (the oracle's fb hash) short-circuits: a snapshot hashing to it ends
+    the run at once — the verdict is decided, and the report re-diffs word-exact.
+    [pc]/[spi_bytes] feed the progress line only. Returns (last framebuffer, settled?). *)
 val run_to_settle
-  :  cap:int
+  :  ?target:int64
+  -> cap:int
   -> chunk:int
   -> settle:int
   -> tick:(unit -> unit)
   -> read_fb:(unit -> int array)
   -> pc:(unit -> int)
   -> spi_bytes:(unit -> int)
+  -> unit
   -> int array * bool
 
 (** diff + render both framebuffers and print the verdict ([exit 1] on FAIL). The label

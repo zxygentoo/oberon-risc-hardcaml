@@ -63,7 +63,14 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : _ O.t =
+let create
+  ~contents
+  ?(clocks_per_ms = 25000)
+  ?(fast_mul = false)
+  ?spi_slow_div_log2
+  (i : _ I.t)
+  : _ O.t
+  =
   (* Core + memory; the fetch/load feedback is broken by the core's pc/ir registers, so
      [codebus]/[inbus] are wires assigned below. [irq] closes the same kind of loop with
      {!Peripherals} (built after the core, whose strobes it consumes): its [ms_tick] comes
@@ -120,6 +127,7 @@ let create ~contents ?(clocks_per_ms = 25000) ?(fast_mul = false) (i : _ I.t) : 
   let per =
     Peripherals.create
       ~clocks_per_ms
+      ?slow_div_log2:spi_slow_div_log2
       { Peripherals.I.clock = i.clock
       ; rst_n = i.rst_n
       ; wr = core.wr

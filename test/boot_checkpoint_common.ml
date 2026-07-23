@@ -264,13 +264,17 @@ let fb_fnv fb =
 (* The goldens' settle loop: run [chunk]-cycle bursts of [tick] and snapshot [read_fb]
    after each, until the framebuffer is drawn (nonzero) and then unchanged for [settle]
    consecutive chunks, or [cap] cycles. [pc]/[spi_bytes] feed the progress line only.
-   Returns (last framebuffer, settled?). *)
-let run_to_settle ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes =
+   [?target] short-circuits: once the snapshot hashes to the oracle's value the verdict is
+   already decided (the report re-diffs word-exact), so the stability confirmation would
+   only burn [settle] more chunks — exit immediately instead. Returns (last framebuffer,
+   settled?). *)
+let run_to_settle ?target ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes () =
   let cyc = ref 0
   and prev = ref [||]
   and stable = ref 0
+  and matched = ref false
   and drawn = ref false in
-  while !cyc < cap && !stable < settle do
+  while !cyc < cap && !stable < settle && not !matched do
     for _ = 1 to chunk do
       tick ();
       incr cyc
@@ -280,14 +284,18 @@ let run_to_settle ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes =
     if pop > 0 then drawn := true;
     if !drawn && fb = !prev then incr stable else stable := 0;
     prev := fb;
+    (match target with
+     | Some t when Int64.equal (fb_fnv fb) t -> matched := true
+     | _ -> ());
     Printf.printf
-      "  soc @%3dM cyc: pc=0x%X spi=%d pop=%d\n%!"
+      "  soc @%3dM cyc: pc=0x%X spi=%d pop=%d%s\n%!"
       (!cyc / 1_000_000)
       (pc ())
       (spi_bytes ())
       pop
+      (if !matched then "  (= oracle hash — early exit)" else "")
   done;
-  !prev, !stable >= settle
+  !prev, !stable >= settle || !matched
 ;;
 
 (* The goldens' verdict: diff the framebuffers word-for-word, render both to ASCII, print
