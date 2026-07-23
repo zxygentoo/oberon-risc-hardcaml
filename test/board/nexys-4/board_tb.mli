@@ -10,17 +10,21 @@ module O = Nexys4_board.Soc.For_tests.Tb.O
     level ([rst_n] excluded — reset sequencing belongs to the test). *)
 val drive_idle : Bits.t ref I.t -> unit
 
-(** [create ?read_cycles ?write_cycles ?icache ?lines_log2 ?write_update ?video ?fast_mul ?mul_stages ?contents i]
-    wires the board SoC to the PSRAM model. [contents] defaults to the design ROM
-    {!Risc5.Rom.bootloader}; [read_cycles] / [write_cycles] default to 2 (the model
-    answers at once, so small waits exercise only the controller FSM — the checkpoint's
-    regime; the visual golden passes 5 to match the board). The cache knobs ([icache] /
-    [lines_log2] / [write_update]) and [fast_mul] / [mul_stages] (all default off) forward
-    to {!Nexys4_board.Soc.create} — for the bench's sweeps; the tests leave them off.
-    [sclk] is the only output read directly; everything else is reached by name under
+(** [create ?read_cycles ?write_cycles ?icache ?lines_log2 ?write_update ?video ?fast_mul ?mul_stages i]
+    wires the board SoC, booting the design ROM {!Risc5.Rom.bootloader}, to the full-size
+    PSRAM model ([addr_bits] 19 — the gates load the real disk image into low RAM). It is
+    {!Nexys4_board.Soc.For_tests.Tb.create} with those two knobs pinned; every other knob
+    forwards. [read_cycles] / [write_cycles] default to 2 (the model answers at once, so
+    small waits exercise only the controller FSM — the checkpoint's regime; the visual
+    golden passes 5 to match the board). The cache knobs ([icache] / [lines_log2] /
+    [write_update]) and [fast_mul] / [mul_stages] (all default off) forward to
+    {!Nexys4_board.Soc.create} — for the bench's sweeps; the tests leave them off. [sclk]
+    is the only output read directly; everything else is reached by name under
     [Cyclesim.Config.trace_all]. *)
 val create
-  :  ?read_cycles:int
+  :  ?clocks_per_ms:int
+       (** forwards to {!Nexys4_board.Soc.create} (the ms-timer prescaler) *)
+  -> ?read_cycles:int
   -> ?write_cycles:int
   -> ?icache:bool
   -> ?lines_log2:int
@@ -46,7 +50,6 @@ val create
        (** write-buffer FIFO depth 1..4 (default 1; see {!Nexys4_board.Cellram.create}) *)
   -> ?fast_mul:bool
   -> ?mul_stages:int
-  -> ?contents:int array
   -> Signal.t I.t
   -> Signal.t O.t
 

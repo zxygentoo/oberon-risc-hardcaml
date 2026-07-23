@@ -55,11 +55,6 @@ let run ~what ~jobs ~work_root job_list =
   let queue = ref job_list in
   let running : (int, string * float) Hashtbl.t = Hashtbl.create 16 in
   let results = ref [] in
-  let nonempty r =
-    match !r with
-    | [] -> false
-    | _ -> true
-  in
   let launch (name, run) =
     flush stdout;
     flush stderr;
@@ -93,8 +88,8 @@ let run ~what ~jobs ~work_root job_list =
             dt
             (Filename.concat work_root name)
   in
-  while nonempty queue || Hashtbl.length running > 0 do
-    while Hashtbl.length running < jobs && nonempty queue do
+  while (not (List.is_empty !queue)) || Hashtbl.length running > 0 do
+    while Hashtbl.length running < jobs && not (List.is_empty !queue) do
       match !queue with
       | j :: rest ->
         queue := rest;
