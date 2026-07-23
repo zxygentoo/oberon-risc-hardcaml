@@ -1,23 +1,6 @@
 open! Base
 open Hardcaml
 
-(* cd to the repo root so every relative path (test/_po, test/_work, the spec .v) resolves
-   no matter where we're launched — directly, via dune exec, or as the @formal dune
-   action. Mirrors cosim_run; called once at the top of the only [let ()]. The only
-   remaining bash is the toolchain-free fetch-rtl.sh. *)
-let cd_to_repo_root () =
-  let rec up d =
-    if Stdlib.Sys.file_exists (Stdlib.Filename.concat d "dune-project")
-    then Stdlib.Sys.chdir d
-    else (
-      let parent = Stdlib.Filename.dirname d in
-      if String.equal parent d
-      then failwith "formal_run: no dune-project above cwd"
-      else up parent)
-  in
-  up (Stdlib.Sys.getcwd ())
-;;
-
 (* ── Combinational units: our circuit's ports match the reference .v; proven by importing
    the .v and SAT-checking against ours with hardcaml_verify's Sec + z3 (Formal_equiv). ── *)
 
@@ -342,25 +325,6 @@ let proofs_dir =
   "test/formal/proofs" (* the .ys.template proofs + the .v specs they read *)
 ;;
 
-let run_combinational ~work_dir (name, ours, v, top_module) =
-  match
-    Formal_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
-  with
-  | Formal_equiv.Equivalent ->
-    Stdio.printf
-      "%s: EQUIVALENT — no input makes the outputs differ  (vs %s, combinational · Sec/z3)\n\
-       %!"
-      name
-      v;
-    true
-  | Formal_equiv.Counterexample ->
-    Stdio.printf
-      "%s: NOT EQUIVALENT — counterexample found  (vs %s, combinational · Sec/z3)\n%!"
-      name
-      v;
-    false
-;;
-
 (* Print [ok]/[bad] for a {!Yosys_equiv.result} and return passed?. *)
 let report ~ok ~bad result =
   match (result : Yosys_equiv.result) with
@@ -370,6 +334,33 @@ let report ~ok ~bad result =
   | Yosys_equiv.Not_equivalent ->
     Stdio.printf "%s\n%!" bad;
     false
+;;
+
+(* The {!Formal_equiv.result} (Sec/z3) twin of [report]. *)
+let report_sec ~ok ~bad result =
+  match (result : Formal_equiv.result) with
+  | Formal_equiv.Equivalent ->
+    Stdio.printf "%s\n%!" ok;
+    true
+  | Formal_equiv.Counterexample ->
+    Stdio.printf "%s\n%!" bad;
+    false
+;;
+
+let run_combinational ~work_dir (name, ours, v, top_module) =
+  Formal_equiv.check ~work_dir ~verilog:(rtl_dir ^ "/" ^ v) ~top_module ~ours:(ours ())
+  |> report_sec
+       ~ok:
+         (Printf.sprintf
+            "%s: EQUIVALENT — no input makes the outputs differ  (vs %s, combinational · \
+             Sec/z3)"
+            name
+            v)
+       ~bad:
+         (Printf.sprintf
+            "%s: NOT EQUIVALENT — counterexample found  (vs %s, combinational · Sec/z3)"
+            name
+            v)
 ;;
 
 (* The shared wording for the equiv_induct family — every sequential unit + the mouse. *)
@@ -581,19 +572,14 @@ let run_vid_invariant ~work_dir =
    manages its own z3. *)
 let run_vid_addr ~work_dir:_ =
   Formal_equiv.check_circuits ~ours:(vid_addr_ours ()) ~spec:(vid_addr_spec ())
-  |> function
-  | Formal_equiv.Equivalent ->
-    Stdio.printf
-      "vid_addr: EQUIVALENT — look-ahead address ≡ geometry spec for all (hcnt,vcnt)  \
-       (vs geometry spec, addressing half of prefetch delivery · combinational · Sec/z3)\n\
-       %!";
-    true
-  | Formal_equiv.Counterexample ->
-    Stdio.printf
-      "vid_addr: NOT EQUIVALENT — look-ahead address differs from geometry spec  \
-       (combinational · Sec/z3)\n\
-       %!";
-    false
+  |> report_sec
+       ~ok:
+         "vid_addr: EQUIVALENT — look-ahead address ≡ geometry spec for all (hcnt,vcnt)  \
+          (vs geometry spec, addressing half of prefetch delivery · combinational · \
+          Sec/z3)"
+       ~bad:
+         "vid_addr: NOT EQUIVALENT — look-ahead address differs from geometry spec  \
+          (combinational · Sec/z3)"
 ;;
 
 (* All checks as one uniform list — [name, run ~work_dir -> passed?]. The combinational
@@ -631,7 +617,9 @@ let checks : (string * (work_dir:string -> bool)) list =
 ;;
 
 let () =
-  cd_to_repo_root ();
+  (* repo-root-relative paths throughout (test/_po, test/_work, the spec .v), wherever
+     we're launched from; the only remaining bash is the toolchain-free fetch-rtl.sh *)
+  Fork_pool.cd_to_repo_root ();
   let argv = Stdlib.Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
   let selected =

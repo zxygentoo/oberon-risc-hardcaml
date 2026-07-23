@@ -10,6 +10,22 @@ let mkdir_p d =
   ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote d)) : int)
 ;;
 
+(* Resolve and cd to the repo root (nearest ancestor with dune-project): both runners
+   (cosim_run, formal_run) launch from varying cwds — directly, via dune exec, or as a
+   dune action — and keep every path repo-root-relative. *)
+let cd_to_repo_root () =
+  let rec up d =
+    if Sys.file_exists (Filename.concat d "dune-project")
+    then d
+    else (
+      let p = Filename.dirname d in
+      if String.equal p d
+      then failwith "cd_to_repo_root: no dune-project above cwd"
+      else up p)
+  in
+  Sys.chdir (up (Sys.getcwd ()))
+;;
+
 (* a worker: redirect this process's stdout/stderr to the job's log, run it, exit with its
    verdict *)
 let worker ~work_root name run =
@@ -55,11 +71,6 @@ let run ~what ~jobs ~work_root job_list =
   let queue = ref job_list in
   let running : (int, string * float) Hashtbl.t = Hashtbl.create 16 in
   let results = ref [] in
-  let nonempty r =
-    match !r with
-    | [] -> false
-    | _ -> true
-  in
   let launch (name, run) =
     flush stdout;
     flush stderr;
@@ -93,8 +104,8 @@ let run ~what ~jobs ~work_root job_list =
             dt
             (Filename.concat work_root name)
   in
-  while nonempty queue || Hashtbl.length running > 0 do
-    while Hashtbl.length running < jobs && nonempty queue do
+  while (not (List.is_empty !queue)) || Hashtbl.length running > 0 do
+    while Hashtbl.length running < jobs && not (List.is_empty !queue) do
       match !queue with
       | j :: rest ->
         queue := rest;

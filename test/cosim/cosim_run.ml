@@ -22,20 +22,6 @@
    [dune exec test/cosim/cosim_run.exe -- <unit>] runs one live (uncaptured) for
    debugging; a trailing count ([-- all 4]) caps the job pool. *)
 
-(* Resolve and cd to the repo root so every path below is repo-root-relative no matter
-   where we're launched (directly, via dune exec, or as the @cosim dune action). Called
-   once at the top of the only [let ()]. *)
-let cd_to_repo_root () =
-  let rec up d =
-    if Sys.file_exists (Filename.concat d "dune-project")
-    then d
-    else (
-      let p = Filename.dirname d in
-      if String.equal p d then failwith "cosim_run: no dune-project above cwd" else up p)
-  in
-  Sys.chdir (up (Sys.getcwd ()))
-;;
-
 let rtl_dir = "test/_po/verilog/src"
 let cosim_dir = "test/cosim"
 let work_root = "test/_work/cosim"
@@ -268,7 +254,8 @@ let ensure_exes selected =
 ;;
 
 let () =
-  cd_to_repo_root ();
+  (* repo-root-relative paths throughout, wherever we're launched from *)
+  Fork_pool.cd_to_repo_root ();
   let argv = Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
   let selected =

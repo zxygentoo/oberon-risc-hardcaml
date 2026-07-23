@@ -25,20 +25,14 @@ let begin_ b ~data_tx ~fast ~selected =
     then (
       b.spi.spi_write_data data_tx;
       b.spi.spi_read_data ())
-    else if fast
-    then 0xFFFF_FFFF
-    else 0xFF
+    else 0xFFFF_FFFF (* deselected: the line idles high, whatever the width *)
   in
   b.nbytes <- b.nbytes + 1;
   let nbits = if fast then 32 else 8 in
-  let seq = Array.make nbits 1 in
-  for byte = 0 to (nbits / 8) - 1 do
-    let bv = (rx asr (8 * byte)) land 0xFF in
-    for i = 0 to 7 do
-      seq.((byte * 8) + i) <- (bv asr (7 - i)) land 1
-    done
-  done;
-  b.rx_seq <- seq;
+  (* bit j = bit (7 - j mod 8) of byte (j / 8): MSbit-first within each byte, bytes
+     low-to-high *)
+  b.rx_seq
+  <- Array.init nbits (fun j -> (rx asr ((8 * (j / 8)) + (7 - (j mod 8)))) land 1);
   b.rx_idx <- 0
 ;;
 

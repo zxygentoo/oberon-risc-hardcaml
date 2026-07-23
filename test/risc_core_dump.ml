@@ -29,36 +29,9 @@
    file. *)
 
 open Hardcaml
+module BCC = Boot_checkpoint_common
 module Soc = Risc5.Soc
 module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
-
-(* ── repo root + disk plumbing ──────────────────────────────────────────────── *)
-
-(* nearest ancestor holding a dune-project — to resolve the default disk image absolutely
-   (mirrors test_visual_golden) *)
-let project_root () =
-  let rec up dir =
-    if Sys.file_exists (Filename.concat dir "dune-project")
-    then dir
-    else (
-      let parent = Filename.dirname dir in
-      if String.equal parent dir
-      then failwith "risc_core_dump: no dune-project found above cwd"
-      else up parent)
-  in
-  up (Sys.getcwd ())
-;;
-
-(* boot off a scratch copy so a crash/abort can never corrupt the vendored .dsk *)
-let copy_to_temp src =
-  let tmp = Filename.temp_file "core_trace_" ".dsk" in
-  let ic = open_in_bin src
-  and oc = open_out_bin tmp in
-  output_string oc (really_input_string ic (in_channel_length ic));
-  close_in ic;
-  close_out oc;
-  tmp
-;;
 
 let getenv_int name ~default =
   match Sys.getenv_opt name with
@@ -78,14 +51,8 @@ type config =
   }
 
 let read_config () =
-  let disk_image =
-    match Sys.getenv_opt "DISK_IMG" with
-    | Some p -> p
-    | None ->
-      Filename.concat
-        (project_root ())
-        "vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk"
-  in
+  (* BCC.disk_image already honors DISK_IMG and resolves from the project root *)
+  let disk_image = BCC.disk_image in
   let trace_path =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
@@ -122,33 +89,24 @@ type probes =
   ; zf : Cyclesim.Reg.t
   ; cf : Cyclesim.Reg.t
   ; ovf : Cyclesim.Reg.t
-  ; rdy : Cyclesim.Reg.t
-  ; shreg : Cyclesim.Reg.t
-  ; spi_ctrl : Cyclesim.Reg.t
   ; irq : Cyclesim.Node.t (* the core's irq input *)
   ; stallx : Cyclesim.Node.t (* the core's stall_x input *)
   ; regfile : Cyclesim.Memory.t
   }
 
+(* the SPI-side handles (rdy/spi_shreg/spi_ctrl) live in {!Boot_tb.Spi} *)
 let lookup_probes sim =
-  let some n = function
-    | Some x -> x
-    | None -> failwith ("risc_core_dump lookup: " ^ n)
-  in
-  let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
-  let node n = some n (Cyclesim.lookup_node_or_reg_by_name sim n) in
+  let reg = Boot_tb.lookup_reg sim
+  and node = Boot_tb.lookup_node sim in
   { pc = reg "pc"
   ; ir = reg "ir"
   ; nf = reg "n"
   ; zf = reg "z"
   ; cf = reg "c"
   ; ovf = reg "ov"
-  ; rdy = reg "rdy"
-  ; shreg = reg "spi_shreg"
-  ; spi_ctrl = reg "spi_ctrl"
   ; irq = node "limit"
   ; stallx = node "vidreq"
-  ; regfile = some "regfile" (Cyclesim.lookup_mem_by_name sim "regfile")
+  ; regfile = Boot_tb.lookup_mem sim "regfile"
   }
 ;;
 
@@ -222,7 +180,8 @@ let run
   ~sim
   ~(inp : Bits.t ref Soc.I.t)
   ~(outp : Bits.t ref Soc.O.t)
-  ~bridge
+  ~spi
+  ~spi_bytes
   ~(probes : probes)
   ~oc
   =
@@ -236,7 +195,7 @@ let run
        [rst_n] is the value applied for this state's edge; the replay drives it verbatim. *)
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
-    inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
+    Boot_tb.Spi.set_miso spi;
     (* Record PRE-edge: settle the combinational cloud over the CURRENT state (registers
        not yet updated), so each record is (inputs this state consumes, outputs this state
        drives) and the edge below transitions to the next state. Pre-edge is what keeps
@@ -272,14 +231,7 @@ let run
     Cyclesim.cycle_at_clock_edge sim;
     Cyclesim.cycle_after_clock_edge sim;
     (* drive the SD bridge (post-cycle, like the visual golden) *)
-    let ctrl_v = Cyclesim.Reg.to_int probes.spi_ctrl in
-    Sd_bridge.step
-      bridge
-      ~sclk:(b1 outp.sclk)
-      ~rdy:(Cyclesim.Reg.to_int probes.rdy)
-      ~data_tx:(Cyclesim.Reg.to_int probes.shreg)
-      ~fast:((ctrl_v lsr 2) land 1 = 1)
-      ~selected:(ctrl_v land 3 = 1);
+    Boot_tb.Spi.step spi;
     (* progress + halt detection *)
     let pc_now = Cyclesim.Reg.to_int probes.pc in
     if pc_now = !prev_pc then incr pc_same else pc_same := 0;
@@ -292,7 +244,7 @@ let run
         "  @%2dM cyc: pc=0x%05X  spi_bytes=%d\n%!"
         (!cyc / 1_000_000)
         pc_now
-        (Sd_bridge.nbytes bridge)
+        (spi_bytes ())
   done;
   { cycles = !cyc; final_pc = !prev_pc; pc_same = !pc_same }
 ;;
@@ -302,7 +254,7 @@ let run
 let () =
   let cfg = read_config () in
   (* boot + capture: SoC + the shared off-chip SD card *)
-  let tmp = copy_to_temp cfg.disk_image in
+  let tmp = BCC.copy_to_temp cfg.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create
@@ -311,6 +263,7 @@ let () =
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
+  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
   let probes = lookup_probes sim in
   (* idle the released peripheral lines high; switches/buttons default 0 = disk boot *)
   inp.rxd := hi;
@@ -323,10 +276,19 @@ let () =
     "risc_core_dump: booting %s\n  trace -> %s\n%!"
     (Filename.basename cfg.disk_image)
     cfg.trace_path;
-  let result = run ~cfg ~sim ~inp ~outp ~bridge ~probes ~oc in
+  let result =
+    run
+      ~cfg
+      ~sim
+      ~inp
+      ~outp
+      ~spi
+      ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+      ~probes
+      ~oc
+  in
   close_out oc;
-  (try Sys.remove tmp with
-   | Sys_error _ -> ());
+  BCC.rm_temp tmp;
   let bytes = result.cycles * 17 in
   Printf.printf
     "\n\

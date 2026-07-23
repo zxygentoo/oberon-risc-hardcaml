@@ -26,14 +26,22 @@
  (modules fork_pool)
  (libraries unix))
 
-; Shared SoC-independent half of the boot-handoff checkpoints (disk, oracle boot, §8-aware
-; compare, the run driver), used by both test_boot_checkpoint (BRAM, below) and
-; test_boot_checkpoint_board (PSRAM, in test/board/nexys-4/); see boot_checkpoint_common.mli.
+; Shared Hardcaml-free half of the four boot gates (disk, oracle boots, §8-aware compare,
+; fb geometry/render/verdict, the closure-parameterized loop drivers), used by both
+; checkpoints and both visual goldens; see boot_checkpoint_common.mli.
 
 (library
  (name boot_checkpoint_common)
  (modules boot_checkpoint_common)
  (libraries emu))
+
+; The Cyclesim-side half of the same four gates: loud lookups, the SPI/SD tick, the
+; run-to-handoff driver; see boot_tb.mli.
+
+(library
+ (name boot_tb)
+ (modules boot_tb)
+ (libraries emu hardcaml sd_bridge boot_checkpoint_common))
 
 (tests
  (names
@@ -61,7 +69,7 @@
 (executable
  (name test_boot_checkpoint)
  (modules test_boot_checkpoint)
- (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common))
+ (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
 
 (rule
  (alias boot_checkpoint)
@@ -76,7 +84,7 @@
 (executable
  (name test_visual_golden)
  (modules test_visual_golden)
- (libraries risc5 emu hardcaml sd_bridge))
+ (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
 
 (rule
  (alias visual_golden)
@@ -97,7 +105,7 @@
 (executable
  (name risc_core_dump)
  (modules risc_core_dump)
- (libraries risc5 emu hardcaml unix sd_bridge))
+ (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
 
 ; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
 ; their own dune — driven by `dune build @bench` / `@profile_boot`. The board-SoC Verilog

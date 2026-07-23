@@ -93,6 +93,20 @@ type case =
 (* the flags as the oracle / cpu_state pack them: Z | N<<1 | C<<2 | V<<3 *)
 let packed_flags ~n ~z ~c ~ov = z lor (n lsl 1) lor (c lsl 2) lor (ov lsl 3)
 
+(* build a [case], unpacking [flags] per the [packed_flags] layout — the single source of
+   the flag-bit positions for every decoder below *)
+let case_of ~regs ~op ~instr ~flags ~h =
+  { regs
+  ; op
+  ; instr
+  ; n = (flags lsr 1) land 1
+  ; z = flags land 1
+  ; c = (flags lsr 2) land 1
+  ; ov = (flags lsr 3) land 1
+  ; h
+  }
+;;
+
 (* poke [case]'s arch state into the core, after a run=0 cycle that clears the units'
    state counters. (Does not cycle the instruction itself.) *)
 let poke_core t { regs; n; z; c; ov; h; instr; op = _ } =
@@ -137,30 +151,44 @@ let step_core t case =
   read_core t
 ;;
 
-(* run [case] on the oracle and read back the same (regs, flags, pc, h) tuple *)
-let step_oracle t { regs; n; z; c; ov; h; instr; op = _ } =
+(* poke [case]'s arch state into the oracle (the mirror of [poke_core]; does not step) *)
+let poke_oracle t { regs; n; z; c; ov; h; instr; op = _ } =
   let oregs = R.For_tests.regs t.oracle in
   Array.iteri (fun k v -> oregs.(k) <- v) regs;
   R.For_tests.set_flags t.oracle (packed_flags ~n ~z ~c ~ov);
   R.For_tests.set_h t.oracle h;
   R.For_tests.set_pc t.oracle base_pc;
-  (R.For_tests.ram t.oracle).(base_pc) <- instr;
-  R.For_tests.single_step t.oracle;
+  (R.For_tests.ram t.oracle).(base_pc) <- instr
+;;
+
+(* read back the oracle's (regs, flags, pc, h) *)
+let read_oracle t =
   ( R.For_tests.regs t.oracle
   , R.For_tests.flags t.oracle
   , R.For_tests.pc t.oracle
   , R.For_tests.h t.oracle )
 ;;
 
+(* full architectural agreement: the 16 registers, the packed flags, pc, and h *)
+let state_eq (hw_regs, hw_flags, hw_pc, hw_h) (or_regs, or_flags, or_pc, or_h) =
+  Array.for_all2 ( = ) hw_regs or_regs
+  && hw_flags = or_flags
+  && hw_pc = or_pc
+  && hw_h = or_h
+;;
+
+(* run [case] on the oracle and read back the same (regs, flags, pc, h) tuple *)
+let step_oracle t case =
+  poke_oracle t case;
+  R.For_tests.single_step t.oracle;
+  read_oracle t
+;;
+
 (* do the two machines agree on the full architectural state after [case]? *)
 let agree t case =
-  let hw_regs, hw_flags, hw_pc, hw_h = step_core t case in
-  let or_regs, or_flags, or_pc, or_h = step_oracle t case in
-  let regs_eq = ref true in
-  for k = 0 to 15 do
-    if hw_regs.(k) <> or_regs.(k) then regs_eq := false
-  done;
-  !regs_eq && hw_flags = or_flags && hw_pc = or_pc && hw_h = or_h
+  let hw = step_core t case in
+  let oracle = step_oracle t case in
+  state_eq hw oracle
 ;;
 
 (* ─── Generating a random register-op case ─── *)
@@ -180,15 +208,7 @@ let decode (instr31, ob32, oc32, flags4, h32) =
   let regs = Array.make 16 0 in
   regs.(irb) <- u32 ob32;
   regs.(irc) <- u32 oc32 (* if irb=irc, R holds oc (placed last), identically in both *);
-  { regs
-  ; op
-  ; instr
-  ; n = (flags4 lsr 1) land 1
-  ; z = flags4 land 1
-  ; c = (flags4 lsr 2) land 1
-  ; ov = (flags4 lsr 3) land 1
-  ; h = u32 h32
-  }
+  case_of ~regs ~op ~instr ~flags:flags4 ~h:(u32 h32)
 ;;
 
 (* the §8 corners / unit preconditions, all unreachable from compiled Oberon (we follow
@@ -256,15 +276,7 @@ let decode_branch (bctrl, target32, disp, flags4) =
   in
   let regs = Array.make 16 0 in
   regs.(irc) <- u32 target32 land 0xF_FFFF;
-  { regs
-  ; op = 0
-  ; instr
-  ; n = (flags4 lsr 1) land 1
-  ; z = flags4 land 1
-  ; c = (flags4 lsr 2) land 1
-  ; ov = (flags4 lsr 3) land 1
-  ; h = 0
-  }
+  case_of ~regs ~op:0 ~instr ~flags:flags4 ~h:0
 ;;
 
 let seed_branch =
@@ -301,24 +313,11 @@ let agree_load t ~case ~adr_word ~load_val =
   t.inbus := Bits.of_unsigned_int ~width:32 load_val;
   Cyclesim.cycle t.sim;
   Cyclesim.cycle t.sim;
-  let hw_regs, hw_flags, hw_pc, hw_h = read_core t in
-  let oregs = R.For_tests.regs t.oracle in
-  Array.iteri (fun k v -> oregs.(k) <- v) case.regs;
-  R.For_tests.set_flags t.oracle (packed_flags ~n:case.n ~z:case.z ~c:case.c ~ov:case.ov);
-  R.For_tests.set_h t.oracle case.h;
-  R.For_tests.set_pc t.oracle base_pc;
-  (R.For_tests.ram t.oracle).(base_pc) <- case.instr;
+  let hw = read_core t in
+  poke_oracle t case;
   (R.For_tests.ram t.oracle).(adr_word) <- load_val;
   R.For_tests.single_step t.oracle;
-  let or_regs = R.For_tests.regs t.oracle in
-  let regs_eq = ref true in
-  for k = 0 to 15 do
-    if hw_regs.(k) <> or_regs.(k) then regs_eq := false
-  done;
-  !regs_eq
-  && hw_flags = R.For_tests.flags t.oracle
-  && hw_pc = R.For_tests.pc t.oracle
-  && hw_h = R.For_tests.h t.oracle
+  state_eq hw (read_oracle t)
 ;;
 
 (* a load draw: [ctrl] packs a/b/byte-mode/flags; [addr_byte] is the data address (kept in
@@ -353,18 +352,7 @@ let decode_load (ctrl, addr_byte, off, load_word, h32) =
     lor (b lsl 20)
     lor (off land 0xF_FFFF)
   in
-  let case =
-    { regs
-    ; op = 0
-    ; instr
-    ; n = (flags lsr 1) land 1
-    ; z = flags land 1
-    ; c = (flags lsr 2) land 1
-    ; ov = (flags lsr 3) land 1
-    ; h = u32 h32
-    }
-  in
-  case, addr_byte lsr 2, u32 load_word
+  case_of ~regs ~op:0 ~instr ~flags ~h:(u32 h32), addr_byte lsr 2, u32 load_word
 ;;
 
 (* ─── Stores ─── *)
@@ -380,33 +368,20 @@ let agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane =
   and hw_wr = Bits.to_int_trunc !(t.out_pre.wr)
   and hw_outbus = Bits.to_int_trunc !(t.out_pre.outbus) in
   Cyclesim.cycle t.sim;
-  let hw_regs, hw_flags, hw_pc, hw_h = read_core t in
+  let hw = read_core t in
   let hw_mem =
     if byte_mode = 1
     then
       init_word land lnot (0xFF lsl (8 * lane)) lor (hw_outbus land (0xFF lsl (8 * lane)))
     else hw_outbus
   in
-  let oregs = R.For_tests.regs t.oracle in
-  Array.iteri (fun k v -> oregs.(k) <- v) case.regs;
-  R.For_tests.set_flags t.oracle (packed_flags ~n:case.n ~z:case.z ~c:case.c ~ov:case.ov);
-  R.For_tests.set_h t.oracle case.h;
-  R.For_tests.set_pc t.oracle base_pc;
-  (R.For_tests.ram t.oracle).(base_pc) <- case.instr;
+  poke_oracle t case;
   (R.For_tests.ram t.oracle).(adr_word) <- init_word;
   R.For_tests.single_step t.oracle;
-  let or_regs = R.For_tests.regs t.oracle in
-  let regs_eq = ref true in
-  for k = 0 to 15 do
-    if hw_regs.(k) <> or_regs.(k) then regs_eq := false
-  done;
   hw_wr = 1
   && hw_adr lsr 2 = adr_word
   && hw_mem = (R.For_tests.ram t.oracle).(adr_word)
-  && !regs_eq
-  && hw_flags = R.For_tests.flags t.oracle
-  && hw_pc = R.For_tests.pc t.oracle
-  && hw_h = R.For_tests.h t.oracle
+  && state_eq hw (read_oracle t)
 ;;
 
 let seed_store =
@@ -444,18 +419,11 @@ let decode_store (ctrl, addr_byte, off, data, init32) =
     lor (b lsl 20)
     lor (off land 0xF_FFFF)
   in
-  let case =
-    { regs
-    ; op = 0
-    ; instr
-    ; n = (flags lsr 1) land 1
-    ; z = flags land 1
-    ; c = (flags lsr 2) land 1
-    ; ov = (flags lsr 3) land 1
-    ; h = 0
-    }
-  in
-  case, addr_byte lsr 2, u32 init32, byte_mode, addr_byte land 3
+  ( case_of ~regs ~op:0 ~instr ~flags ~h:0
+  , addr_byte lsr 2
+  , u32 init32
+  , byte_mode
+  , addr_byte land 3 )
 ;;
 
 let () =

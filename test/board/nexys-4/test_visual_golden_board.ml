@@ -17,122 +17,26 @@
    the cache is what makes a board-level visual golden runnable at all. (AGENT.md §5 Phase
    10.)
 
+   The fb geometry, oracle boot, settle loop and verdict are shared in
+   {!Boot_checkpoint_common}; the SPI drive in {!Boot_tb}. This file keeps what is
+   board-specific: the knobs, the board wait counts, and the FB_BRAM shadow readback + its
+   coherence check.
+
    Opt-in: dune build @visual_golden_board. Env: SOC_CAP overrides the cycle cap, ICACHE=0
    runs the (much slower) cache-off control, WRITE_UPDATE=1 the Phase-10b snoop policy,
    FB_BRAM=1 the Phase-10c framebuffer shadow (the golden then reads the *shadow* — the
    words the screen actually shows — and additionally asserts shadow ≡ PSRAM framebuffer
    window over the full span, the shadow's own coherence invariant), DISK_IMG the image. *)
 
-module R = Emu.Risc
 open Hardcaml
+module BCC = Boot_checkpoint_common
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
-
-let project_root () =
-  let rec up dir =
-    if Sys.file_exists (Filename.concat dir "dune-project")
-    then dir
-    else (
-      let parent = Filename.dirname dir in
-      if String.equal parent dir
-      then failwith "test_visual_golden_board: no dune-project found above cwd"
-      else up parent)
-  in
-  up (Sys.getcwd ())
-;;
-
-let disk_image =
-  match Sys.getenv_opt "DISK_IMG" with
-  | Some p -> p
-  | None ->
-    Filename.concat
-      (project_root ())
-      "vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk"
-;;
-
-let copy_to_temp src =
-  let tmp = Filename.temp_file "visual_board_" ".dsk" in
-  let ic = open_in_bin src
-  and oc = open_out_bin tmp in
-  output_string oc (really_input_string ic (in_channel_length ic));
-  close_in ic;
-  close_out oc;
-  tmp
-;;
-
-let fb_w = 32 (* framebuffer width in 32-px words *)
-let fb_h = 768
-let fb_words = fb_w * fb_h
-let fb_base_word = 0x39FC0 (* display_start 0xE7F00 / 4 *)
-
-(* Boot the oracle exactly as test_visual_golden / test_boot.ml does and snapshot the
-   drawn, stable framebuffer + its hash. *)
-let boot_oracle frames =
-  let tmp = copy_to_temp disk_image in
-  let risc = R.make () in
-  R.set_serial risc (Emu.Pclink.to_serial (Emu.Pclink.create ()));
-  R.set_clipboard
-    risc
-    (Emu.Clipboard.to_clipboard
-       (Emu.Clipboard.create
-          { Emu.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
-  R.set_spi risc 1 (Emu.Disk.to_spi (Emu.Disk.create (Some tmp)));
-  Emu.Headless.run_frames risc frames;
-  let fb = Array.init fb_words (fun i -> R.framebuffer_word risc i) in
-  let hash = Emu.Headless.framebuffer_hash risc in
-  (try Sys.remove tmp with
-   | Sys_error _ -> ());
-  fb, hash
-;;
-
-let pixel fb ~x ~y = (fb.((y * fb_w) + (x / 32)) lsr (x land 31)) land 1
-
-let popcount fb =
-  Array.fold_left
-    (fun acc w ->
-      let rec pc n a = if n = 0 then a else pc (n lsr 1) (a + (n land 1)) in
-      acc + pc (w land 0xFFFFFFFF) 0)
-    0
-    fb
-;;
-
-let render fb ~sx ~sy =
-  let buf = Buffer.create 8192 in
-  let y = ref (fb_h - sy) in
-  while !y >= 0 do
-    for cx = 0 to (1024 / sx) - 1 do
-      let set = ref false in
-      for dy = 0 to sy - 1 do
-        for dx = 0 to sx - 1 do
-          if pixel fb ~x:((cx * sx) + dx) ~y:(!y + dy) = 1 then set := true
-        done
-      done;
-      Buffer.add_char buf (if !set then '#' else ' ')
-    done;
-    Buffer.add_char buf '\n';
-    y := !y - sy
-  done;
-  Buffer.contents buf
-;;
-
-(* FNV-1a over the framebuffer words, matching Emu.Headless.framebuffer_hash. *)
-let fb_fnv fb =
-  let prime = 0x0000_0100_0000_01b3L
-  and offset = 0xcbf2_9ce4_8422_2325L in
-  let word h w =
-    List.fold_left
-      (fun h k ->
-        Int64.mul (Int64.logxor h (Int64.of_int ((w lsr (k * 8)) land 0xFF))) prime)
-      h
-      [ 0; 1; 2; 3 ]
-  in
-  Array.fold_left word offset fb
-;;
 
 (* Boot the board SoC (SD card via {!Sd_bridge}) with the cache [icache], run PAST the
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
-   {!Board_tb.read_word} — settles (drawn, then unchanged for [settle] chunks) or [cap]
-   cycles. read_cycles = 6 / write_cycles = 5 to match the board timing the golden is
-   defending (emit_verilog.ml). *)
+   {!Board_tb.read_word}, or from the {!Nexys4_board.Framebuf} shadow under [fb_bram] —
+   settles or [cap] cycles. read_cycles = 6 / write_cycles = 5 to match the board timing
+   the golden is defending (emit_verilog.ml). *)
 let boot_board
   ~icache
   ~write_update
@@ -144,7 +48,7 @@ let boot_board
   ~chunk
   ~settle
   =
-  let tmp = copy_to_temp disk_image in
+  let tmp = BCC.copy_to_temp BCC.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
@@ -161,26 +65,15 @@ let boot_board
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let some w = function
-    | Some x -> x
-    | None -> failwith ("lookup: " ^ w)
-  in
-  let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
-  let pc = reg "pc"
-  and rdy = reg "rdy"
-  and shreg = reg "spi_shreg"
-  and spi_ctrl = reg "spi_ctrl" in
-  let cram_lo = some "cram_lo" (Cyclesim.lookup_mem_by_name sim "cram_lo") in
-  let cram_hi = some "cram_hi" (Cyclesim.lookup_mem_by_name sim "cram_hi") in
+  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  let pc = Boot_tb.lookup_reg sim "pc" in
+  let cram_lo = Boot_tb.lookup_mem sim "cram_lo"
+  and cram_hi = Boot_tb.lookup_mem sim "cram_hi" in
   (* under FB_BRAM the golden reads the *shadow* — the words the raster actually fetches;
      the PSRAM window stays readable for the shadow-equality check below *)
   let fb_lanes =
     if fb_bram
-    then
-      Some
-        (Array.init 4 (fun k ->
-           let n = Printf.sprintf "fb%d" k in
-           some n (Cyclesim.lookup_mem_by_name sim n)))
+    then Some (Array.init 4 (fun k -> Boot_tb.lookup_mem sim (Printf.sprintf "fb%d" k)))
     else None
   in
   let shadow_word lanes idx =
@@ -190,11 +83,11 @@ let boot_board
   let read_fb () =
     match fb_lanes with
     | Some lanes ->
-      Array.init fb_words (fun i ->
-        shadow_word lanes (fb_base_word - Nexys4_board.Framebuf.base + i))
+      Array.init BCC.fb_words (fun i ->
+        shadow_word lanes (BCC.fb_base_word - Nexys4_board.Framebuf.base + i))
     | None ->
-      Array.init fb_words (fun i ->
-        Board_tb.read_word ~cram_lo ~cram_hi (fb_base_word + i))
+      Array.init BCC.fb_words (fun i ->
+        Board_tb.read_word ~cram_lo ~cram_hi (BCC.fb_base_word + i))
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
@@ -202,36 +95,16 @@ let boot_board
   inp.rst_n := lo;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
-  let cyc = ref 0
-  and prev = ref [||]
-  and stable = ref 0
-  and drawn = ref false in
-  while !cyc < cap && !stable < settle do
-    for _ = 1 to chunk do
-      inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
-      Cyclesim.cycle sim;
-      let ctrl = Cyclesim.Reg.to_int spi_ctrl in
-      Sd_bridge.step
-        bridge
-        ~sclk:(Bits.to_unsigned_int !(outp.sclk))
-        ~rdy:(Cyclesim.Reg.to_int rdy)
-        ~data_tx:(Cyclesim.Reg.to_int shreg)
-        ~fast:((ctrl lsr 2) land 1 = 1)
-        ~selected:(ctrl land 3 = 1);
-      incr cyc
-    done;
-    let fb = read_fb () in
-    let pop = popcount fb in
-    if pop > 0 then drawn := true;
-    if !drawn && fb = !prev then incr stable else stable := 0;
-    prev := fb;
-    Printf.printf
-      "  soc @%3dM cyc: pc=0x%X spi=%d pop=%d\n%!"
-      (!cyc / 1_000_000)
-      (Cyclesim.Reg.to_int pc)
-      (Sd_bridge.nbytes bridge)
-      pop
-  done;
+  let fb, settled =
+    BCC.run_to_settle
+      ~cap
+      ~chunk
+      ~settle
+      ~tick:(fun () -> Boot_tb.Spi.tick sim spi)
+      ~read_fb
+      ~pc:(fun () -> Cyclesim.Reg.to_int pc)
+      ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+  in
   (* the shadow's own invariant, checked over the FULL span at the settled (quiet) point:
      every shadow word equals its PSRAM word — both zero-initialised, and every in-window
      store wrote both, so any mismatch is a shadow write-path bug *)
@@ -247,9 +120,8 @@ let boot_board
       done;
       Some !m
   in
-  (try Sys.remove tmp with
-   | Sys_error _ -> ());
-  !prev, !stable >= settle, shadow_mismatches
+  BCC.rm_temp tmp;
+  fb, settled, shadow_mismatches
 ;;
 
 let () =
@@ -289,11 +161,11 @@ let () =
     | Some "1" -> true
     | _ -> false
   in
-  let oracle_fb, oracle_hash = boot_oracle 40 in
+  let oracle_fb, oracle_hash = BCC.boot_oracle_fb ~frames:40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
-    (popcount oracle_fb);
+    (BCC.popcount oracle_fb);
   Printf.printf
     "booting BOARD SoC (Cellram PSRAM, icache=%b write_update=%b fb_bram=%b halftone=%b \
      write_buffer=%b depth=%d) past the handoff — cache makes this feasible...\n\
@@ -333,45 +205,21 @@ let () =
        m
        Nexys4_board.Framebuf.size;
      exit 1);
-  let soc_hash = fb_fnv soc_fb in
+  let soc_hash = BCC.fb_fnv soc_fb in
   Printf.printf
     "soc (icache=%b): hash=0x%Lx  %d set px  settled=%b\n%!"
     icache
     soc_hash
-    (popcount soc_fb)
+    (BCC.popcount soc_fb)
     settled;
-  let diffs = ref 0
-  and first = ref (-1) in
-  Array.iteri
-    (fun i w ->
-      if w <> oracle_fb.(i)
-      then (
-        incr diffs;
-        if !first < 0 then first := i))
-    soc_fb;
-  Printf.printf
-    "--- ORACLE ---\n%s\n--- SoC (board, icache=%b) ---\n%s\n%!"
-    (render oracle_fb ~sx:16 ~sy:16)
-    icache
-    (render soc_fb ~sx:16 ~sy:16);
-  if !diffs = 0 && Int64.equal soc_hash oracle_hash
-  then
-    Printf.printf
-      "VISUAL GOLDEN (BOARD, icache=%b) PASS — board-SoC framebuffer byte-identical to \
-       the oracle (hash 0x%Lx). The I-cache is transparent through boot + module load + \
-       desktop render.\n"
-      icache
-      oracle_hash
-  else (
-    Printf.printf
-      "VISUAL GOLDEN (BOARD, icache=%b) FAIL: %d/%d framebuffer words differ (first word \
-       0x%X: soc=0x%08X oracle=0x%08X); settled=%b\n"
-      icache
-      !diffs
-      fb_words
-      (if !first >= 0 then fb_base_word + !first else 0)
-      (if !first >= 0 then soc_fb.(!first) else 0)
-      (if !first >= 0 then oracle_fb.(!first) else 0)
-      settled;
-    exit 1)
+  BCC.golden_report
+    ~tag:(Printf.sprintf " (BOARD, icache=%b)" icache)
+    ~subject:"board-SoC"
+    ~render_label:(Printf.sprintf "SoC (board, icache=%b)" icache)
+    ~pass_tail:". The I-cache is transparent through boot + module load + desktop render."
+    ~oracle_fb
+    ~oracle_hash
+    ~soc_fb
+    ~soc_hash
+    ~settled
 ;;

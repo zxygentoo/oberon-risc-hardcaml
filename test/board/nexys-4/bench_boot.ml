@@ -41,17 +41,12 @@ let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let some w = function
-    | Some x -> x
-    | None -> failwith ("lookup: " ^ w ^ " not found")
-  in
-  let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
-  let pc = reg "pc"
-  and rdy = reg "rdy"
-  and shreg = reg "spi_shreg"
-  and spi_ctrl = reg "spi_ctrl" in
+  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  let pc = Boot_tb.lookup_reg sim "pc" in
   (* cache stats (Phase-10a): named combinational nodes, present only with [icache]. An
-     access is counted at its retire ([core_ce]=1); a hit lasts one [core_ce]=1 cycle. *)
+     access is counted at its retire ([core_ce]=1); a hit lasts one [core_ce]=1 cycle.
+     Sampled after [Spi.tick] — the bridge step never touches the sim, so the values are
+     the post-cycle ones. *)
   let cnode n = Cyclesim.lookup_node_by_name sim n in
   let n_cache_read = cnode "cache_read"
   and n_cache_hit = cnode "cache_hit"
@@ -67,21 +62,12 @@ let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   let cycle = ref 0
   and handoff = ref false in
   while (not !handoff) && !cycle < cycle_cap do
-    inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
-    Cyclesim.cycle sim;
+    Boot_tb.Spi.tick sim spi;
     (match n_cache_read, n_cache_hit, n_core_ce with
      | Some rd, Some h, Some ce ->
        if Cyclesim.Node.to_int ce = 1 && Cyclesim.Node.to_int rd = 1 then incr accesses;
        if Cyclesim.Node.to_int h = 1 then incr hits
      | _ -> ());
-    let ctrl = Cyclesim.Reg.to_int spi_ctrl in
-    Sd_bridge.step
-      bridge
-      ~sclk:(Bits.to_unsigned_int !(outp.sclk))
-      ~rdy:(Cyclesim.Reg.to_int rdy)
-      ~data_tx:(Cyclesim.Reg.to_int shreg)
-      ~fast:((ctrl lsr 2) land 1 = 1)
-      ~selected:(ctrl land 3 = 1);
     if Cyclesim.Reg.to_int pc < rom_region_base then handoff := true;
     incr cycle
   done;
@@ -169,31 +155,24 @@ let make_os
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let some w = function
-    | Some x -> x
-    | None -> failwith ("lookup: " ^ w ^ " not found")
-  in
-  let reg n = some n (Cyclesim.lookup_reg_by_name sim n) in
-  let pc = reg "pc"
-  and rdy = reg "rdy"
-  and shreg = reg "spi_shreg"
-  and spi_ctrl = reg "spi_ctrl" in
+  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  let pc = Boot_tb.lookup_reg sim "pc" in
   let cnode n = Cyclesim.lookup_node_by_name sim n in
   (* [cache_read]/[cache_hit] exist only under [~icache:true], so they stay optional;
-     everything else is unconditional and must resolve LOUDLY — a silent [None] zeroes a
-     whole profile column (it hid the video-contention overlay once: [cr_busy] /
-     [cr_op_vid] are *registers*, invisible to [lookup_node_by_name]). *)
+     everything else is unconditional and must resolve LOUDLY ({!Boot_tb.lookup_node}) — a
+     silent [None] zeroes a whole profile column (it hid the video-contention overlay
+     once: [cr_busy] / [cr_op_vid] are *registers*, invisible to [lookup_node_by_name]). *)
   let n_cache_read = cnode "cache_read"
   and n_cache_hit = cnode "cache_hit" in
-  let n_core_ce = some "core_ce" (cnode "core_ce")
-  and n_is_fetch = some "is_fetch" (cnode "is_fetch")
-  and n_core_wr = some "core_wr" (cnode "core_wr")
-  and n_core_rd = some "core_rd" (cnode "core_rd")
-  and n_core_adr = some "core_adr" (cnode "core_adr")
-  and n_core_ben = some "core_ben" (cnode "core_ben")
-  and n_cpu_internal = some "cpu_internal" (cnode "cpu_internal")
-  and r_cr_busy = reg "cr_busy"
-  and r_cr_op_vid = reg "cr_op_vid" in
+  let n_core_ce = Boot_tb.lookup_node sim "core_ce"
+  and n_is_fetch = Boot_tb.lookup_node sim "is_fetch"
+  and n_core_wr = Boot_tb.lookup_node sim "core_wr"
+  and n_core_rd = Boot_tb.lookup_node sim "core_rd"
+  and n_core_adr = Boot_tb.lookup_node sim "core_adr"
+  and n_core_ben = Boot_tb.lookup_node sim "core_ben"
+  and n_cpu_internal = Boot_tb.lookup_node sim "cpu_internal"
+  and r_cr_busy = Boot_tb.lookup_reg sim "cr_busy"
+  and r_cr_op_vid = Boot_tb.lookup_reg sim "cr_op_vid" in
   let ci = Cyclesim.Node.to_int in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
@@ -201,18 +180,7 @@ let make_os
   inp.rst_n := lo;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
-  let step () =
-    inp.miso := if Sd_bridge.miso bridge = 1 then hi else lo;
-    Cyclesim.cycle sim;
-    let ctrl = Cyclesim.Reg.to_int spi_ctrl in
-    Sd_bridge.step
-      bridge
-      ~sclk:(Bits.to_unsigned_int !(outp.sclk))
-      ~rdy:(Cyclesim.Reg.to_int rdy)
-      ~data_tx:(Cyclesim.Reg.to_int shreg)
-      ~fast:((ctrl lsr 2) land 1 = 1)
-      ~selected:(ctrl land 3 = 1)
-  in
+  let step () = Boot_tb.Spi.tick sim spi in
   let retired () = ci n_core_ce = 1 && ci n_is_fetch = 1 in
   let cache_ev () =
     match n_cache_read, n_cache_hit with
