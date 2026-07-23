@@ -31,13 +31,40 @@ module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
 let cycle_cap = 80_000_000
 
+(* SPI_DIV_LOG2 (the boot gates' fast mode, AGENT.md §9) forwards to every sim built here.
+   Turbo SPI shrinks each boot prefix ~3-4x; the window/lockstep gauges run post-handoff
+   and always compare same-divider pairs, so their RATIOS stay honest — but absolute
+   boot-cycle counts are not comparable to the recorded faithful-divider baselines (the
+   knob removes exactly the SPI-wait cycles boot_cycles measures). *)
+let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2")
+
+(* the report must say which divider produced it — first, before any gauge driver *)
+let () =
+  match spi_slow_div_log2 with
+  | Some n ->
+    Printf.printf
+      "\n\
+      \  NB SPI_DIV_LOG2=%d (turbo SPI): boot-cycle ABSOLUTES are not comparable to\n\
+      \  the recorded faithful-divider baselines; ratios/windows compare same-divider.\n\
+       %!"
+      n
+  | None -> ()
+;;
+
 (* boot to the OS handoff; return the cycle count (or None if it never leaves the ROM) *)
 let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create ~fast_mul ~mul_stages ~icache ~read_cycles ~write_cycles i)
+      Board_tb.create
+        ?spi_slow_div_log2
+        ~fast_mul
+        ~mul_stages
+        ~icache
+        ~read_cycles
+        ~write_cycles
+        i)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -140,6 +167,7 @@ let make_os
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
       Board_tb.create
+        ?spi_slow_div_log2
         ~fast_mul:false
         ~mul_stages:0
         ~icache

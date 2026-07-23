@@ -153,6 +153,11 @@ first measurement read "6 cycles" for a 1-cycle store); the core's view is
 - All three are opt-in (built by `@check` so they can't rot; run by alias). `@bench_boot`
   now carries the whole Phase-10 gauge suite — a dozen boots of the PSRAM SoC plus several
   2M-instruction windows through the interpreter, ~20–25 minutes end to end.
+- `bench_boot` honours the boot gates' fast mode (`SPI_DIV_LOG2=2`, AGENT.md §9 — ~8 min
+  end to end): the lockstep/A-B/autopsy *ratios* hold (every pair compares at the same
+  divider; validated 2026-07-23, e.g. 10a 5.92× vs 5.94×, fb-BRAM 1.181× vs 1.180×), but
+  boot-cycle *absolutes* and the numbers recorded above are faithful-divider-defined —
+  re-measure knob-unset before updating any of them. The report banners the mode.
 - Numbers above are from this sim harness (behavioural `Cellram_model`, `read_cycles` as
   noted). They're for *ratios and Amdahl context*, not absolute wall-clock — the point is
   which lever moves the needle, and by how much.
