@@ -69,7 +69,7 @@
  (modules bench_boot)
  ; board_tb brings the board Soc + Cellram_model wiring — and risc5 / nexys4_board
  ; transitively; the bench itself derives no interfaces, so no ppx.
- (libraries board_tb emu hardcaml sd_bridge boot_checkpoint_common))
+ (libraries board_tb emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
 
 (rule
  (alias bench_boot)

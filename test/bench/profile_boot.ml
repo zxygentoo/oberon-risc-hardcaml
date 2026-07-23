@@ -21,16 +21,10 @@ let rom_word_base = 0xFFFF_F800 / 4 (* boot ROM word base (= 0x3FFFE00) *)
 let cap = 3_000_000 (* reset → handoff (~403K) + ~2.6M of the running OS *)
 
 let () =
-  (* boot the oracle exactly as the checkpoint does: PCLink + no-op clipboard + the disk *)
+  (* boot the oracle exactly as the checkpoint does (BCC.make_oracle: PCLink + no-op
+     clipboard + the disk) *)
   let tmp = BCC.copy_to_temp BCC.disk_image in
-  let oracle = R.make () in
-  R.set_serial oracle (Emu.Pclink.to_serial (Emu.Pclink.create ()));
-  R.set_clipboard
-    oracle
-    (Emu.Clipboard.to_clipboard
-       (Emu.Clipboard.create
-          { Emu.Clipboard.get_text = (fun () -> None); set_text = (fun _ -> ()) }));
-  R.set_spi oracle 1 (Emu.Disk.to_spi (Emu.Disk.create (Some tmp)));
+  let oracle = BCC.make_oracle ~disk:tmp in
   let ram = R.For_tests.ram oracle in
   let bootrom = Emu.Boot_rom.bootloader in
   let rom_instr = ref 0
