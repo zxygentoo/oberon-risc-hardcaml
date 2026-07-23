@@ -16,6 +16,9 @@ let some what = function
 let lookup_reg sim n = some n (Cyclesim.lookup_reg_by_name sim n)
 let lookup_mem sim n = some n (Cyclesim.lookup_mem_by_name sim n)
 
+(* node-or-reg: plain lookup_node_by_name misses registers (AGENT.md §6) *)
+let lookup_node sim n = some n (Cyclesim.lookup_node_or_reg_by_name sim n)
+
 (* the packed N/Z/C/OV flags word, as the oracle reads it *)
 let flags_word sim =
   let r n = Cyclesim.Reg.to_int (lookup_reg sim n) in
@@ -46,12 +49,12 @@ module Spi = struct
     }
   ;;
 
-  (* one sim cycle with the SD card on the wire: present miso, cycle, then advance the
-     bridge on the cycle's outputs (whole-value exchange begins on rdy's falling edge —
-     see Sd_bridge) *)
-  let tick sim t =
-    t.miso := if Sd_bridge.miso t.bridge = 1 then hi else lo;
-    Cyclesim.cycle sim;
+  (* present the card's miso for the coming edge *)
+  let set_miso t = t.miso := if Sd_bridge.miso t.bridge = 1 then hi else lo
+
+  (* advance the bridge on the settled post-edge state (whole-value exchange begins on
+     rdy's falling edge — see Sd_bridge) *)
+  let step t =
     let ctrl = Cyclesim.Reg.to_int t.ctrl in
     Sd_bridge.step
       t.bridge
@@ -60,6 +63,14 @@ module Spi = struct
       ~data_tx:(Cyclesim.Reg.to_int t.shreg)
       ~fast:((ctrl lsr 2) land 1 = 1)
       ~selected:(ctrl land 3 = 1)
+  ;;
+
+  (* one sim cycle with the SD card on the wire; split-phase harnesses (risc_core_dump)
+     call [set_miso] / [step] around their own edge instead *)
+  let tick sim t =
+    set_miso t;
+    Cyclesim.cycle sim;
+    step t
   ;;
 end
 

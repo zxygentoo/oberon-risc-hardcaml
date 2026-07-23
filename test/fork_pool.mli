@@ -17,3 +17,7 @@ val run
   -> work_root:string
   -> (string * (unit -> bool)) list
   -> int
+
+(** cd to the repo root (nearest ancestor with dune-project) — both runners launch from
+    varying cwds and keep every path repo-root-relative *)
+val cd_to_repo_root : unit -> unit

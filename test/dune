@@ -105,7 +105,7 @@
 (executable
  (name risc_core_dump)
  (modules risc_core_dump)
- (libraries risc5 emu hardcaml unix sd_bridge))
+ (libraries risc5 emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
 
 ; The Phase-9 benchmarks/profilers (bench_core, profile_boot) live in test/bench/ with
 ; their own dune — driven by `dune build @bench` / `@profile_boot`. The board-SoC Verilog

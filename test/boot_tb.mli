@@ -11,6 +11,9 @@ val lookup_reg : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Reg.t
 
 val lookup_mem : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Memory.t
 
+(** node-or-reg lookup — plain node lookup misses registers (AGENT.md §6) *)
+val lookup_node : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Node.t
+
 (** the packed N/Z/C/OV flags word (Z | N<<1 | C<<2 | V<<3), as the oracle reads it *)
 val flags_word : ('i, 'o) Cyclesim.t -> int
 
@@ -30,6 +33,12 @@ module Spi : sig
 
   (** one sim cycle with the SD card on the wire: present miso, cycle, advance the bridge *)
   val tick : ('i, 'o) Cyclesim.t -> t -> unit
+
+  (** the tick's halves, for split-phase harnesses that own their clock edge
+      (risc_core_dump's pre-edge capture): [set_miso] before the edge, [step] after *)
+  val set_miso : t -> unit
+
+  val step : t -> unit
 end
 
 (** [run_to_handoff ~sim ~miso ~sclk ~reset ~cap ~ram ()] boots [sim] from the real disk
