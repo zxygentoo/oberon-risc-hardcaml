@@ -468,7 +468,18 @@ Don't revisit without new evidence.
   is gone), and rendered signal order follows interface declaration order (was
   alphabetical — a one-time reflow of frozen waveform expects).
 - **Running tests:** `dune runtest` (fast suite, seconds); opt-in gates per the §6
-  table; `dune build @check` = the type-check/pre-commit gate.
+  table; `dune build @check` = the type-check/pre-commit gate. NB `@check`
+  type-checks but does **not** link the gate executables — `dune exec` (or
+  `dune build <path>.exe`) before running one from `_build` by hand.
+- **Fast gate iteration — `SPI_DIV_LOG2=2`:** all four boot gates take this env knob
+  (rides {!Spi}'s existing `?slow_div_log2` seam, guarded floor 2 = clk÷4). The boot
+  is ~80% *slow-mode SPI wait* at the faithful clk÷64, so the knob cuts the
+  checkpoints ~4× (35 s → ~9 s) and, with the goldens' oracle-hash early-exit
+  (automatic), the goldens ~1.7× (sim 2m47s → 1m38s; board shipped-knobs 7m15s →
+  4m23s). End states are divider-independent (validated byte-identical, and SPI
+  itself is `@formal`-proven). Knob **unset = the faithful ÷64, cycle-exact to the
+  historical runs** — keep at least one knob-unset run in pre-merge/release rituals.
+  (Record + probe numbers: `build-log.md` postscript.)
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** (the
   ox `ocamlformat` reports a git-hash version; a pin would mismatch and disable
   formatting). Format with `dune fmt`.

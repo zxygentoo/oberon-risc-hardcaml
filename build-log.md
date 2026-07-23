@@ -622,3 +622,26 @@ board layer:
 - Cross-repo: `run_sim -hw` captured scanout (24576/24576 words) ≡ the host golden
   **bit-identical**; on-silicon timedemo 5026 exact at 14.1 fps; both clients
   human-confirmed on hardware.
+
+---
+
+## Postscript — faster boot gates (2026-07-23, feat/fast-boot-gates)
+
+With the machine complete, the heavyweight gates got their own measure-first pass. A
+per-cycle probe showed they were never interpreter-bound (Cyclesim ~0.24 M cyc/s on the
+sim SoC; `trace_all` free *and* required for the by-name lookups; `--profile release`
+nil — so the rejected compiled backends stay rejected): **80% of boot-to-handoff cycles
+were slow-mode SPI transfers** (11,985 × 512 cycles at `SPI.v`'s clk÷64 — SD init plus
+the boot ROM's early reads; the OS SD driver adds 12,896 more post-handoff), and the
+goldens then re-confirmed an already-stable framebuffer for ~6.5 M cycles. Two
+default-off test-side levers: the **`SPI_DIV_LOG2` env knob** on all four gates, riding
+{!Spi}'s existing `?slow_div_log2` seam newly plumbed through `lib/Soc.create` and the
+board Tb (=2 → slow transfers cost 32 cycles; the gates' faithful 6 never pinned the
+shipped board's 8 anyway), and an **oracle-hash early-exit** in the goldens' settle loop
+(the verdict still re-diffs word-exact; failures run to cap). Measured, all gates PASS
+with byte-identical end states: checkpoints 35 s → ~9 s (7.64 M → 1.88 M cycles), sim
+golden 2m47s → 1m38s, board golden at the shipped knobs 7m15s → 4m23s; knob unset
+reproduces the old runs cycle-exact (handoff 7,642,731) and `emit_verilog` is untouched.
+Deferred, priced: a fast-divider seam (÷3 → ÷2, ~1.5× on the remaining fast transfers)
+and `bench_boot` adoption (window gauges only — its `boot_cycles` gauges *measure* the
+cycles the knob removes).
