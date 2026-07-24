@@ -4,8 +4,9 @@ _build/
 .merlin
 *.merlin
 
-# Local opam switch
-_opam/
+# Local opam switch (dir or `opam switch link` symlink — root-anchored, no
+# trailing slash: a dir-only `_opam/` pattern would not match the symlink)
+/_opam
 
 # Original Project Oberon sources (Verilog, PDFs, boot ROM): not vendored (licensing). The
 # co-sim fetches the reference Verilog on demand into test/_po/ and checksum-verifies it; see
