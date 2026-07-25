@@ -7,8 +7,8 @@ anything board-specific.
 
 The whole design is Hardcaml except one hand-written Verilog shim (`nexys4_top.v`) that
 instantiates the vendor primitives (clock, IO buffers, reset). This README is the local map +
-how to build; the design rationale is in the root `AGENT.md` (§3 portable-core/board-shim split,
-§4 the memory reality, §5 the phase plan, §7 the ISA).
+how to build; the design rationale is in the root `AGENT.md` (§3 the portable-core/board-layer
+split, §4 the memory reality, §5 status & history, §7 the ISA cheat sheet).
 
 ## What's here
 
