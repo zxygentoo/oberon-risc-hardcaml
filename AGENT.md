@@ -7,9 +7,10 @@ desktop on real silicon (60 MHz, cached — 2.4× the original) and runs DOOM; e
 faithful module is proven equivalent to the original Verilog, and the whole system is
 verified against an OCaml emulator (§6).
 
-This file is the **manual**: the sources (§1), the locked design rules (§2–§4), status
-(§5), the verification machinery (§6), reference material (§7–§8), and repo/toolchain
-mechanics (§9). The phase-by-phase build log is **`build-log.md`**.
+This file is the **manual** (`CLAUDE.md` symlinks to `AGENT.md`): the sources (§1),
+the locked design rules (§2–§4), status (§5), the verification machinery (§6),
+reference material (§7–§8), and toolchain mechanics (§9). The phase-by-phase build log
+is **`build-log.md`**.
 
 ---
 
@@ -123,8 +124,10 @@ never the reverse):
   vendor-free: `cellram` (PSRAM controller + CPU/video arbiter + `?write_buffer` FIFO),
   `cache` (direct-mapped write-through read/I-cache, async LUTRAM, 0-stall
   combinational hit, `?write_update` snoop), `framebuf` (framebuffer BRAM shadow —
-  video reads on-chip), `halftone` (the 8bpp dithered-overlay display mode), `soc`, and
-  `emit_verilog` (emits `soc_board.v`).
+  video reads on-chip), `halftone` (the 8bpp dithered-overlay display mode), `soc`,
+  `emit_verilog` (emits `soc_board.v`), and the test-only `cellram_model` (sim double
+  of the PSRAM chip — never synthesized); `gen_verilog.sh` + the
+  `build`/`program`/`flash` Tcl scripts drive the Vivado emit → synth → program flow.
 - **`nexys4_top.v` — the only vendor code:** MMCM (100 → 60 MHz system clock, VCO 780;
   → 65 MHz pixel clock), `IOBUF`s (PSRAM data bus, mouse open-drain lines), POR. Pins +
   CDC constraints in `nexys4.xdc` (VGA drives 1-bit mono onto the 12-bit DAC; see the
@@ -372,50 +375,9 @@ against the RTL itself they can't arise.*
 
 ---
 
-## 9. Repo layout & toolchain
+## 9. Toolchain
 
-```
-oberon-risc-hardcaml/
-  AGENT.md / CLAUDE.md    ← this manual (CLAUDE.md is a symlink to AGENT.md)
-  build-log.md            ← the phase-by-phase build log
-  dune-project, dune      ← root build config (dune restricted to: lib board test vendor)
-  lib/                    ← design library `risc5` — the faithful machine (§3). Every
-                            module: .mli + co-located inline tests; the .ml header names
-                            the RTL file it ports.
-  board/
-    nexys-4/              ← Nexys 4 target = library `nexys4_board`:
-      cellram, cache, framebuf, halftone, soc   the board design (§3), each .ml+.mli
-      cellram_model           sim double of the PSRAM chip (test-only, never synthesized)
-      emit_verilog.ml         emits soc_board.v — THE shipped-config record (§3)
-      nexys4_top.v            vendor shim: MMCM/IOBUF/POR (the ONLY vendor code)
-      nexys4.xdc              pins + CDC constraints
-      build/program/flash.tcl, gen_verilog.sh   Vivado emit → synth → program flow
-      Mod/                    Oberon-side drivers/demos (Halftone.Mod, Mandel.Mod)
-      README.md               board design log (bring-up, PS/2 topology, DOOM cache)
-    _generated/<target>/  ← git-ignored: emitted soc_board.v
-    _build/<target>/      ← git-ignored: Vivado runs + the bitstream
-  test/                   ← fast suite (test_fp_*, test_cpu_lockstep, test_rom) + the
-                            opt-in system gates (test_boot_checkpoint, test_visual_golden)
-    board/nexys-4/        ← board-SoC gates + bench_boot, sharing the board_tb harness
-    bench/                ← target-independent gauges; its README.md indexes all gauges
-    cosim/                ← RTL co-sim (Verilator): unit dumps + the boot-stream core replay
-    formal/               ← equivalence/property proofs; proofs/ = .ys templates
-    fetch-rtl.sh, rtl-sources.txt   ← fetch + checksum-pin the reference .v
-    _po/                  ← fetched originals, git-ignored (verilog/src/*.v only)
-    _work/                ← test scratch, git-ignored; safe to delete
-  vendor/
-    oberon-risc-emu-ocaml/  ← git submodule: the OCaml emulator, pinned
-    emu/                    ← builds the submodule's lib/ as library `emu`
-```
-
-**Emu wiring.** The submodule's `risc_core` is private behind its own `dune-project`,
-so `vendor/emu/dune` `copy_files` its `lib/` sources and builds them as library
-**`emu`** (warnings off; only dep `unix`) — self-contained, submodule pristine. The
-boot ROM lives in the design as `Risc5.Rom`; the emulator keeps its own `Emu.Boot_rom`,
-and `test/test_rom.ml` pins the two equal — design and emulator can never boot
-different images.
-
-**Toolchain.** **OxCaml** — opam switch **`5.2.0+ox`**, dune `3.22+ox`, Hardcaml
+**OxCaml** — opam switch **`5.2.0+ox`**, dune `3.22+ox`, Hardcaml
 **`v0.18~preview`** (+ `ppx_hardcaml`, `hardcaml_waveterm`, `hardcaml_verify`). We
 track the preview on purpose — `docs.hardcaml.org` documents exactly this build — and
 it rolls forward under us. `opam install hardcaml_of_verilog hardcaml_verify --yes`
@@ -439,6 +401,13 @@ speedups at the cost of multi-minute recompiles or the `lookup_*` introspection 
 harnesses live on; the boot gates run the plain Cyclesim interpreter (~0.39 M cycles/s).
 Don't revisit without new evidence.
 
+**Emu wiring.** The submodule's `risc_core` is private behind its own `dune-project`,
+so `vendor/emu/dune` `copy_files` its `lib/` sources and builds them as library
+**`emu`** (warnings off; only dep `unix`) — self-contained, submodule pristine. The
+boot ROM lives in the design as `Risc5.Rom`; the emulator keeps its own `Emu.Boot_rom`,
+and `test/test_rom.ml` pins the two equal — design and emulator can never boot
+different images.
+
 - Build on the ox switch: `eval $(opam env --switch 5.2.0+ox --set-switch)` first. The
   project lives on `5.2.0+ox`, **not** `default`.
 - **Standard library — Jane Street `Base` over `Stdlib`, minimally.** Default to `Base`
@@ -449,7 +418,8 @@ Don't revisit without new evidence.
   `registers.ml` is the reference shape.
 - **Every design module carries an `.mli`** — the public contract owns the doc
   comments; the `.ml` keeps implementation notes + co-located tests. Hardcaml
-  interfaces re-derive in the signature; `[@bits N]` widths stay in the `.ml`.
+  interfaces re-derive in the signature; `[@bits N]` widths stay in the `.ml`, and a
+  faithful `lib/` module's `.ml` header names the RTL file it ports.
   `lib/left_shifter.{ml,mli}` is the reference shape.
 - **Module naming — role-based** (`cpu.ml`, `uart_rx.ml` — the library reads as the
   machine's anatomy), never 1:1 after the Verilog file names; §2 binds *behavior and
@@ -474,22 +444,17 @@ Don't revisit without new evidence.
 - **Boot-gate fast mode:** `SPI_DIV_LOG2=2` runs any boot gate ~2–4× faster (turbo
   SPI divider; same end states). Default = the faithful divider — use it for sparse
   runs like the pre-commit check. Details: `build-log.md` postscript.
+- Git-ignored work dirs: `board/_generated/<target>/` (the emitted `soc_board.v`),
+  `board/_build/<target>/` (Vivado runs + the bitstream), `test/_po/` (the fetched
+  reference Verilog — §1), `test/_work/` (test scratch; safe to delete).
 - Formatting: `.ocamlformat` is `profile = janestreet` with **no `version` pin** (the
   ox `ocamlformat` reports a git-hash version; a pin would mismatch and disable
   formatting). Format with `dune fmt`.
+- **Git (git-flow):** work on `develop` (**never commit or merge directly to `main`**
+  — released state only), features on **`feat/<name>`** (not git-flow's default
+  `feature/`); before every commit run `dune fmt` + `dune build @check` and fix what
+  they flag — if a flagged issue isn't reasonable to fix (a false positive,
+  vendored/generated code, a fix that would trade §2 fidelity), **stop and notify the
+  human** instead of silently suppressing it — and end the commit message with the
+  `Co-Authored-By: Claude …` trailer.
 - Tmp/scratch for this agent: `$CLAUDE_JOB_DIR/tmp`.
-
-### Git workflow (git-flow)
-
-- **`main`** = released state only. **Never commit or merge work directly to `main`.**
-  (Releases merge from `develop`; the first landed 2026-07.)
-- **`develop`** = integration branch; the normal working branch.
-- Feature branches: **`feat/<name>`** (note `feat/`, *not* git-flow's default
-  `feature/`), via `git flow feature start/finish <name>`. Other prefixes are git-flow
-  defaults; empty version-tag prefix.
-- Remote `origin` = the GitHub repo (HTTPS, pushes as `zxygentoo`).
-- **Pre-commit gate — run `dune fmt` and `dune build @check` before every commit, and
-  fix what they flag.** If a flagged issue isn't reasonable to fix — a false positive,
-  vendored/generated code, or a "fix" that would compromise port fidelity (§2) — **stop
-  and notify the human** instead of silently suppressing it.
-- Commit messages end with the `Co-Authored-By: Claude …` trailer.
