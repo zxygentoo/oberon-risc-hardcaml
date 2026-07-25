@@ -54,7 +54,7 @@ for getting a 3rd async read port out of 2-read-port LUT RAM. Its bit-sliced + d
 (1024 bits) is structurally incongruent with our single 16×32 array (512 bits): `equiv_make` has
 no flip-flops to pair, and a memory miter isn't inductive on outputs alone (an unread location
 can differ in an unreachable state — empirically only a *shallow bounded* check is tractable
-there). This is the canonical §2/§3 "structure is not the spec" case, so we prove our `Registers`
+there). This is the canonical §2 "structure is not the spec" case, so we prove our `Registers`
 against the behavioural **contract** instead (`registers_spec.v`: 16×32, three async reads, one
 sync write). Both sides are a single array, so the shared sequential script's `memory` pass lowers
 them to flip-flops that pair by name and `equiv_induct` closes (unbounded). That Wirth's

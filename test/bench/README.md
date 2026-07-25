@@ -81,8 +81,8 @@ Composing the three:
 fetch is currently a multi-cycle PSRAM read) or a wider/burst PSRAM path — not more
 compute.** The DSP multipliers were correct to build (they're free once the DSP48s are
 there, and they took the multiply *off the critical path*, which is what let the clock reach
-60 MHz) — but as an end-to-end *throughput* play they're Amdahl-bound. See AGENT.md §5 for
-the Phase-9 log and the deferred Newton-Raphson divider.
+60 MHz) — but as an end-to-end *throughput* play they're Amdahl-bound. See `build-log.md`
+Phase 9 for the full log and the deferred Newton-Raphson divider.
 
 ## The Phase-10 gauges (all in `bench_boot`, same alias)
 
