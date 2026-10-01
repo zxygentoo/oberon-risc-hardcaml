@@ -10,10 +10,10 @@
    functionally correct: the booting machine reaches the same state.
 
    The SoC + PSRAM-model wiring is the shared {!Board_tb}; the drive-to-handoff is
-   {!Boot_tb}; disk / oracle / §8 compare are {!Boot_checkpoint_common}. Here we supply
-   only the board sim, its reset preamble, and the loaded-image read via the model's two
-   byte lanes ([Board_tb.read_word]). Small wait counts (the model answers at once; only
-   the FSM control flow is under test). *)
+   {!Boot.Tb}; disk / oracle / §8 compare are {!Boot.Checkpoint}. Here we supply only the
+   board sim, its reset preamble, and the loaded-image read via the model's two byte lanes
+   ([Board_tb.read_word]). Small wait counts (the model answers at once; only the FSM
+   control flow is under test). *)
 
 open Hardcaml
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
@@ -29,7 +29,7 @@ let run_soc_to_handoff create () =
   and outp = Cyclesim.outputs sim in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
-  Boot_tb.run_to_handoff
+  Boot.Tb.run_to_handoff
     ~sim
     ~miso:inp.miso
     ~sclk:outp.sclk
@@ -40,8 +40,8 @@ let run_soc_to_handoff create () =
       inp.rst_n := hi)
     ~cap:soc_cycle_cap
     ~ram:(fun () ->
-      let cram_lo = Boot_tb.lookup_mem sim "cram_lo"
-      and cram_hi = Boot_tb.lookup_mem sim "cram_hi" in
+      let cram_lo = Boot.Tb.lookup_mem sim "cram_lo"
+      and cram_hi = Boot.Tb.lookup_mem sim "cram_hi" in
       fun w -> Board_tb.read_word ~cram_lo ~cram_hi w)
     ()
 ;;
@@ -60,7 +60,7 @@ let () =
     | Some n -> { b with spi_slow_div_log2 = int_of_string n }
   in
   Printf.printf "── bare PSRAM controller ──\n%!";
-  Boot_checkpoint_common.run
+  Boot.Checkpoint.run
     ~run_soc_to_handoff:(run_soc_to_handoff (Board_tb.create bare))
     ~pass_msg:
       "CHECKPOINT (BOARD/PSRAM) PASS — Soc boots the real disk to the OS handoff through \
@@ -71,7 +71,7 @@ let () =
     "── %s configuration ──\n  %s\n%!"
     (if cfg = Nexys4_board.Build_config.shipped then "shipped" else "overridden")
     (Nexys4_board.Build_config.to_string cfg);
-  Boot_checkpoint_common.run
+  Boot.Checkpoint.run
     ~run_soc_to_handoff:(run_soc_to_handoff (Board_tb.create ~datasheet_chip:true cfg))
     ~pass_msg:
       "CHECKPOINT (BOARD/configured) PASS — the same handoff state through the full \

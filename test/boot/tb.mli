@@ -2,9 +2,12 @@
     goldens): loud by-name lookups, the SPI/SD-card tick, and the run-to-handoff driver.
     SoC-independent — both SoCs expose the same register/memory names; each gate supplies
     its sim construction, reset preamble, and RAM readback as closures. The Hardcaml-free
-    half is {!Boot_checkpoint_common}. *)
+    halves are {!Disk}, {!Oracle}, {!Checkpoint} and {!Golden}. *)
 
 open Hardcaml
+
+(** a SoC word pc below this has left the ROM-decode region for low RAM — the OS handoff *)
+val rom_region_base : int
 
 (** by-name lookups that fail loudly — a silent [None] would read as zeros (AGENT.md §6) *)
 val lookup_reg : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Reg.t
@@ -34,8 +37,8 @@ module Spi : sig
   (** one sim cycle with the SD card on the wire: present miso, cycle, advance the bridge *)
   val tick : ('i, 'o) Cyclesim.t -> t -> unit
 
-  (** the tick's halves, for split-phase harnesses that own their clock edge
-      (risc_core_dump's pre-edge capture): [set_miso] before the edge, [step] after *)
+  (** the tick's halves, for split-phase harnesses that own their clock edge (core_dump's
+      pre-edge capture): [set_miso] before the edge, [step] after *)
   val set_miso : t -> unit
 
   val step : t -> unit
@@ -43,11 +46,10 @@ end
 
 (** [scan_frame sim ~tick ~rgb] runs one full raster frame of [tick]s and rebuilds the
     framebuffer from what actually leaves the [rgb] pins (raster position read from the
-    [hcnt]/[vcnt] registers). Returns the image, in {!Boot_checkpoint_common}'s
-    framebuffer layout, and the number of lit pixels seen {e outside} the visible window
-    (blanking must be dark). The goldens compare it to the framebuffer memory they hashed,
-    which puts the whole scan-out path — fetch, shadow read port, display-mode mux,
-    shifter — under the gate. *)
+    [hcnt]/[vcnt] registers). Returns the image, in {!Golden}'s framebuffer layout, and
+    the number of lit pixels seen {e outside} the visible window (blanking must be dark).
+    The goldens compare it to the framebuffer memory they hashed, which puts the whole
+    scan-out path — fetch, shadow read port, display-mode mux, shifter — under the gate. *)
 val scan_frame
   :  ('i, 'o) Cyclesim.t
   -> tick:(unit -> unit)
@@ -66,4 +68,4 @@ val run_to_handoff
   -> cap:int
   -> ram:(unit -> int -> int)
   -> unit
-  -> Boot_checkpoint_common.snapshot option
+  -> Checkpoint.snapshot option

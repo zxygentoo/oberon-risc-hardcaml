@@ -1,3 +1,19 @@
-; Only these directories are part of the build (keeps dune out of ./po).
+; Only these directories are part of the build.
 
 (dirs lib board test vendor)
+
+; Every gate in one alias: the fast suite, the four boot gates, the RTL co-sim and the
+; proofs. The opt-in ones need verilator, yosys and z3 (AGENT.md §6); the board visual
+; golden alone takes about ten minutes.
+
+(rule
+ (alias gates)
+ (deps
+  (alias_rec runtest)
+  (alias test/boot/boot_checkpoint)
+  (alias test/boot/visual_golden)
+  (alias test/board/nexys-4/boot_checkpoint_board)
+  (alias test/board/nexys-4/visual_golden_board)
+  (alias test/cosim/cosim)
+  (alias test/formal/formal))
+ (action (progn)))

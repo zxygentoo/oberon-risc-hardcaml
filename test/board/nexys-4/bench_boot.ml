@@ -26,7 +26,6 @@
    machines run in parallel, one forked worker each. *)
 
 open Hardcaml
-module BCC = Boot_checkpoint_common
 module Build_config = Nexys4_board.Build_config
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
@@ -75,17 +74,17 @@ type machine =
   }
 
 let machine (c : Build_config.t) =
-  let tmp = BCC.copy_to_temp BCC.disk_image in
-  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
+  let tmp = Boot.Disk.copy_to_temp Boot.Disk.image in
+  let bridge = Boot.Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create ~config:Cyclesim.Config.trace_all (Board_tb.create ~datasheet_chip:true c)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  let spi = Boot.Tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
   (* every probe resolves loudly: a silent miss would read as a column of zeros *)
-  let node name = Boot_tb.lookup_node sim name in
-  let pc = Boot_tb.lookup_reg sim "pc"
+  let node name = Boot.Tb.lookup_node sim name in
+  let pc = Boot.Tb.lookup_reg sim "pc"
   and core_ce = node "core_ce"
   and is_fetch = node "is_fetch"
   and core_wr = node "core_wr"
@@ -93,8 +92,8 @@ let machine (c : Build_config.t) =
   and core_adr = node "core_adr"
   and core_ben = node "core_ben"
   and cpu_internal = node "cpu_internal"
-  and cr_busy = Boot_tb.lookup_reg sim "cr_busy"
-  and cr_op_vid = Boot_tb.lookup_reg sim "cr_op_vid" in
+  and cr_busy = Boot.Tb.lookup_reg sim "cr_busy"
+  and cr_op_vid = Boot.Tb.lookup_reg sim "cr_op_vid" in
   (* the cache's strobes exist only in a machine that has the cache *)
   let cache = if c.icache then Some (node "cache_read", node "cache_hit") else None in
   let v = Cyclesim.Node.to_int in
@@ -129,12 +128,12 @@ let machine (c : Build_config.t) =
   let video_bus () =
     Cyclesim.Reg.to_int cr_busy = 1 && Cyclesim.Reg.to_int cr_op_vid = 1
   in
-  { step = (fun () -> Boot_tb.Spi.tick sim spi)
+  { step = (fun () -> Boot.Tb.Spi.tick sim spi)
   ; pc = (fun () -> Cyclesim.Reg.to_int pc)
   ; bucket
   ; access
   ; video_bus
-  ; cleanup = (fun () -> BCC.rm_temp tmp)
+  ; cleanup = (fun () -> Boot.Disk.rm_temp tmp)
   }
 ;;
 
@@ -169,7 +168,7 @@ type run =
 let measure ?(observe = fun ~measuring:_ _ -> ()) (c : Build_config.t) =
   let m = machine c in
   let boot_cycles = ref 0 in
-  while m.pc () >= BCC.rom_region_base do
+  while m.pc () >= Boot.Tb.rom_region_base do
     if !boot_cycles >= boot_cycle_cap
     then failwith "bench_boot: no handoff within the cycle cap";
     m.step ();

@@ -1,10 +1,10 @@
 (* Boot-stream RTL co-sim — capture half (AGENT.md §6 layer 3, for the CPU core).
 
    Boot the SoC from the real disk and record the CPU core's per-cycle I/O to a trace,
-   which [test/cosim/core.cpp] replays through the reference [RISC5.v] under Verilator to
-   assert the core is cycle-exact to the spec across a real workload — the core's only
-   cycle-level RTL check before the Phase-8 equivalence proof (the unit co-sims cover the
-   peripherals and FP units; this covers the whole core over a boot).
+   which [core.cpp] replays through the reference [RISC5.v] under Verilator to assert the
+   core is cycle-exact to the spec across a real workload — the core's only cycle-level
+   RTL check before the Phase-8 equivalence proof (the unit co-sims cover the peripherals
+   and FP units; this covers the whole core over a boot).
 
    Why a captured boot trace pins any divergence exactly. Both our core and [RISC5.v]
    start from the same reset state (the regfile inits to 0 on both sides). Feed [RISC5.v]
@@ -21,7 +21,7 @@
    - bytes 1-4 / 5-8: codebus / inbus (u32) — core INPUTS, drive RISC5.v
    - bytes 9-12 / 13-16: adr / outbus (u32) — core OUTPUTS, the expected values
 
-   Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Sd_bridge} SD
+   Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Boot.Sd_bridge} SD
    card), trimmed to the capture. Opt-in (run via the cosim runner, cosim_run); needs the
    disk image. Env: [DISK_IMG] (default the vendored .dsk), [CORE_TRACE] (output path),
    [CAP] (hard cycle cap, default 2_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
@@ -29,7 +29,6 @@
    file. *)
 
 open Hardcaml
-module BCC = Boot_checkpoint_common
 module Soc = Risc5.Soc
 module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
 
@@ -56,8 +55,8 @@ type config =
 let default_cap = 10_000_000
 
 let read_config () =
-  (* BCC.disk_image already honors DISK_IMG and resolves from the project root *)
-  let disk_image = BCC.disk_image in
+  (* Boot.Disk.image already honors DISK_IMG and resolves from the project root *)
+  let disk_image = Boot.Disk.image in
   let trace_path =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
@@ -100,10 +99,10 @@ type probes =
   ; regfile : Cyclesim.Memory.t
   }
 
-(* the SPI-side handles (rdy/spi_shreg/spi_ctrl) live in {!Boot_tb.Spi} *)
+(* the SPI-side handles (rdy/spi_shreg/spi_ctrl) live in {!Boot.Tb.Spi} *)
 let lookup_probes sim =
-  let reg = Boot_tb.lookup_reg sim
-  and node = Boot_tb.lookup_node sim in
+  let reg = Boot.Tb.lookup_reg sim
+  and node = Boot.Tb.lookup_node sim in
   { pc = reg "pc"
   ; ir = reg "ir"
   ; nf = reg "n"
@@ -112,7 +111,7 @@ let lookup_probes sim =
   ; ovf = reg "ov"
   ; irq = node "limit"
   ; stallx = node "vidreq"
-  ; regfile = Boot_tb.lookup_mem sim "regfile"
+  ; regfile = Boot.Tb.lookup_mem sim "regfile"
   }
 ;;
 
@@ -208,7 +207,7 @@ let run
        [rst_n] is the value applied for this state's edge; the replay drives it verbatim. *)
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
-    Boot_tb.Spi.set_miso spi;
+    Boot.Tb.Spi.set_miso spi;
     (* Record PRE-edge: settle the combinational cloud over the CURRENT state under THIS
        cycle's inputs, so each record is (inputs this state consumes, outputs this state
        drives) and the edge below transitions to the next state. [outp] must be the
@@ -243,7 +242,7 @@ let run
     Cyclesim.cycle_at_clock_edge sim;
     Cyclesim.cycle_after_clock_edge sim;
     (* drive the SD bridge (post-cycle, like the visual golden) *)
-    Boot_tb.Spi.step spi;
+    Boot.Tb.Spi.step spi;
     (* progress + halt detection *)
     let pc_now = Cyclesim.Reg.to_int probes.pc in
     if pc_now = !prev_pc then incr pc_same else pc_same := 0;
@@ -272,8 +271,8 @@ let run
 let () =
   let cfg = read_config () in
   (* boot + capture: SoC + the shared off-chip SD card *)
-  let tmp = BCC.copy_to_temp cfg.disk_image in
-  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
+  let tmp = Boot.Disk.copy_to_temp cfg.disk_image in
+  let bridge = Boot.Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
@@ -283,7 +282,7 @@ let () =
   and outp = Cyclesim.outputs ~clock_edge:Before sim in
   (* the SD bridge advances on the settled post-edge sclk, like every other boot gate *)
   let sclk_post = (Cyclesim.outputs sim).sclk in
-  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:sclk_post bridge in
+  let spi = Boot.Tb.Spi.attach sim ~miso:inp.miso ~sclk:sclk_post bridge in
   let probes = lookup_probes sim in
   (* idle the released peripheral lines high; switches/buttons default 0 = disk boot *)
   inp.rxd := hi;
@@ -293,7 +292,7 @@ let () =
   inp.msdat := hi;
   let oc = open_out_bin cfg.trace_path in
   Printf.printf
-    "risc_core_dump: booting %s\n  trace -> %s\n%!"
+    "core_dump: booting %s\n  trace -> %s\n%!"
     (Filename.basename cfg.disk_image)
     cfg.trace_path;
   let result =
@@ -303,12 +302,12 @@ let () =
       ~inp
       ~outp
       ~spi
-      ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+      ~spi_bytes:(fun () -> Boot.Sd_bridge.nbytes bridge)
       ~probes
       ~oc
   in
   close_out oc;
-  BCC.rm_temp tmp;
+  Boot.Disk.rm_temp tmp;
   let bytes = result.cycles * 17 in
   Printf.printf
     "\n\
@@ -331,12 +330,11 @@ let () =
      ROM, must not replay as a pass *)
   if result.pc_same >= spin_limit
   then (
-    prerr_endline "risc_core_dump: FAIL — the core halted (pc stuck)";
+    prerr_endline "core_dump: FAIL — the core halted (pc stuck)";
     exit 1);
   if cfg.cap_is_default && not (result.left_rom && result.ben_cycles > 0)
   then (
     prerr_endline
-      "risc_core_dump: FAIL — the default capture must reach OS code (handoff + byte \
-       access)";
+      "core_dump: FAIL — the default capture must reach OS code (handoff + byte access)";
     exit 1)
 ;;

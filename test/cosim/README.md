@@ -120,12 +120,12 @@ zip yourself and unzip its `src/*.v` into `test/_po/verilog/src/`.
 | `cosim.h` | shared C++ harness: universal `cosim_open` + `Unit` + `tick` + `hexval`, and two cross-check runners — `run_drain_cosim` for the stall-based FP units (open → run → drain on `stall` → compare `z`), and `run_serial_cosim` for the cycle-by-cycle serial units (reset → per-line `replay` → value/wave/cycle tally → summary) |
 | `<unit>.cpp` | Verilator harness, one per unit. FP units are ~8-line shells; the serial units (`spi`, `rs232t`, `rs232r`, `ps2`) are a `reset` + `replay` + `run_serial_cosim`; `vid` (two-clock) and `mouse` (bidirectional `inout`, split via `force`+XMR) keep their own `main` |
 | `vid_cosim.v` / `mouse_cosim.v` | extra `.v` wrappers handed to Verilator beside the reference `.v`: `vid_cosim` stubs the Xilinx `DCM`/`BUFG` and forces `VID`'s `pclk`; `mouse_cosim` splits `MousePM`'s open-drain `inout`s |
-| `risc_core_dump.ml` + `core.cpp` | the **CPU core** unit (boot-stream capture/replay — see below). `risc_core_dump` lives in `test/` (it needs `emu`+`sd_bridge`) and captures the boot trace; `core.cpp` replays it through `RISC5.v` |
+| `core_dump.ml` + `core.cpp` | the **CPU core** unit (boot-stream capture/replay — see below). `core_dump` boots the sim SoC through the boot harness (`test/boot/`) and captures the trace; `core.cpp` replays it through `RISC5.v` |
 | `ram16x1d.v` | the `RAM16X1D` distributed-RAM primitive `Registers.v` infers, supplied for the core replay |
 | `../fetch-rtl.sh` + `../rtl-sources.txt` | provenance: fetch + checksum-verify the reference `.v` into `test/_po/` (both at `test/`, shared with formal; toolchain-free; idempotent once cached) |
 | `cosim_run.ml` | the **parallel runner**: a typed `units` list (a `Stimulus`/`Core` variant), serialized prep (`../fetch-rtl.sh` + exe builds), then a forked-worker pool — per unit build → dump → verilate → cross-check, captured to `test/_work/cosim/<unit>/run.log` — and a PASS/FAIL summary (nonzero exit iff any failed) |
 
-The OCaml dumpers + `risc_core_dump` build under `dune build @check` (Verilator-free), so they can't
+The OCaml dumpers + `core_dump` build under `dune build @check` (Verilator-free), so they can't
 silently rot even though the cross-check itself only runs via `cosim_run`.
 
 ## CPU core (boot-stream RTL co-sim)
@@ -146,7 +146,7 @@ dune build @cosim                            # runs it alongside the other units
 dune exec test/cosim/cosim_run.exe -- core   # just the core
 ```
 
-`risc_core_dump.ml` boots the SoC from the real disk (the shared `Sd_bridge` SD card) and records the
+`core_dump.ml` boots the SoC from the real disk (the shared `Boot.Sd_bridge` SD card) and records the
 core's per-cycle I/O — `rst`/`irq`/`stallX`/`codebus`/`inbus` (inputs) and `adr`/`rd`/`wr`/`ben`/
 `outbus` (outputs) — to a 17-byte-per-cycle trace (10 M cycles, ~162 MiB, in
 `test/_work/cosim/core`; rewritten by every run, because it is the port's own recorded behaviour
@@ -167,7 +167,7 @@ drives), which keeps it self-consistent across the `rst` 0→1 reset boundary �
 at the first `rst=1` edge (the boot's first instruction is a taken branch, so this is the branch
 *target*) would be lost by a post-edge read. The replay drives `rst` per-record and compares every
 record from cycle 0, the reset cycle included. `CYC_FROM`/`CYC_TO`/`NOTRACE`/`CAP` env knobs on
-`risc_core_dump` window a pc/ir/flags/regs dump for zooming in on a divergence.
+`core_dump` window a pc/ir/flags/regs dump for zooming in on a divergence.
 
 ## Adding another unit
 

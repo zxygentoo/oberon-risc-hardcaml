@@ -14,17 +14,16 @@
    Run: dune build @profile_boot (or dune exec test/profile_boot.exe) *)
 
 module R = Emu.Risc
-module BCC = Boot_checkpoint_common
 
 let oracle_ram_base = 0x4_0000 (* word pc < this ⇒ low RAM (OS); else ROM *)
 let rom_word_base = 0xFFFF_F800 / 4 (* boot ROM word base (= 0x3FFFE00) *)
 let cap = 3_000_000 (* reset → handoff (~403K) + ~2.6M of the running OS *)
 
 let () =
-  (* boot the oracle exactly as the checkpoint does (BCC.make_oracle: PCLink + no-op
+  (* boot the oracle exactly as the checkpoint does (Boot.Oracle.create: PCLink + no-op
      clipboard + the disk) *)
-  let tmp = BCC.copy_to_temp BCC.disk_image in
-  let oracle = BCC.make_oracle ~disk:tmp in
+  let tmp = Boot.Disk.copy_to_temp Boot.Disk.image in
+  let oracle = Boot.Oracle.create ~disk:tmp in
   let ram = R.For_tests.ram oracle in
   let bootrom = Emu.Boot_rom.bootloader in
   let rom_instr = ref 0
@@ -69,7 +68,7 @@ let () =
     R.For_tests.single_step oracle;
     incr steps
   done;
-  BCC.rm_temp tmp;
+  Boot.Disk.rm_temp tmp;
   let total = !rom_instr + !ram_instr in
   let muldiv = !mul + !mul_u + !div in
   let stall = muldiv * 33 in

@@ -12,7 +12,7 @@
      a stimulus set, verilate the reference .v + harness, cross-check (value AND timing).
      The .cpp self-asserts (exits nonzero on mismatch).
    - The CPU core: a boot capture-and-replay — capture the core's per-cycle I/O over a
-     real Oberon boot (test/risc_core_dump.exe; 10 M cycles by default: the boot ROM, the
+     real Oberon boot (test/cosim/core_dump.exe; 10 M cycles by default: the boot ROM, the
      OS handoff, then OS initialisation) and replay it through RISC5.v + submodules,
      reporting the first cycle our port diverges. Recaptured on every run: the trace is
      the port's own recorded behaviour, so a reused one would vouch for a stale core.
@@ -177,7 +177,7 @@ let run_core name ~rtls ~extra_v ~cpp ~top =
   let cap_ok =
     sh
       (Printf.sprintf
-         "CORE_TRACE=%s _build/default/test/risc_core_dump.exe"
+         "CORE_TRACE=%s _build/default/test/cosim/core_dump.exe"
          (quote trace))
     = 0
   in
@@ -223,7 +223,7 @@ let ensure_exes selected =
       (fun spec ->
         match spec.kind with
         | Stimulus { dumper; _ } -> Printf.sprintf "test/cosim/%s.exe" dumper
-        | Core _ -> "test/risc_core_dump.exe")
+        | Core _ -> "test/cosim/core_dump.exe")
       selected
     |> List.sort_uniq String.compare
   in

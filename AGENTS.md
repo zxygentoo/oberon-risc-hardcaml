@@ -257,7 +257,12 @@ rot):
 | `@visual_golden_board` | board SoC golden in the shipped configuration (~9 min; `SPI_DIV_LOG2=2` ~4 min) + scan-out check; env knobs switch features off for bisecting | — |
 | `@cosim` | RTL co-sim: FP/peripheral units + the boot-stream core replay | verilator |
 | `@formal` | the 17 equivalence/property proofs | yosys, z3 |
+| `@gates` | all of the above plus `runtest`, in one alias | verilator, yosys, z3 |
 | `@bench`, `@profile_boot`, `@bench_boot` | the measurement gauges (index: `test/bench/README.md`) | — |
+
+Where they live: `test/boot/` (the boot harness — library `boot` — and the sim-SoC
+gates), `test/board/nexys-4/` (the board gates and the board gauge), `test/cosim/`,
+`test/formal/`, `test/bench/`; `test/` itself holds the fast suite.
 
 **Harness — co-locate unit tests; separate harnesses only for system tests.** Module
 tests live *inline in the design module's `.ml`* (`ppx_expect` + `qcheck`); reach for

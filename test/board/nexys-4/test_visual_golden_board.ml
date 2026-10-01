@@ -17,10 +17,9 @@
    the cache is what makes a board-level visual golden runnable at all. (AGENT.md §5 Phase
    10.)
 
-   The fb geometry, oracle boot, settle loop and verdict are shared in
-   {!Boot_checkpoint_common}; the SPI drive in {!Boot_tb}. This file keeps what is
-   board-specific: the knobs, the board wait counts, and the FB_BRAM shadow readback + its
-   coherence check.
+   The fb geometry, oracle boot, settle loop and verdict are shared in {!Boot.Golden}; the
+   SPI drive in {!Boot.Tb}. This file keeps what is board-specific: the knobs, the board
+   wait counts, and the FB_BRAM shadow readback + its coherence check.
 
    Opt-in: dune build @visual_golden_board. By default it boots exactly the configuration
    the bitstream ships ({!Nexys4_board.Build_config.shipped}: 16 KiB cache, write-update,
@@ -34,16 +33,15 @@
    verdict one more raster frame is scanned off the rgb pins and must reproduce it. *)
 
 open Hardcaml
-module BCC = Boot_checkpoint_common
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
-(* Boot the board SoC (SD card via {!Sd_bridge}) in configuration [cfg], run PAST the
+(* Boot the board SoC (SD card via {!Boot.Sd_bridge}) in configuration [cfg], run PAST the
    handoff until the framebuffer — reconstructed from the PSRAM model's two byte lanes via
    {!Board_tb.read_word}, or from the {!Nexys4_board.Framebuf} shadow under [fb_bram] —
    settles or [cap] cycles; then scan one frame off the rgb pins. *)
 let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle =
-  let tmp = BCC.copy_to_temp BCC.disk_image in
-  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
+  let tmp = Boot.Disk.copy_to_temp Boot.Disk.image in
+  let bridge = Boot.Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
@@ -51,15 +49,15 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
-  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
-  let pc = Boot_tb.lookup_reg sim "pc" in
-  let cram_lo = Boot_tb.lookup_mem sim "cram_lo"
-  and cram_hi = Boot_tb.lookup_mem sim "cram_hi" in
+  let spi = Boot.Tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  let pc = Boot.Tb.lookup_reg sim "pc" in
+  let cram_lo = Boot.Tb.lookup_mem sim "cram_lo"
+  and cram_hi = Boot.Tb.lookup_mem sim "cram_hi" in
   (* under FB_BRAM the golden reads the *shadow* — the words the raster actually fetches;
      the PSRAM window stays readable for the shadow-equality check below *)
   let fb_lanes =
     if cfg.fb_bram
-    then Some (Array.init 4 (fun k -> Boot_tb.lookup_mem sim (Printf.sprintf "fb%d" k)))
+    then Some (Array.init 4 (fun k -> Boot.Tb.lookup_mem sim (Printf.sprintf "fb%d" k)))
     else None
   in
   let shadow_word lanes idx =
@@ -69,11 +67,11 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
   let read_fb () =
     match fb_lanes with
     | Some lanes ->
-      Array.init BCC.fb_words (fun i ->
-        shadow_word lanes (BCC.fb_base_word - Nexys4_board.Framebuf.base + i))
+      Array.init Boot.Golden.fb_words (fun i ->
+        shadow_word lanes (Boot.Golden.fb_base_word - Nexys4_board.Framebuf.base + i))
     | None ->
-      Array.init BCC.fb_words (fun i ->
-        Board_tb.read_word ~cram_lo ~cram_hi (BCC.fb_base_word + i))
+      Array.init Boot.Golden.fb_words (fun i ->
+        Board_tb.read_word ~cram_lo ~cram_hi (Boot.Golden.fb_base_word + i))
   in
   let lo = Bits.of_unsigned_int ~width:1 0
   and hi = Bits.of_unsigned_int ~width:1 1 in
@@ -81,9 +79,9 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
   inp.rst_n := lo;
   Cyclesim.cycle sim;
   inp.rst_n := hi;
-  let tick () = Boot_tb.Spi.tick sim spi in
+  let tick () = Boot.Tb.Spi.tick sim spi in
   let fb, settled =
-    BCC.run_to_settle
+    Boot.Golden.run_to_settle
       ~target
       ~cap
       ~chunk
@@ -91,7 +89,7 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
       ~tick
       ~read_fb
       ~pc:(fun () -> Cyclesim.Reg.to_int pc)
-      ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
+      ~spi_bytes:(fun () -> Boot.Sd_bridge.nbytes bridge)
       ()
   in
   (* the shadow's own invariant, checked over the FULL span at the settled (quiet) point:
@@ -110,19 +108,19 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
       Some !m
   in
   (* one more frame, watching the pins: what scans out must be what the memory holds *)
-  let scan, stray = Boot_tb.scan_frame sim ~tick ~rgb:outp.rgb in
-  BCC.rm_temp tmp;
+  let scan, stray = Boot.Tb.scan_frame sim ~tick ~rgb:outp.rgb in
+  Boot.Disk.rm_temp tmp;
   fb, settled, shadow_mismatches, scan, stray
 ;;
 
 let () =
   let cfg = Board_tb.config_of_env () in
   let shipped = cfg = Nexys4_board.Build_config.shipped in
-  let oracle_fb, oracle_hash = BCC.boot_oracle_fb ~frames:40 in
+  let oracle_fb, oracle_hash = Boot.Golden.boot_oracle_fb ~frames:40 in
   Printf.printf
     "oracle (frames=40): hash=0x%Lx  %d set px\n%!"
     oracle_hash
-    (BCC.popcount oracle_fb);
+    (Boot.Golden.popcount oracle_fb);
   Printf.printf
     "booting the BOARD SoC past the handoff — %s configuration:\n  %s\n%!"
     (if shipped then "the SHIPPED" else "a NON-SHIPPED (overridden)")
@@ -147,25 +145,21 @@ let () =
        m
        Nexys4_board.Framebuf.size;
      exit 1);
-  let soc_hash = BCC.fb_fnv soc_fb in
+  let soc_hash = Boot.Golden.fb_fnv soc_fb in
   Printf.printf
     "soc: hash=0x%Lx  %d set px  settled=%b\n%!"
     soc_hash
-    (BCC.popcount soc_fb)
+    (Boot.Golden.popcount soc_fb)
     settled;
-  let tag =
-    if shipped then " (BOARD, shipped config)" else " (BOARD, overridden config)"
-  in
-  BCC.golden_report
-    ~tag
-    ~subject:"board-SoC"
-    ~render_label:"SoC (board)"
-    ~pass_tail:
-      ". The memory stack is transparent through boot + module load + desktop render."
+  Boot.Golden.report
+    ~machine:
+      (if shipped
+       then "the board SoC, shipped configuration"
+       else "the board SoC, OVERRIDDEN configuration")
     ~oracle_fb
     ~oracle_hash
     ~soc_fb
     ~soc_hash
     ~settled;
-  BCC.scanout_report ~soc_fb ~scan ~stray
+  Boot.Golden.scanout_report ~soc_fb ~scan ~stray
 ;;

@@ -1,0 +1,52 @@
+; The boot harness and the sim-SoC boot gates (AGENT.md §6 layer 5). Opt-in — they boot the
+; real Oberon disk image for millions of interpreter cycles — and built by @check so they
+; cannot rot:
+;   dune build @boot_checkpoint   the sim SoC to the OS handoff, against the oracle
+;   dune build @visual_golden     on to the idle desktop; framebuffer and scan-out
+; The board SoC's two gates (test/board/nexys-4/) and the core co-sim capture
+; (test/cosim/core_dump) boot through the same harness.
+
+; Library boot — what every boot shares:
+;   Disk        the disk image and a run's scratch copy of it
+;   Oracle      the emulator, wired as its frontend wires it
+;   Checkpoint  the handoff snapshot, the oracle's, and the §8-aware comparison
+;   Golden      framebuffer geometry, the oracle's desktop, settle loop, verdicts
+;   Sd_bridge   the SD card on the SoC's SPI pins (a bit-level slave over Emu.Disk)
+;   Tb          the Cyclesim side: loud lookups, the SD tick, run-to-handoff, scan-out
+
+(library
+ (name boot)
+ (modules disk oracle checkpoint golden sd_bridge tb)
+ (libraries emu hardcaml))
+
+; The gates read environment knobs; each rule lists its knobs as (env_var …) deps, so a
+; changed knob re-runs the alias instead of replaying dune's cached result.
+
+(executable
+ (name test_boot_checkpoint)
+ (modules test_boot_checkpoint)
+ (libraries risc5 emu hardcaml boot))
+
+(rule
+ (alias boot_checkpoint)
+ (deps
+  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
+ (action
+  (run ./test_boot_checkpoint.exe)))
+
+(executable
+ (name test_visual_golden)
+ (modules test_visual_golden)
+ (libraries risc5 emu hardcaml boot))
+
+(rule
+ (alias visual_golden)
+ (deps
+  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var SPI_DIV_LOG2)
+  (env_var SOC_CAP)
+  (env_var DISK_IMG))
+ (action
+  (run ./test_visual_golden.exe)))
