@@ -222,9 +222,12 @@ The layers:
    to the OS handoff at `pc=0`, ~403 K instructions; compare loaded image +
    architectural state — exact because the handoff is where representations realign)
    and the **visual golden** (boot to the idle desktop; framebuffer byte-identical,
-   hash `0xb9bdbf56ba51298d`). Both exist in lib and board variants; the board golden's
-   env knobs prove each board feature coherent (`FB_BRAM=1` also asserts shadow ≡
-   PSRAM). Board-layer changes add **same-work comparisons** — pc-lockstep two configs
+   hash `0xb9bdbf56ba51298d`; one more raster frame is then scanned off the `rgb` pins
+   and must reproduce it). Both exist in lib and board variants; the board gates boot
+   the **shipped configuration** (`Nexys4_board.Build_config.shipped` — the value the
+   emitter uses) by default, with env knobs (`ICACHE=0`, `FB_BRAM=0`, `WBUF=0`,
+   `FAST_MUL=0`, `LINES_LOG2=…`) as controls for bisecting; under the framebuffer
+   shadow the golden also asserts shadow ≡ PSRAM. Board-layer changes add **same-work comparisons** — pc-lockstep two configs
    over an aligned instruction prefix, compare cycles
    (`test/board/nexys-4/bench_boot.ml`).
 6. **Formal** — *prove* (not sample) equivalence to the reference `.v`; the exhaustive
@@ -249,9 +252,9 @@ rot):
 | Gate | What it checks | Needs |
 |---|---|---|
 | `@boot_checkpoint` | sim SoC boots the real `.dsk` to the OS handoff ≡ emulator (~22 s) | — |
-| `@boot_checkpoint_board` | the same through the board SoC (PSRAM/cache path) | — |
+| `@boot_checkpoint_board` | the same through the board SoC, twice: the bare PSRAM controller, then the shipped configuration | — |
 | `@visual_golden` | sim SoC to idle desktop; framebuffer byte-identical | — |
-| `@visual_golden_board` | board SoC golden; knobs `FB_BRAM=1 WRITE_UPDATE=1 WBUF=2 HALFTONE=1` prove the board features do no harm | — |
+| `@visual_golden_board` | board SoC golden in the shipped configuration (~9 min; `SPI_DIV_LOG2=2` ~4 min) + scan-out check; env knobs switch features off for bisecting | — |
 | `@cosim` | RTL co-sim: FP/peripheral units + the boot-stream core replay | verilator |
 | `@formal` | the 17 equivalence/property proofs | yosys, z3 |
 | `@bench`, `@profile_boot`, `@bench_boot` | the measurement gauges (index: `test/bench/README.md`) | — |

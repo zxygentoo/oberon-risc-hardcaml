@@ -41,6 +41,19 @@ module Spi : sig
   val step : t -> unit
 end
 
+(** [scan_frame sim ~tick ~rgb] runs one full raster frame of [tick]s and rebuilds the
+    framebuffer from what actually leaves the [rgb] pins (raster position read from the
+    [hcnt]/[vcnt] registers). Returns the image, in {!Boot_checkpoint_common}'s
+    framebuffer layout, and the number of lit pixels seen {e outside} the visible window
+    (blanking must be dark). The goldens compare it to the framebuffer memory they hashed,
+    which puts the whole scan-out path — fetch, shadow read port, display-mode mux,
+    shifter — under the gate. *)
+val scan_frame
+  :  ('i, 'o) Cyclesim.t
+  -> tick:(unit -> unit)
+  -> rgb:Bits.t ref
+  -> int array * int
+
 (** [run_to_handoff ~sim ~miso ~sclk ~reset ~cap ~ram ()] boots [sim] from the real disk
     to the OS handoff and snapshots the architectural state ([None] if pc never leaves the
     ROM region within [cap] cycles — reported either way). [reset] is the gate's own reset

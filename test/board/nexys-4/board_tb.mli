@@ -53,8 +53,27 @@ val create
   -> ?spi_slow_div_log2:int
        (** forwards to {!Nexys4_board.Soc.create}: the slow SPI divider depth (default 6 =
            SPI.v's clk÷64; the gates' SPI_DIV_LOG2=2 turbo knob passes 2 = clk÷4) *)
+  -> ?uart_baud_slow:int
+  -> ?uart_baud_fast:int
+  -> ?psram_read_access:int
+  -> ?psram_write_access:int
+  -> ?psram_write_pulse:int
+       (** the chip model's timing demands in clocks (default 1 = an instantly responding
+           chip; see {!Nexys4_board.Cellram_model.create}) *)
   -> Signal.t I.t
   -> Signal.t O.t
+
+(** [create_config c i] is {!create} with every knob taken from [c] — the board gates pass
+    {!config_of_env}, so by default they boot exactly what the bitstream contains. *)
+val create_config : Nexys4_board.Build_config.t -> Signal.t I.t -> Signal.t O.t
+
+(** {!Nexys4_board.Build_config.shipped} with the gates' environment overrides applied —
+    controls for bisecting a failure or running an A/B, never needed for the default run:
+    [ICACHE] / [WRITE_UPDATE] / [FB_BRAM] / [HALFTONE] / [FAST_MUL] (each [0] or [1]),
+    [LINES_LOG2], [MUL_STAGES], [WBUF] ([0] = no write buffer, [n] = depth n),
+    [READ_CYCLES] / [WRITE_CYCLES] (the PSRAM phase lengths) and [SPI_DIV_LOG2] (the
+    boot-speed knob). Anything unparsable fails loudly. *)
+val config_of_env : unit -> Nexys4_board.Build_config.t
 
 (** [read_word ~cram_lo ~cram_hi w] reconstructs 32-bit word [w] from the model's two
     8-bit lanes: halfword [2w] = low 16 bits, [2w+1] = high 16 bits; within each,

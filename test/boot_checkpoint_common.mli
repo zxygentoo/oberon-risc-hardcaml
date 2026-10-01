@@ -53,6 +53,16 @@ val fb_base_word : int
     words, FNV-1a hash) *)
 val boot_oracle_fb : frames:int -> int array * int64
 
+(** the framebuffer hash of the idle desktop the vendored disk image boots to;
+    {!boot_oracle_fb} fails unless the oracle reproduces it (skipped under [DISK_IMG]) and
+    always fails on a blank oracle screen *)
+val desktop_hash : int64
+
+(** [scanout_report ~soc_fb ~scan ~stray] is the scan-out verdict: [scan] (the image
+    {!Boot_tb.scan_frame} rebuilt from the [rgb] pins) must equal [soc_fb] word for word
+    and [stray] (lit pixels in blanking) must be 0. Prints PASS, or FAIL and exits 1. *)
+val scanout_report : soc_fb:int array -> scan:int array -> stray:int -> unit
+
 val popcount : int array -> int
 
 (** ASCII downsample: one char per [sx]x[sy] block, ['#'] if any pixel set; rows rendered

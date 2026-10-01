@@ -33,6 +33,8 @@ let project_root () =
 ;;
 
 (* DISK_IMG overrides (the goldens' historical knob, now uniform across the gates) *)
+let custom_disk_image = Option.is_some (Sys.getenv_opt "DISK_IMG")
+
 let disk_image =
   match Sys.getenv_opt "DISK_IMG" with
   | Some p -> p
@@ -41,6 +43,9 @@ let disk_image =
       (project_root ())
       "vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk"
 ;;
+
+(* the idle desktop the vendored disk image boots to (FNV-1a of the framebuffer) *)
+let desktop_hash = 0xb9bdbf56ba51298dL
 
 (* a SoC word pc below this left the ROM-decode region (0x3FF000..0x3FFFFF) for low RAM;
    the oracle's word pc below [oracle_ram_base] (= its mem_size/4) is likewise in low RAM *)
@@ -211,6 +216,17 @@ let boot_oracle_fb ~frames =
   let fb = Array.init fb_words (fun i -> R.framebuffer_word risc i) in
   let hash = Emu.Headless.framebuffer_hash risc in
   rm_temp tmp;
+  (* the goldens are differential, so pin the reference itself: an oracle that stopped
+     drawing would otherwise match a SoC that also draws nothing *)
+  if not (Array.exists (fun w -> w <> 0) fb)
+  then failwith "boot_oracle_fb: the oracle framebuffer is blank";
+  if (not custom_disk_image) && not (Int64.equal hash desktop_hash)
+  then
+    failwith
+      (Printf.sprintf
+         "boot_oracle_fb: oracle desktop hash 0x%Lx, expected the pinned 0x%Lx"
+         hash
+         desktop_hash);
   fb, hash
 ;;
 
@@ -296,6 +312,38 @@ let run_to_settle ?target ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes () =
       (if !matched then "  (= oracle hash — early exit)" else "")
   done;
   !prev, !stable >= settle || !matched
+;;
+
+(* The scan-out half of the goldens' verdict: the image rebuilt from the [rgb] pins over
+   one raster frame ({!Boot_tb.scan_frame}) must equal the framebuffer memory the golden
+   hashed, with nothing lit in blanking. Prints the verdict; exits on failure. *)
+let scanout_report ~soc_fb ~scan ~stray =
+  let diffs = ref 0
+  and first = ref (-1) in
+  Array.iteri
+    (fun i w ->
+      if w <> soc_fb.(i)
+      then (
+        incr diffs;
+        if !first < 0 then first := i))
+    scan;
+  if !diffs = 0 && stray = 0
+  then
+    Printf.printf
+      "SCANOUT PASS — one raster frame off the rgb pins reproduces the framebuffer \
+       pixel-exact (%d px lit, blanking dark)\n"
+      (popcount scan)
+  else (
+    Printf.printf
+      "SCANOUT FAIL: %d/%d words differ from the framebuffer (first word %d: rgb=0x%08X \
+       fb=0x%08X); %d px lit in blanking\n"
+      !diffs
+      fb_words
+      !first
+      (if !first >= 0 then scan.(!first) else 0)
+      (if !first >= 0 then soc_fb.(!first) else 0)
+      stray;
+    exit 1)
 ;;
 
 (* The goldens' verdict: diff the framebuffers word-for-word, render both to ASCII, print

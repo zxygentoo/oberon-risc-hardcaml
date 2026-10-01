@@ -329,6 +329,27 @@ let create
   }
 ;;
 
+let create_config ~contents (c : Build_config.t) i =
+  create
+    ~contents
+    ~clocks_per_ms:c.clocks_per_ms
+    ~read_cycles:c.read_cycles
+    ~write_cycles:c.write_cycles
+    ~spi_slow_div_log2:c.spi_slow_div_log2
+    ~fast_mul:c.fast_mul
+    ~mul_stages:c.mul_stages
+    ~icache:c.icache
+    ~lines_log2:c.lines_log2
+    ~write_update:c.write_update
+    ~fb_bram:c.fb_bram
+    ~halftone:c.halftone
+    ~write_buffer:c.write_buffer
+    ~wbuf_depth:c.wbuf_depth
+    ~uart_baud_slow:c.uart_baud_slow
+    ~uart_baud_fast:c.uart_baud_fast
+    i
+;;
+
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── [Soc] is
    [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the core on a
    clock-enable, sharing the {!Peripherals} cluster. These mirror soc.ml's own co-located
@@ -403,7 +424,12 @@ module For_tests = struct
       ?fast_mul
       ?mul_stages
       ?spi_slow_div_log2
+      ?uart_baud_slow
+      ?uart_baud_fast
       ?(addr_bits = 12)
+      ?psram_read_access
+      ?psram_write_access
+      ?psram_write_pulse
       (i : _ I.t)
       : _ O.t
       =
@@ -425,6 +451,8 @@ module For_tests = struct
           ?fast_mul
           ?mul_stages
           ?spi_slow_div_log2
+          ?uart_baud_slow
+          ?uart_baud_fast
           { Sb_I.clock = i.clock
           ; pclk = i.pclk
           ; rst_n = i.rst_n
@@ -443,10 +471,15 @@ module For_tests = struct
       let m =
         Cellram_model.create
           ~addr_bits
+          ?read_access_cycles:psram_read_access
+          ?write_access_cycles:psram_write_access
+          ?write_pulse_cycles:psram_write_pulse
           { Cellram_model.I.clock = i.clock
           ; mem_adr = soc.mem_adr
           ; mem_dq_o = soc.mem_dq_o
+          ; mem_dq_t = soc.mem_dq_t
           ; ce_n = soc.ram_ce_n
+          ; oe_n = soc.ram_oe_n
           ; we_n = soc.ram_we_n
           ; ub_n = soc.ram_ub_n
           ; lb_n = soc.ram_lb_n
@@ -459,6 +492,38 @@ module For_tests = struct
       ; vsync = soc.vsync
       ; rgb = soc.rgb
       }
+    ;;
+
+    (* The chip model is held to the -70 part's datasheet at [c]'s clock: 70 ns from
+       address/CE#/byte-enable valid to read data (tAA/tCO/tBA) and a 45 ns write pulse
+       (tWP). The write-side access figure (tAW/tCW/tBW) is held to 62 ns, not the
+       datasheet's 70: the shipped write phase provides 62.5 ns by decision (see
+       {!Build_config.shipped}), and this keeps a shorter phase from slipping in
+       unnoticed. A configuration whose phases are too short for its clock fails the board
+       gates. *)
+    let create_config ~contents ?addr_bits (c : Build_config.t) i =
+      create
+        ~psram_read_access:(Build_config.cycles_of_ns c ~ns:70)
+        ~psram_write_access:(Build_config.cycles_of_ns c ~ns:62)
+        ~psram_write_pulse:(Build_config.cycles_of_ns c ~ns:45)
+        ~contents
+        ~clocks_per_ms:c.clocks_per_ms
+        ~read_cycles:c.read_cycles
+        ~write_cycles:c.write_cycles
+        ~icache:c.icache
+        ~lines_log2:c.lines_log2
+        ~write_update:c.write_update
+        ~fb_bram:c.fb_bram
+        ~halftone:c.halftone
+        ~write_buffer:c.write_buffer
+        ~wbuf_depth:c.wbuf_depth
+        ~fast_mul:c.fast_mul
+        ~mul_stages:c.mul_stages
+        ~spi_slow_div_log2:c.spi_slow_div_log2
+        ~uart_baud_slow:c.uart_baud_slow
+        ~uart_baud_fast:c.uart_baud_fast
+        ?addr_bits
+        i
     ;;
   end
 
@@ -699,4 +764,111 @@ let%expect_test "board soc — MMIO word 1: read {btn, sw}; store latches the LE
     (r 2)
     (Bits.to_unsigned_int !(outp.leds));
   [%expect {| R2 (switches {btn,sw}) = 0x50F   leds = 0xAB |}]
+;;
+
+(* The display mode switched ON, through the SoC: a boot stub uploads a 32-px-wide, 2-row
+   rect (tone LUT, pixels, geometry, mode bit) over a known mono framebuffer, and the test
+   reads what leaves the rgb pins. Inside the rect the composed Halftone word must scan
+   out; beside and below it the mono framebuffer. That exercises what the unit tests and
+   the mode-off golden cannot: the per-request claim mux between the two shadows, the
+   store tap, and the status word's MMIO slot. *)
+let%expect_test "board soc — Halftone on: the rect scans out composed pixels, the rest \
+                 stays mono; status at MMIO slot 10"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  (* a minimal assembler for the stub *)
+  let reg_imm ~u ~op a b imm =
+    0x4000_0000 lor (u lsl 29) lor (a lsl 24) lor (b lsl 20) lor (op lsl 16) lor imm
+  in
+  let mov a imm = reg_imm ~u:0 ~op:0 a 0 imm (* R.a := imm *)
+  and movh a imm = reg_imm ~u:1 ~op:0 a 0 imm (* R.a := imm << 16 *)
+  and ior a b imm = reg_imm ~u:0 ~op:6 a b imm in
+  let mem ~store ~byte a b off =
+    0x8000_0000
+    lor (Bool.to_int store lsl 29)
+    lor (Bool.to_int byte lsl 28)
+    lor (a lsl 24)
+    lor (b lsl 20)
+    lor (off land 0xF_FFFF)
+  in
+  let st = mem ~store:true ~byte:false
+  and stb = mem ~store:true ~byte:true
+  and ld = mem ~store:false ~byte:false in
+  let ctl = Halftone.ctl_off in
+  (* scanline 0, panel words 2 and 3 (x = 64..127): the framebuffer byte address *)
+  let fb_adr = 4 * (Video.org + (1023 * 32) + 2) in
+  let prog =
+    Array.concat
+      [ [| movh 1 (Halftone.base lsr 16) (* R1 = the pixel window *) |]
+      ; (* 32 pixel bytes 1,0,1,0,… (little-endian words of 0x00010001) *)
+        [| movh 2 1; ior 2 2 1 |]
+      ; Array.init 8 ~f:(fun k -> st 2 1 (4 * k))
+      ; (* tone: index 1 -> white; the threshold map and row map stay zero, so a pixel is
+           lit iff its tone is above 0, and every rect row reads source row 0 *)
+        [| mov 3 0xFF; stb 3 1 (Halftone.lut_off + 1) |]
+      ; (* geometry: x = 64, y = 0, w = 32, h = 2, 1:1 scale *)
+        [| mov 4 64; st 4 1 (ctl + 4) |]
+      ; [| mov 4 0; st 4 1 (ctl + 8) |]
+      ; [| mov 4 32; st 4 1 (ctl + 12) |]
+      ; [| mov 4 2; st 4 1 (ctl + 16) |]
+      ; [| mov 4 1; st 4 1 (ctl + 20); st 4 1 (ctl + 24); st 4 1 ctl (* mode on *) |]
+      ; (* mono framebuffer under and beside the rect on scanline 0 *)
+        [| movh 5 (fb_adr lsr 16); ior 5 5 (fb_adr land 0xFFFF) |]
+      ; [| movh 6 0xF0F0; ior 6 6 0xF0F0; st 6 5 0; st 6 5 4 |]
+      ; (* then poll the status word forever *)
+        [| movh 8 0xFF; ior 8 8 (0xFFC0 + (4 * Halftone.status_slot)) |]
+      ; [| ld 7 8 0; 0xE7FFFFFE (* B -2 *) |]
+      ]
+  in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:prog ~fb_bram:true ~halftone:true)
+  in
+  let inp = Cyclesim.inputs sim
+  and outp = Cyclesim.outputs sim in
+  let reg name = Option.value_exn (Cyclesim.lookup_reg_by_name sim name) in
+  let hcnt = reg "hcnt"
+  and vcnt = reg "vcnt" in
+  let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
+  drive_idle inp;
+  inp.rst_n := Bits.gnd;
+  Cyclesim.cycle sim;
+  inp.rst_n := Bits.vdd;
+  (* run the stub (stores are multi-cycle PSRAM writes) *)
+  for _ = 1 to 2_000 do
+    Cyclesim.cycle sim
+  done;
+  (* The geometry is latched at vblank entry. Skip the raster to its last visible line
+     rather than simulate a whole frame, then run through blanking into the next frame. *)
+  Cyclesim.Reg.of_int vcnt 767;
+  let lines = Array.create ~len:3 (0, 0) in
+  let stop = ref false in
+  while not !stop do
+    Cyclesim.cycle sim;
+    let v = Cyclesim.Reg.to_int vcnt
+    and x = Cyclesim.Reg.to_int hcnt - 32 (* a pixel leaves rgb one group after hcnt *) in
+    if v < 3 && x >= 64 && x < 128 && Bits.to_unsigned_int !(outp.rgb) <> 0
+    then (
+      let rect, beside = lines.(v) in
+      lines.(v)
+      <- (if x < 96
+          then rect lor (1 lsl (x - 64)), beside
+          else rect, beside lor (1 lsl (x - 96))));
+    if v = 3 then stop := true
+  done;
+  Array.iteri lines ~f:(fun v (rect, beside) ->
+    Stdlib.Printf.printf "scanline %d: x 64..95 = %08X   x 96..127 = %08X\n" v rect beside);
+  let status = Cyclesim.Memory.to_int regfile ~address:7 in
+  Stdlib.Printf.printf
+    "status word read at MMIO slot %d: frame counter = %d\n"
+    Halftone.status_slot
+    ((status lsr 8) land 0xFF);
+  [%expect
+    {|
+    scanline 0: x 64..95 = 55555555   x 96..127 = F0F0F0F0
+    scanline 1: x 64..95 = 55555555   x 96..127 = 00000000
+    scanline 2: x 64..95 = 00000000   x 96..127 = 00000000
+    status word read at MMIO slot 10: frame counter = 1
+    |}]
 ;;

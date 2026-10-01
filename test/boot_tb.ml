@@ -74,6 +74,33 @@ module Spi = struct
   ;;
 end
 
+(* VID60's raster: 1344 x 806 pixel clocks per frame, 1024 x 768 visible. A visible pixel
+   reaches [rgb] one 32-px group after its [hcnt] (the word a group fetches is loaded into
+   the shift register at the group's last tick), and scanline [vcnt] shows framebuffer row
+   [767 - vcnt] (Oberon's origin is bottom-left). *)
+let frame_ticks = 1344 * 806
+let pixel_delay = 32
+
+let scan_frame sim ~tick ~rgb =
+  let hcnt = lookup_reg sim "hcnt"
+  and vcnt = lookup_reg sim "vcnt" in
+  let fb = Array.make BCC.fb_words 0
+  and stray = ref 0 in
+  for _ = 1 to frame_ticks do
+    tick ();
+    if Bits.to_unsigned_int !rgb <> 0
+    then (
+      let x = Cyclesim.Reg.to_int hcnt - pixel_delay
+      and v = Cyclesim.Reg.to_int vcnt in
+      if x >= 0 && x < 32 * BCC.fb_w && v < BCC.fb_h
+      then (
+        let i = ((BCC.fb_h - 1 - v) * BCC.fb_w) + (x / 32) in
+        fb.(i) <- fb.(i) lor (1 lsl (x land 31)))
+      else incr stray)
+  done;
+  fb, !stray
+;;
+
 (* Boot a SoC sim from the real disk to the OS handoff (pc leaves the ROM-decode region):
    the shared body of both checkpoints' [run_soc_to_handoff]. [reset] runs the gate's own
    reset preamble; [ram] builds the snapshot's word reader (called only at the handoff, so

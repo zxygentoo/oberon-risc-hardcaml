@@ -25,6 +25,8 @@
 
 (rule
  (alias profile_boot)
- (deps ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var DISK_IMG))
  (action
   (run ./profile_boot.exe)))

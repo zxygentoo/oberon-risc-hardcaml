@@ -22,14 +22,9 @@ module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
    larger safety cap; the run prints the actual handoff cycle. *)
 let soc_cycle_cap = 80_000_000
 
-let run_soc_to_handoff () =
-  (* board SoC + PSRAM model at the checkpoint's small wait counts (Board_tb defaults: 2
-     read/write cycles, cache off, ROM = Risc5.Rom). *)
-  let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2") in
-  let sim =
-    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create ?spi_slow_div_log2 i)
-  in
+(* [create] is the board SoC + PSRAM model in one configuration. *)
+let run_soc_to_handoff create () =
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
   let lo = Bits.of_unsigned_int ~width:1 0
@@ -51,11 +46,28 @@ let run_soc_to_handoff () =
     ()
 ;;
 
+(* Two passes. The bare controller first (Board_tb defaults: 2 read/write cycles, no
+   cache, no buffer, ROM = Risc5.Rom) — the wait-state freeze, the 16↔32 conversion, the
+   on-chip fast path and the CPU/video arbiter on their own. Then the configuration the
+   bitstream ships (cache, write buffer, framebuffer shadow, DSP multiplies, the board's
+   wait counts — {!Board_tb.config_of_env}, overridable for bisecting). *)
 let () =
+  let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2") in
+  Printf.printf "── bare PSRAM controller ──\n%!";
   Boot_checkpoint_common.run
-    ~run_soc_to_handoff
+    ~run_soc_to_handoff:(run_soc_to_handoff (Board_tb.create ?spi_slow_div_log2))
     ~pass_msg:
       "CHECKPOINT (BOARD/PSRAM) PASS — Soc boots the real disk to the OS handoff through \
        the Cellram controller; loaded image + architectural state match the oracle, \
-       modulo the §8 code-address skew."
+       modulo the §8 code-address skew.";
+  let cfg = Board_tb.config_of_env () in
+  Printf.printf
+    "── %s configuration ──\n  %s\n%!"
+    (if cfg = Nexys4_board.Build_config.shipped then "shipped" else "overridden")
+    (Nexys4_board.Build_config.to_string cfg);
+  Boot_checkpoint_common.run
+    ~run_soc_to_handoff:(run_soc_to_handoff (Board_tb.create_config cfg))
+    ~pass_msg:
+      "CHECKPOINT (BOARD/configured) PASS — the same handoff state through the full \
+       memory stack."
 ;;

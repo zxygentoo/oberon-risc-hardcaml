@@ -399,6 +399,9 @@ module Tb = struct
     ?write_buffer
     ?wbuf_depth
     ?(addr_bits = 12)
+    ?model_read_access
+    ?model_write_access
+    ?model_write_pulse
     (i : _ I.t)
     : _ O.t
     =
@@ -424,10 +427,15 @@ module Tb = struct
     let m =
       Cellram_model.create
         ~addr_bits
+        ?read_access_cycles:model_read_access
+        ?write_access_cycles:model_write_access
+        ?write_pulse_cycles:model_write_pulse
         { Cellram_model.I.clock = i.clock
         ; mem_adr = c.mem_adr
         ; mem_dq_o = c.mem_dq_o
+        ; mem_dq_t = c.mem_dq_t
         ; ce_n = c.ce_n
+        ; oe_n = c.oe_n
         ; we_n = c.we_n
         ; ub_n = c.ub_n
         ; lb_n = c.lb_n
@@ -501,9 +509,9 @@ let%expect_test "cellram — word store then load, two halfword phases + ce puls
     │                  ││────────────────────────────────────────┘         └───────────────────────────────────────┘         └───────────────────────────│
     │cr_busy           ││          ┌───────────────────────────────────────┐         ┌───────────────────────────────────────┐         ┌─────────────────│
     │                  ││──────────┘                                       └─────────┘                                       └─────────┘                 │
-    │                  ││────────────────────┬─────────┬─────────┬───────────────────┬───────────────────┬─────────────────────────────┬─────────────────│
-    │rdata             ││ 00000000           │CCDD0000 │0000CCDD │AABBCCDD           │CCDDCCDD           │AABBCCDD                     │CCDDCCDD         │
-    │                  ││────────────────────┴─────────┴─────────┴───────────────────┴───────────────────┴─────────────────────────────┴─────────────────│
+    │                  ││──────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┬─────────────────│
+    │rdata             ││ BAAD0000                     │BAADBAAD                                                                       │CCDDBAAD         │
+    │                  ││──────────────────────────────┴───────────────────────────────────────────────────────────────────────────────┴─────────────────│
     └──────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     |}]
 ;;
@@ -564,7 +572,7 @@ let roundtrip_qcheck ?(count = 250) ?clock_edge ~name sim =
       else model.(w) <- wdata;
       load_word w = model.(w))
   in
-  QCheck.Test.check_exn
+  Risc5.Test_gen.check_exn
     (QCheck.Test.make
        ~count
        ~name
@@ -811,6 +819,56 @@ let%expect_test "cellram — 32-bit round-trip with asymmetric read/write cycles
   in
   List.iter ~f:run_config [ 4, 3; 5, 2 ];
   [%expect {| |}]
+;;
+
+(* The controller's timing at the pins, measured against the chip model's three demands
+   (each in clocks; see {!Cellram_model.create}). For a configuration, the largest demand
+   under which a word store still reads back — i.e. how long the controller really holds
+   the address before sampling a read, how long it holds WE# low, and how long the address
+   has been valid when WE# rises. These are the figures to set against the datasheet. *)
+let%expect_test "cellram — what the pin timing provides: read access, write pulse, \
+                 address-to-end-of-write"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let roundtrips ~rc ~wc ?ra ?wa ?wp () =
+    let sim =
+      Sim.create
+        (Tb.create
+           ~read_cycles:rc
+           ~write_cycles:wc
+           ?model_read_access:ra
+           ?model_write_access:wa
+           ?model_write_pulse:wp)
+    in
+    let inp = Cyclesim.inputs sim
+    and outp = Cyclesim.outputs sim in
+    inp.vidreq := b1 false;
+    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+    let access = cpu_access sim inp outp ~internal:false ~adr:0x40 ~ben:false in
+    ignore (access ~wr:true ~wdata:0xAABB_CCDD : int);
+    access ~wr:false ~wdata:0 = 0xAABB_CCDD
+  in
+  (* the largest demand (1..12) the configuration still meets *)
+  let limit meets =
+    List.fold (List.range 1 13) ~init:0 ~f:(fun best n -> if meets n then n else best)
+  in
+  List.iter
+    [ 2, 2; 6, 5; 6, 6 ]
+    ~f:(fun (rc, wc) ->
+      Stdlib.Printf.printf
+        "read_cycles=%d write_cycles=%d: read access %d clk, write pulse %d clk, address \
+         valid to end of write %d clk\n"
+        rc
+        wc
+        (limit (fun n -> roundtrips ~rc ~wc ~ra:n ()))
+        (limit (fun n -> roundtrips ~rc ~wc ~wp:n ()))
+        (limit (fun n -> roundtrips ~rc ~wc ~wa:n ())));
+  [%expect
+    {|
+    read_cycles=2 write_cycles=2: read access 2 clk, write pulse 1 clk, address valid to end of write 1 clk
+    read_cycles=6 write_cycles=5: read access 6 clk, write pulse 4 clk, address valid to end of write 4 clk
+    read_cycles=6 write_cycles=6: read access 6 clk, write pulse 5 clk, address valid to end of write 5 clk
+    |}]
 ;;
 
 (* ── P3: documented invariants & the chip-pin contract ──────────────────────────── *)
@@ -1072,9 +1130,9 @@ let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write dra
     │                  ││──────────┴─────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────│
     │cr_busy           ││                    ┌───────────────────────────────────────┐         ┌───────────────────────────────────────┐         ┌───────│
     │                  ││────────────────────┘                                       └─────────┘                                       └─────────┘       │
-    │                  ││──────────────────────────────┬─────────┬─────────┬───────────────────┬───────────────────┬─────────────────────────────┬───────│
-    │rdata             ││ 00000000                     │CCDD0000 │0000CCDD │AABBCCDD           │CCDDCCDD           │AABBCCDD                     │CCDDCCD│
-    │                  ││──────────────────────────────┴─────────┴─────────┴───────────────────┴───────────────────┴─────────────────────────────┴───────│
+    │                  ││────────────────────────────────────────┬─────────────────────────────┬───────────────────┬───────────────────┬─────────┬───────│
+    │rdata             ││ BAAD0000                               │BAADBAAD                     │CCDDBAAD           │AABBCCDD           │BAADCCDD │CCDDCCD│
+    │                  ││────────────────────────────────────────┴─────────────────────────────┴───────────────────┴───────────────────┴─────────┴───────│
     └──────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
     |}]
 ;;

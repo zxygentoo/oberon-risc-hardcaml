@@ -31,7 +31,20 @@
 
 (rule
  (alias boot_checkpoint_board)
- (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var ICACHE)
+  (env_var LINES_LOG2)
+  (env_var WRITE_UPDATE)
+  (env_var FB_BRAM)
+  (env_var HALFTONE)
+  (env_var WBUF)
+  (env_var FAST_MUL)
+  (env_var MUL_STAGES)
+  (env_var READ_CYCLES)
+  (env_var WRITE_CYCLES)
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
  (action
   (run ./test_boot_checkpoint_board.exe)))
 
@@ -54,7 +67,21 @@
 
 (rule
  (alias visual_golden_board)
- (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var ICACHE)
+  (env_var LINES_LOG2)
+  (env_var WRITE_UPDATE)
+  (env_var FB_BRAM)
+  (env_var HALFTONE)
+  (env_var WBUF)
+  (env_var FAST_MUL)
+  (env_var MUL_STAGES)
+  (env_var READ_CYCLES)
+  (env_var WRITE_CYCLES)
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG)
+  (env_var SOC_CAP))
  (action
   (run ./test_visual_golden_board.exe)))
 
@@ -73,6 +100,9 @@
 
 (rule
  (alias bench_boot)
- (deps ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
  (action
   (run ./bench_boot.exe)))

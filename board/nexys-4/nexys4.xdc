@@ -69,7 +69,9 @@ set_property ASYNC_REG true \
 ## comfortable against measured use: the 62.4 MHz datasheet.rpt showed MemDB-in setup
 ## ~8.0-10.3 ns and the read-critical outputs well under their group (the historical
 ## knife-edge was at rc=5's 6.7 ns budget, not these). tWP is comfortable by construction (WEn low 4
-## of 5 write cycles = 67 ns >> 45 ns, a full cycle of data hold past WEn rise).
+## of 5 write cycles = 62.5 ns > 45 ns, a full cycle of data hold past WEn rise). The same 62.5 ns
+## is what address/CE/byte-enables get before WEn rises — under the datasheet's 70 ns tAW/tCW/tBW,
+## kept deliberately (board/nexys-4/build_config.ml).
 ## Fast/strong drivers on the whole PSRAM interface: the OBUF is the dominant t_out
 ## term (~3 ns of the strobes' ~4.4 ns logic at the default DRIVE 12 / SLOW slew), and
 ## the traces are short point-to-point to the adjacent chip (no connector), so FAST/16

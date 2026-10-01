@@ -147,6 +147,11 @@ val create
   -> Signal.t I.t
   -> Signal.t O.t
 
+(** [create_config ~contents c i] is {!create} with every knob taken from [c] — how the
+    emitter and the board gates elaborate one and the same machine
+    ({!Build_config.shipped}). *)
+val create_config : contents:int array -> Build_config.t -> Signal.t I.t -> Signal.t O.t
+
 (** Test scaffolding, not hardware (the {!Risc5.Ps2.For_tests} precedent): the board SoC
     closed with the behavioural {!Cellram_model} on its PSRAM pins, plus the idle-level
     driver — the one closure shared by the co-located tests and every test/board harness
@@ -207,7 +212,23 @@ module For_tests : sig
       -> ?fast_mul:bool
       -> ?mul_stages:int
       -> ?spi_slow_div_log2:int
+      -> ?uart_baud_slow:int
+      -> ?uart_baud_fast:int
       -> ?addr_bits:int
+      -> ?psram_read_access:int
+      -> ?psram_write_access:int
+      -> ?psram_write_pulse:int
+      -> Signal.t I.t
+      -> Signal.t O.t
+
+    (** {!create} with every structural knob taken from a {!Build_config.t}, and the chip
+        model held, at that configuration's clock, to the datasheet's read access time and
+        write pulse width and to the write access time the shipped configuration provides
+        (62 ns; see {!Cellram_model.create}) *)
+    val create_config
+      :  contents:int array
+      -> ?addr_bits:int
+      -> Build_config.t
       -> Signal.t I.t
       -> Signal.t O.t
   end

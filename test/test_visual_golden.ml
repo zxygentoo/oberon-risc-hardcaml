@@ -70,8 +70,12 @@ let boot_soc ~target ~cap ~chunk ~settle =
       ~spi_bytes:(fun () -> Sd_bridge.nbytes bridge)
       ()
   in
+  (* one more frame, watching the pins: what scans out must be what the memory holds *)
+  let scan, stray =
+    Boot_tb.scan_frame sim ~tick:(fun () -> Boot_tb.Spi.tick sim spi) ~rgb:outp.rgb
+  in
   BCC.rm_temp tmp;
-  fb, settled
+  fb, settled, scan, stray
 ;;
 
 let () =
@@ -88,7 +92,9 @@ let () =
     | Some s -> int_of_string s
     | None -> 50_000_000
   in
-  let soc_fb, settled = boot_soc ~target:oracle_hash ~cap ~chunk:2_000_000 ~settle:3 in
+  let soc_fb, settled, scan, stray =
+    boot_soc ~target:oracle_hash ~cap ~chunk:2_000_000 ~settle:3
+  in
   let soc_hash = BCC.fb_fnv soc_fb in
   Printf.printf
     "soc: hash=0x%Lx  %d set px  settled=%b\n%!"
@@ -104,5 +110,6 @@ let () =
     ~oracle_hash
     ~soc_fb
     ~soc_hash
-    ~settled
+    ~settled;
+  BCC.scanout_report ~soc_fb ~scan ~stray
 ;;

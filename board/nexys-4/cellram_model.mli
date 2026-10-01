@@ -2,15 +2,23 @@
     {b simulation only} (it is never instantiated in the board design; the real chip is
     off-FPGA pins).
 
-    Wired to {!Cellram}'s chip-side pins, it closes the loop in a Cyclesim testbench: an
-    asynchronous (combinational) 16-bit read of the addressed halfword onto [mem_dq_i],
-    and a per-byte synchronous write on the clock edge while [ce_n] and [we_n] are low
-    (the lanes gated by [lb_n]/[ub_n]). Two 8-bit lanes share the halfword address (named
-    [cram_lo] / [cram_hi]) so a byte store touches only its lane — the same shape as [Ram]
-    (lib/). Backs [2^addr_bits] halfwords starting zeroed (default 2^19 = the faithful 1
-    MB window; raise toward the chip's 2^23 = 16 MiB for himem tests — DOOM.md §3); the
-    controller's wait-state FSM runs unchanged around it, so sim exercises the real
-    control flow against an instantly-responding chip. *)
+    Wired to {!Cellram}'s chip-side pins, it closes the loop in a Cyclesim testbench. Two
+    8-bit lanes share the halfword address (named [cram_lo] / [cram_hi]) so a byte store
+    touches only its lane — the same shape as [Ram] (lib/). Backs [2^addr_bits] halfwords
+    starting zeroed (default 2^19 = the faithful 1 MB window; raise toward the chip's 2^23
+    = 16 MiB for himem tests — DOOM.md §3).
+
+    It answers only what a real chip would. A lane of [mem_dq_i] carries the stored byte
+    only while the chip is selected for a read ([ce_n] and [oe_n] low, [we_n] high), that
+    lane is enabled, the controller has released the data pins ([mem_dq_t] high), and the
+    address has been held for the access time; otherwise it carries a poison byte. A write
+    commits only with [ce_n] and [we_n] low for the pulse width and the address held for
+    the write access time, and stores poison if the controller is not driving the pins.
+
+    The three timing figures are in clock cycles and default to 1 — an instantly
+    responding chip, for tests of the controller's control flow. A caller that knows the
+    clock period passes the datasheet figures rounded up to cycles (the -70 part: 70 ns
+    address/CE/byte-select access for both reads and writes, 45 ns write pulse). *)
 
 open Hardcaml
 
@@ -20,7 +28,9 @@ module I : sig
     ; mem_adr : 'a
     (** halfword address (only the low [addr_bits] bits index the window) *)
     ; mem_dq_o : 'a (** 16-bit write data from the controller *)
+    ; mem_dq_t : 'a (** the controller's tristate control: 1 = pins released (reading) *)
     ; ce_n : 'a
+    ; oe_n : 'a
     ; we_n : 'a
     ; ub_n : 'a (** upper byte lane enable, active low *)
     ; lb_n : 'a (** lower byte lane enable, active low *)
@@ -33,4 +43,14 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-val create : ?addr_bits:int -> Signal.t I.t -> Signal.t O.t
+(** [read_access_cycles]: cycles the address, [ce_n] and the lane enables must have been
+    held, counting the sampling cycle, before read data is valid. [write_access_cycles]:
+    the same hold before a write commits. [write_pulse_cycles]: cycles [we_n] must have
+    been low. All default to [1]; each must be in 1..15. *)
+val create
+  :  ?addr_bits:int
+  -> ?read_access_cycles:int
+  -> ?write_access_cycles:int
+  -> ?write_pulse_cycles:int
+  -> Signal.t I.t
+  -> Signal.t O.t

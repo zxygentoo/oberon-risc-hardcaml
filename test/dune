@@ -65,6 +65,8 @@
 
 ; Phase 5: boot-handoff checkpoint (AGENT.md §6 layer 5). Built by @check so it can't rot,
 ; but run only on demand (it boots the real disk image for millions of interpreter cycles).
+; The gates read environment knobs; each rule lists its knobs as (env_var …) deps, so a
+; changed knob re-runs the alias instead of replaying dune's cached result.
 
 (executable
  (name test_boot_checkpoint)
@@ -73,7 +75,10 @@
 
 (rule
  (alias boot_checkpoint)
- (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
  (action
   (run ./test_boot_checkpoint.exe)))
 
@@ -88,7 +93,11 @@
 
 (rule
  (alias visual_golden)
- (deps ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+ (deps
+  ../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var SPI_DIV_LOG2)
+  (env_var SOC_CAP)
+  (env_var DISK_IMG))
  (action
   (run ./test_visual_golden.exe)))
 
