@@ -1,8 +1,8 @@
-// Boot-stream RTL co-sim for the CPU core (AGENT.md §6 layer 3, extended to the whole core).
+// Boot-stream RTL co-sim for the CPU core.
 // Replays the per-cycle core I/O captured by core_dump (over the real Oberon boot)
 // through the reference test/_po/verilog/src/RISC5.v under Verilator, and reports the FIRST cycle
 // our core's outputs diverge from the spec — the instruction where our port deviates from
-// RISC5.v. (This is what found + verified the phase-6b ALU flag-leak fix.)
+// RISC5.v.
 //
 // Why the first output mismatch is exactly the divergence: see core_dump.ml. Both
 // cores start from the same reset state; fed the identical captured inputs, they stay in

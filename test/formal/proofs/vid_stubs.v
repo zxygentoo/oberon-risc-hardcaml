@@ -1,9 +1,9 @@
 // Black-box stubs for the Xilinx primitives VID60.v instantiates to generate its pixel
 // clock (`BUFG` + `DCM #(.CLKFX_MULTIPLY(13),.CLKFX_DIVIDE(5))`, i.e. pclk = clk*13/5).
-// That clock *generation* is the Phase-7 board shim (the Nexys MMCM), dropped in our port
-// (lib/video.ml takes pclk as an input). For the formal proof the driver deletes these cells
-// and exposes pclk as a free clock input, matching our gate — so the stubs only need port
-// shapes, no behaviour (AGENT.md §6, test/formal/README Tier 2).
+// That clock *generation* belongs to the board's vendor shim (the MMCM in nexys4_top.v) and
+// is not in our port (lib/video.ml takes pclk as an input). For the formal proof the driver
+// deletes these cells and exposes pclk as a free clock input, matching our gate — so the
+// stubs only need port shapes, no behaviour (see ../README.md).
 
 (* blackbox *)
 module BUFG(input I, output O);

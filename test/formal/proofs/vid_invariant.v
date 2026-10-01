@@ -1,6 +1,6 @@
-// CDC fetch-invariant proof for VID's pulse synchroniser (AGENT.md §6, README Tier 2).
+// CDC fetch-invariant proof for VID's pulse synchroniser (see ../README.md).
 //
-// The equiv proof (check_vid) proves VID's raster + pixel datapath ≡ VID60.v but CUTS the
+// The equiv proof (the vid check) proves VID's raster + pixel datapath ≡ VID60.v but CUTS the
 // fetch CDC (our toggle synchroniser vs the RTL async-set req1 — a deliberate departure, not
 // a cycle-equivalence). This proof closes that gap differently: it proves the synchroniser's
 // *protocol* — every req0 yields exactly one req, no loss, no duplication — for ALL

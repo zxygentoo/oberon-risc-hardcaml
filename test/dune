@@ -1,6 +1,6 @@
 ; The fast suite (FP replays/fuzz + single-instruction CPU lockstep + the lib's inline
 ; tests) runs on `dune runtest` in a few seconds. Everything heavier is opt-in, by alias,
-; and lives in a subdirectory (AGENT.md §6):
+; and lives in a subdirectory:
 ;   boot/            the boot harness + the sim-SoC gates   @boot_checkpoint @visual_golden
 ;   board/nexys-4/   the board-SoC gates + the board gauge  @boot_checkpoint_board
 ;                                                           @visual_golden_board @bench_boot
@@ -39,7 +39,7 @@
   test_cpu_lockstep
   test_rom)
  (libraries risc5 emu hardcaml qcheck-core)
- ; Phase 3b: the frozen FP vectors (vendored, data-only) feed test_fp_adder's replay.
+ ; the frozen FP vectors (vendored, data-only) feed the FP replays
  (deps ../vendor/oberon-risc-emu-ocaml/test/data/fp_vectors.txt)
  (preprocess
   (pps ppx_hardcaml)))

@@ -1,17 +1,13 @@
-(* Phase-9: dynamic MUL/DIV profile of a boot — reset, through the ROM→OS handoff, into
-   the running Oberon system — to size the DSP-multiplier win against Amdahl (AGENT.md
-   §5).
+(* How often MUL and DIV execute over a boot: reset, the handoff, and on into the running
+   system.
 
-   We step the OCaml oracle (the instruction-level model; same instruction stream as the
-   hardware) and decode each executed instruction in flight: register-form ops (p=0) with
-   op-field 10 = MUL (the u-bit picks signed MUL vs unsigned MUL'), 11 = DIV. Fetch
-   mirrors the oracle: [ram.(pc)] for OS code in low RAM, [bootloader.(pc-rom_base)] for
-   the ROM bootloader. The boot splits into the ROM bootloader (SD-copy — ~no compute) and
-   the OS (the real MUL/DIV). Oberon's "idle" desktop is a task loop, not a tight spin, so
-   we don't try to detect idle; we profile a fixed, generous window past handoff — the
-   MUL/DIV *density* is the Amdahl-relevant number and is stable across the window length.
+   The oracle is stepped and each instruction decoded as it executes: a register operation
+   with op 10 is MUL (the u bit says unsigned), 11 is DIV. The instruction is fetched as
+   the oracle fetches it, from RAM for OS code and from the boot image for the boot
+   loader. The window past the handoff is of fixed length; the density of MUL and DIV does
+   not depend on it much.
 
-   Run: dune build @profile_boot (or dune exec test/profile_boot.exe) *)
+   Run: dune build @profile_boot *)
 
 module R = Emu.Risc
 
@@ -20,8 +16,6 @@ let rom_word_base = 0xFFFF_F800 / 4 (* boot ROM word base (= 0x3FFFE00) *)
 let cap = 3_000_000 (* reset → handoff (~403K) + ~2.6M of the running OS *)
 
 let () =
-  (* boot the oracle exactly as the checkpoint does (Boot.Oracle.create: PCLink + no-op
-     clipboard + the disk) *)
   let tmp = Boot.Disk.copy_to_temp Boot.Disk.image in
   let oracle = Boot.Oracle.create ~disk:tmp in
   let ram = R.For_tests.ram oracle in
@@ -77,7 +71,7 @@ let () =
      so this is an upper bound on the multiplier's share. *)
   let compute_cycles = total + stall in
   let pct n d = if d = 0 then 0.0 else 100.0 *. float n /. float d in
-  Printf.printf "Phase-9 boot MUL/DIV profile (reset → OS, %d instructions)\n" !steps;
+  Printf.printf "Boot MUL/DIV profile (reset → OS, %d instructions)\n" !steps;
   Printf.printf
     "  handoff: ROM→OS at instr %d%s\n"
     !handoff_step

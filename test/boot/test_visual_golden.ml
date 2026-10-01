@@ -1,21 +1,13 @@
-(* Phase 6b — visual golden (AGENT.md §5/§6).
+(* The visual golden on the simulation SoC.
 
-   Continue the boot PAST the OS handoff and diff the framebuffer (a RAM region) against
-   the oracle, rendered to ASCII for eyeballing. The oracle boot is bit-deterministic (its
-   [Headless] driver paces a synthetic 60 Hz clock; [test_boot.ml] freezes the same
-   hashes) and its idle desktop screen is static, so once both machines have run far
-   enough the SoC's framebuffer must match it bit-for-bit (hash 0xb9bdbf56ba51298d, 18607
-   px).
+   The boot continues past the handoff to the idle desktop, and the framebuffer must equal
+   the oracle's bit for bit (hash 0xb9bdbf56ba51298d, 18607 pixels set). The oracle's boot
+   is deterministic and its idle screen static. The SoC takes far longer to get there: it
+   talks to the SD card over SPI at real timing, where the oracle's disk answers at once,
+   so the desktop is complete only after some 33 M cycles. One more frame is then scanned
+   off the rgb pins and must reproduce the framebuffer.
 
-   The SoC is much slower per "frame" than the oracle: it bit-bangs the SD card over SPI
-   at real timing ({!Boot.Sd_bridge}) while the oracle's disk is instant, so the desktop
-   only finishes drawing ~32-34M cycles in (vs the oracle's frame 40). Hence the generous
-   cycle cap; the run settles once the framebuffer is drawn and then unchanged for
-   [settle] chunks (the loop is {!Boot.Golden.run_to_settle}; the fb geometry, oracle
-   boot, render and verdict are shared there too).
-
-   Opt-in (boots the real disk): [dune build @visual_golden]; [SOC_CAP] overrides the cap,
-   [DISK_IMG] the image. *)
+   [SOC_CAP] overrides the cycle cap, [DISK_IMG] the image. *)
 
 open Hardcaml
 module Soc = Risc5.Soc

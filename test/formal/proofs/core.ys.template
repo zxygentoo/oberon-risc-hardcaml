@@ -1,4 +1,4 @@
-# In-situ core-glue equivalence (AGENT.md §6, README). Proves our whole core's glue (decode,
+# In-situ core-glue equivalence (see ../README.md). Proves our whole core's glue (decode,
 # the inline ALU, control, flags, the 13 state registers) ≡ RISC5.v with the 8 submodules
 # black-boxed and assumed-equivalent (each proven separately). Driven by Yosys_equiv.run_proof.
 # Placeholders (named WITHOUT braces here — substitution is blind): stubs = core_stubs.v (the

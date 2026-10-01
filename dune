@@ -3,7 +3,7 @@
 (dirs lib board test vendor)
 
 ; Every gate in one alias: the fast suite, the four boot gates, the RTL co-sim and the
-; proofs. The opt-in ones need verilator, yosys and z3 (AGENT.md §6); the board visual
+; proofs. The opt-in ones need verilator, yosys and z3; the board visual
 ; golden alone takes about ten minutes.
 
 (rule

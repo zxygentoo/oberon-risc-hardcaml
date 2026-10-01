@@ -3,7 +3,7 @@
 // The in-situ core proof (formal_run.ml `core`) reads these so BOTH RISC5.v (gold) and our
 // emitted core (gate) reference the same opaque modules; yosys equiv_make then pairs/merges
 // the matched instances and `cutpoint -blackbox` turns their outputs into shared free signals
-// (assume-guarantee — each submodule is proven equivalent separately, §6). Headers match the
+// (assume-guarantee — each submodule is proven equivalent separately). Headers match the
 // modules' real .v exactly (and our Instantiation stubs in core_blackbox.ml).
 (* blackbox *) module LeftShifter (input [31:0] x, output [31:0] y, input [4:0] sc);
 endmodule

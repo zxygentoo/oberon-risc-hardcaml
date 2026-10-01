@@ -1,5 +1,5 @@
 `timescale 1ns / 1ps
-// Behavioral register-file SPEC — the Phase-8 formal reference for our Registers.
+// Behavioral register-file SPEC — the formal reference for our Registers.
 //
 // Deliberately NOT Wirth's Registers.v. That original builds the triple-port file from 64
 // duplicated, bit-sliced Xilinx RAM16X1D distributed-RAM primitives — a *synthesis idiom*
@@ -13,8 +13,8 @@
 // So we prove our Hardcaml Registers equivalent to the behavioural CONTRACT it must meet:
 // 16 words x 32 bits, three asynchronous reads, one synchronous write at rno0. That Wirth's
 // RAM16X1D duplication implements this same contract is *his* synthesis concern (honoured by
-// Vivado's distributed-RAM inference), not ours — exactly the AGENT.md §2/§3 "structure is
-// not the spec" line, of which the register file is the canonical case.
+// Vivado's distributed-RAM inference), not ours: the register file is the plainest case of
+// "the structure is not the spec".
 module Registers_spec (
   input clk, wr,
   input [3:0] rno0, rno1, rno2,

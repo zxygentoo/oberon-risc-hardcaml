@@ -1,24 +1,13 @@
-(* RTL-fidelity dumper for the SPI master. Unlike the FP units — a stall-based run ->
-   drain -> z protocol, shared in fp_dump — the SPI is a serial peripheral with a
-   start/rdy handshake and a per-cycle MISO input, so it gets its own dumper (reusing only
-   cosim.h's tick on the C side).
+(* The dumper for the SPI master. For each transfer it drives the port with (fast,
+   data_tx) and a per-cycle MISO sequence, and records for every cycle the MISO it drove
+   and the (rdy, sclk, mosi) it saw. spi.cpp replays the same through SPI.v and requires
+   the same outputs every cycle, the same received data and the same length.
 
-   For each transfer it drives Risc5.Spi over (fast, data_tx) with a deterministic
-   per-cycle MISO sequence and records, for EVERY cycle, the MISO it drove and the (rdy,
-   sclk, mosi) it observed; the matching Verilator harness (test/cosim/spi.cpp) replays
-   the identical (fast, data_tx, MISO sequence) through test/_po/verilog/src/SPI.v and
-   asserts, cycle-by-cycle, RTL (rdy, sclk, mosi) == port's, plus final data_rx == port's
-   and cycle count == port's — value-, waveform-, and cycle-fidelity, the
-   serial-peripheral analog of the FP units' z + stall-length check.
+   MISO comes from a seeded generator, not from MOSI looped back: a stimulus independent
+   of the unit's state cannot hide a bug in when MISO is sampled.
 
-   MISO is driven from an RNG (not looped back from MOSI): a fixed, DUT-independent
-   stimulus decouples the input from internal state, so a bug in WHEN the port samples
-   MISO can't hide behind "MISO happened to equal the bit we were shifting out anyway".
-
-   Line format: "fast data_tx data_rx cycles hextrace" where hextrace is one hex digit per
-   cycle: bit3 = MISO (the stimulus we drove), bit2 = rdy, bit1 = sclk, bit0 = mosi (the
-   port outputs). The MISO sequence thus lives in the dump — the .cpp replays it, no
-   shared RNG — and the per-cycle output bits are the expected values. *)
+   Line: "fast data_tx data_rx cycles hextrace", one hex digit per cycle: bit 3 = MISO
+   driven, bit 2 = rdy, bit 1 = sclk, bit 0 = mosi. *)
 
 open Hardcaml
 open Cosim_dump
@@ -31,9 +20,7 @@ let () =
   let sim = Sim.create Spi.create in
   let inp = (Cyclesim.inputs sim : _ Spi.I.t) in
   let outp = (Cyclesim.outputs sim : _ Spi.O.t) in
-  (* reset (rst_n active-low, synchronous), then run transfers back-to-back: after each
-     one the unit returns to rdy=1 / tick=0, so [start] re-arms it cleanly — no
-     per-transfer reset, exactly as the .cpp does. *)
+  (* reset, then transfers back to back: after each the unit is idle again, as in the .cpp *)
   set inp.rst_n 0;
   set inp.start 0;
   set inp.fast 0;
@@ -80,10 +67,8 @@ let () =
     let data_rx, cycles, trace = transfer ~fast ~data_tx in
     Printf.printf "%d %08X %08X %d %s\n" fast data_tx data_rx cycles trace
   in
-  (* corner data words in both modes, then a random fuzz pass biased toward the cheap fast
-     mode (96 cy) over the slow byte (512 cy). The SPI datapath is tiny and fully
-     exercised per transfer, so a few hundred transfers covering both rates exhausts its
-     behaviour. *)
+  (* corner words in both modes, then a random pass that favours the cheap fast mode (96
+     cycles, against 512 for a slow byte) *)
   let corners =
     [ 0x00000000
     ; 0xFFFFFFFF

@@ -1,16 +1,10 @@
-(** Run named jobs concurrently in a bounded pool of forked workers, with a PASS/FAIL
-    summary.
+(** Named jobs run concurrently in a bounded pool of forked workers, with a PASS/FAIL
+    summary: what the co-simulation and proof runners need.
 
-    Shared by the opt-in RTL-fidelity runners (cosim's [cosim_run], formal's
-    [formal_run]): both fan a list of independent, subprocess-bound jobs (verilator /
-    yosys / z3) out across a bounded pool and report one summary.
-
-    Each job runs in its own forked process with stdout/stderr redirected to
-    [<work_root>/<name>/run.log]; the thunk returns [true] on success. The parent
-    throttles to [jobs] workers at a time, prints a live result line as each finishes,
-    then a summary table (with the tail of any failing log) and the wall time. Returns the
-    number of jobs that failed (0 = all passed). [what] labels the run (e.g. ["cosim"],
-    ["formal"]). *)
+    Each job runs in its own forked process, its output redirected to
+    [<work_root>/<name>/run.log], and returns [true] on success. The parent keeps at most
+    [jobs] alive, prints a line as each finishes, then a summary with the tail of every
+    failing log, and returns the number of failures. [what] names the run. *)
 val run
   :  what:string
   -> jobs:int
@@ -18,8 +12,7 @@ val run
   -> (string * (unit -> bool)) list
   -> int
 
-(** cd to the repo root (nearest ancestor with dune-project) — both runners launch from
-    varying cwds and keep every path repo-root-relative *)
+(** change to the repository root, the nearest ancestor holding dune-project *)
 val cd_to_repo_root : unit -> unit
 
 (** [map ~jobs fs] evaluates every thunk of [fs] in its own forked process, at most [jobs]

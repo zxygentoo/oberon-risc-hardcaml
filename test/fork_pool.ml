@@ -1,18 +1,9 @@
-(* Bounded forked-worker pool with a PASS/FAIL summary — see fork_pool.mli.
-
-   Each job is forked into its own process whose stdout/stderr are redirected to its log,
-   so workers run truly concurrently and their output never interleaves. The parent keeps
-   at most [jobs] alive at once (launch until full, then reap one and launch the next),
-   collecting exit codes for the summary. Jobs are subprocess-bound (verilator / yosys /
-   z3), so fork + a fresh binary per job is both safe and the natural fit. *)
+(* See fork_pool.mli. *)
 
 let mkdir_p d =
   ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote d)) : int)
 ;;
 
-(* Resolve and cd to the repo root (nearest ancestor with dune-project): both runners
-   (cosim_run, formal_run) launch from varying cwds — directly, via dune exec, or as a
-   dune action — and keep every path repo-root-relative. *)
 let cd_to_repo_root () =
   let rec up d =
     if Sys.file_exists (Filename.concat d "dune-project")
@@ -60,10 +51,8 @@ let run ~what ~jobs ~work_root job_list =
     jobs
     work_root;
   let t0 = Unix.gettimeofday () in
-  (* Live per-unit lines earn their keep only when stdout is a terminal (real-time
-     progress as jobs finish). Under `dune build` the action's stdout is captured and
-     flushed at the end, where they'd just duplicate the summary table — so gate them on a
-     TTY. *)
+  (* the per-job lines are worth printing only on a terminal: under dune the output is
+     captured and shown at the end, where they would repeat the summary *)
   let live =
     try Unix.isatty Unix.stdout with
     | _ -> false

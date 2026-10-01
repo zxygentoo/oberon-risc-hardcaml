@@ -1,20 +1,19 @@
-(** The Cyclesim-side half shared by the four boot gates (both checkpoints, both visual
-    goldens): loud by-name lookups, the SPI/SD-card tick, and the run-to-handoff driver.
-    SoC-independent — both SoCs expose the same register/memory names; each gate supplies
-    its sim construction, reset preamble, and RAM readback as closures. The Hardcaml-free
-    halves are {!Disk}, {!Oracle}, {!Checkpoint} and {!Golden}. *)
+(** The Cyclesim side of the boot harness: lookups by name that fail loudly, the SD card's
+    tick, the drive to the handoff, and the scan-out capture. It works for either SoC,
+    since both use the same register and memory names; each gate supplies its sim, its
+    reset sequence and its RAM reader. *)
 
 open Hardcaml
 
 (** a SoC word pc below this has left the ROM-decode region for low RAM — the OS handoff *)
 val rom_region_base : int
 
-(** by-name lookups that fail loudly — a silent [None] would read as zeros (AGENT.md §6) *)
+(** lookups by name that fail loudly: one that silently found nothing would read as zeros *)
 val lookup_reg : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Reg.t
 
 val lookup_mem : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Memory.t
 
-(** node-or-reg lookup — plain node lookup misses registers (AGENT.md §6) *)
+(** a node or a register: the plain node lookup does not find registers *)
 val lookup_node : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Node.t
 
 (** the packed N/Z/C/OV flags word (Z | N<<1 | C<<2 | V<<3), as the oracle reads it *)

@@ -1,4 +1,4 @@
-; The boot harness and the sim-SoC boot gates (AGENT.md §6 layer 5). Opt-in — they boot the
+; The boot harness and the sim-SoC boot gates. Opt-in — they boot the
 ; real Oberon disk image for millions of interpreter cycles — and built by @check so they
 ; cannot rot:
 ;   dune build @boot_checkpoint   the sim SoC to the OS handoff, against the oracle
@@ -9,7 +9,7 @@
 ; Library boot — what every boot shares:
 ;   Disk        the disk image and a run's scratch copy of it
 ;   Oracle      the emulator, wired as its frontend wires it
-;   Checkpoint  the handoff snapshot, the oracle's, and the §8-aware comparison
+;   Checkpoint  the handoff snapshot, the oracle's, and the comparison of the two
 ;   Golden      framebuffer geometry, the oracle's desktop, settle loop, verdicts
 ;   Sd_bridge   the SD card on the SoC's SPI pins (a bit-level slave over Emu.Disk)
 ;   Tb          the Cyclesim side: loud lookups, the SD tick, run-to-handoff, scan-out

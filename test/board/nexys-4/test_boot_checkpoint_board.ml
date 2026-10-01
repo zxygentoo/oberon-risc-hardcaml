@@ -1,25 +1,14 @@
-(* Phase 7 — boot-handoff checkpoint through the PSRAM board SoC (AGENT.md §6 layer 5, the
-   board memory path).
-
-   The Phase-5 checkpoint (test_boot_checkpoint.ml) proven against the PSRAM memory path:
-   boot the board SoC — the core on a clock-enable, main memory behind
-   {!Nexys4_board.Cellram} driving a behavioural {!Nexys4_board.Cellram_model} — from the
-   real disk to the OS handoff, and compare the loaded image + architectural state to the
-   oracle, exactly as the BRAM checkpoint does. If this passes, the wait-state freeze, the
-   16↔32 width conversion, the on-chip fast path and the CPU/video arbiter are all
-   functionally correct: the booting machine reaches the same state.
-
-   The SoC + PSRAM-model wiring is the shared {!Board_tb}; the drive-to-handoff is
-   {!Boot.Tb}; disk / oracle / §8 compare are {!Boot.Checkpoint}. Here we supply only the
-   board sim, its reset preamble, and the loaded-image read via the model's two byte lanes
-   ([Board_tb.read_word]). Small wait counts (the model answers at once; only the FSM
-   control flow is under test). *)
+(* The boot-handoff checkpoint through the board SoC: the same boot and the same
+   comparison as test/boot/test_boot_checkpoint.ml, with the core on a clock enable and
+   main memory behind {!Nexys4_board.Cellram} and the chip model. A pass says that the
+   freeze during memory waits, the 16/32-bit conversion, the one-cycle path for ROM and
+   MMIO, and the arbitration between CPU and video leave the booting machine in the same
+   state. *)
 
 open Hardcaml
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
-(* PSRAM boot is several× the BRAM cycle count (each RAM access is multi-cycle), so a
-   larger safety cap; the run prints the actual handoff cycle. *)
+(* a PSRAM boot takes several times the cycles of the single-cycle-RAM one *)
 let soc_cycle_cap = 80_000_000
 
 (* [create] is the board SoC + PSRAM model in one configuration. *)
@@ -65,7 +54,7 @@ let () =
     ~pass_msg:
       "CHECKPOINT (BOARD/PSRAM) PASS — Soc boots the real disk to the OS handoff through \
        the Cellram controller; loaded image + architectural state match the oracle, \
-       modulo the §8 code-address skew.";
+       modulo the ROM code-address skew.";
   let cfg = Board_tb.config_of_env () in
   Printf.printf
     "── %s configuration ──\n  %s\n%!"

@@ -1,18 +1,14 @@
-(* RTL-fidelity dumper for the PS/2 mouse. Plays a mouse device against the Hardcaml port
-   (Risc5.Mouse) — the bidirectional init handshake to [run], then movement reports — and
-   records, per cycle, the stimulus (rst_n + the device's open-drain pull-lows for
-   msclk/msdat) and the port's outputs (msclk_oe, msdat_oe, out). The Verilator harness
-   (test/cosim/mouse.cpp) replays the same stimulus through the real MousePM.v (wrapped by
-   mouse_cosim.v) and asserts, every cycle, that the RTL's (msclk_oe, msdat_oe, out) ==
-   the port's.
+(* The dumper for the PS/2 mouse. A device model plays against the port — the
+   initialisation handshake, then movement reports — and every cycle the stimulus (reset
+   and the device's own pull-lows on the two lines) and the port's outputs are recorded.
+   mouse.cpp replays the stimulus through MousePM.v, wrapped by mouse_cosim.v, and
+   requires the same outputs every cycle.
 
-   Open-drain split: Hardcaml has no inout, so each line is a drive-low output [msclk_oe]
-   / [msdat_oe] + a resolved input. Both sides resolve wire = ~(own DUT's oe | device
-   pull-low); the device pull-low is what's dumped (it's the device's protocol decision),
-   so each side feeds its own DUT a value consistent with that DUT's drive — a divergence
-   shows up as an output mismatch.
+   Each side resolves the open-drain lines itself, from its own design's drive and the
+   device's pull-low. What is dumped is the device's pull-low, so a difference between the
+   two designs shows as a difference in their outputs.
 
-   Line: "rstn dmc dmd mco mdo out7hex" per cycle. *)
+   Line, one per cycle: "rstn dmc dmd mco mdo out7hex". *)
 
 open Hardcaml
 open Cosim_dump

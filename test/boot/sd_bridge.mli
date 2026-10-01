@@ -1,13 +1,12 @@
-(** Off-chip SD card for the SoC integration tests — a bit-level SPI slave over
-    [Emu.Disk], watching the SoC's real [sclk]/[mosi]/[miso] pins. Shared by the
-    boot-handoff checkpoint, the visual golden, and the core RTL co-sim capture (all of
-    which boot the real disk through the {!Risc5.Spi} master).
+(** The SD card outside the chip, for the tests that boot the real disk: an SPI slave over
+    [Emu.Disk]. It is driven from the SPI master's shift and control registers, read by
+    name, and from the [sclk] pin; it does not sample [mosi].
 
-    The §8 gotchas are baked in: one whole-value exchange with [Emu.Disk] per transfer
-    (write-then-read, the emulator's order) gated on the SD being selected
-    ([spiCtrl[1:0]=1]); the response clocked back on [miso] MSbit-first per byte,
-    LSByte-first across the word; advancing one bit per [sclk] falling edge — the bit
-    boundary common to the slow 50%-duty clock and the fast one-cycle pulse. *)
+    One transfer is one exchange of a whole value with the disk — write, then read, the
+    emulator's order — and only while the card is selected ([spiCtrl[1:0] = 1]). The
+    response goes back on [miso] most significant bit first within each byte, least
+    significant byte first, one bit per falling edge of [sclk]: the edge the slow 50%
+    clock and the fast one-cycle pulse have in common. *)
 
 type t
 

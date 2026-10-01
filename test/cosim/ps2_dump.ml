@@ -1,18 +1,13 @@
-(* RTL-fidelity dumper for the PS/2 keyboard receiver. Input-driven like the RS232
-   receiver (`rs232_dump rs232r`): the dumper plays the keyboard, clocking an 11-bit frame
-   on (ps2c, ps2d) plus a [done_] pop, and records per cycle the inputs it drove and the
-   [rdy] it observed. The Verilator harness (test/cosim/ps2.cpp) does a fixed-length
-   replay of the identical (ps2c, ps2d, done_) waveform through test/_po/verilog/src/PS2.v
-   and asserts, cycle-by-cycle, RTL rdy == port's, plus RTL data == the recovered byte
-   whenever rdy is high.
+(* The dumper for the PS/2 keyboard receiver. It plays the keyboard: it clocks a frame in
+   on (ps2c, ps2d), pops the byte with [done_], and records every cycle the inputs it
+   drove and the [rdy] it saw. ps2.cpp replays the same waveform through PS2.v and
+   requires the same [rdy] every cycle, and the same data whenever [rdy] is high.
 
-   [shift] is ps2c-derived ([Q1 & ~Q0]) and trivially identical given the same ps2c, so it
-   isn't in the trace; multi-byte FIFO ordering is covered by the co-located test. The
-   FIFO pointers still advance (and wrap past 16) across these one-byte-per-line frames.
+   The FIFO pointers advance, and wrap, across these one-byte frames; the order of several
+   queued bytes is checked by the unit's own test.
 
-   Line format: "data hextrace" where data is the recovered byte (checked when rdy=1) and
-   hextrace is one hex digit per cycle: bit3 = done_, bit2 = ps2c, bit1 = ps2d (the inputs
-   driven), bit0 = rdy (the output checked). *)
+   Line: "data hextrace", one digit per cycle: bit 3 = done_, bit 2 = ps2c, bit 1 = ps2d,
+   bit 0 = rdy. *)
 
 open Hardcaml
 open Cosim_dump

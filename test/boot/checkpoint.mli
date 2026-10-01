@@ -1,7 +1,8 @@
 (** The boot-handoff checkpoint, Hardcaml-free: a machine's architectural state at the OS
     handoff, the oracle's boot to the same point, and the comparison that tolerates
-    exactly the code-address skew of AGENT.md §8. The Cyclesim side — driving a SoC to its
-    handoff and taking the snapshot — is {!Tb.run_to_handoff}. *)
+    exactly the ROM code-address skew (the emulator's ROM sits at another address than
+    [RISC5.v]'s, so links into ROM code differ by a constant). The Cyclesim side — driving
+    a SoC to its handoff and taking the snapshot — is {!Tb.run_to_handoff}. *)
 
 (** A machine's architectural state at the OS handoff. *)
 type snapshot =

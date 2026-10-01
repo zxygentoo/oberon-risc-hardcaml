@@ -1,8 +1,8 @@
 open! Base
 open Hardcaml
 
-(* ── Combinational units: our circuit's ports match the reference .v; proven by importing
-   the .v and SAT-checking against ours with hardcaml_verify's Sec + z3 (Formal_equiv). ── *)
+(* ── Combinational units. The ports are the reference .v's; the .v is imported and
+   checked against our circuit by SAT (Formal_equiv). ── *)
 
 let left_shifter () =
   let module C = Circuit.With_interface (Risc5.Left_shifter.I) (Risc5.Left_shifter.O) in
@@ -14,11 +14,10 @@ let right_shifter () =
   C.create_exn ~name:"RightShifter" Risc5.Right_shifter.create
 ;;
 
-(* ── Sequential units: built with ports named to match the .v (clk/run/u/x/y → stall/z)
-   and registers named to match (S/P, in the lib) so yosys equiv_make can pair the
-   flip-flops; proven by emitting our Verilog and running yosys equiv_induct
-   (Yosys_equiv). The circuit is named distinctly from the reference module so yosys can
-   read both. ── *)
+(* ── Sequential units. Each circuit is built with its .v's port names, and the library's
+   registers carry the RTL's names, so yosys can pair the flip-flops and prove the step by
+   induction (Yosys_equiv). The circuit's name differs from the reference module's so that
+   yosys can read both. ── *)
 
 let multiplier () =
   let open Signal in
@@ -91,15 +90,11 @@ let fp_divider () =
   Circuit.create_exn ~name:"fp_divider_ours" [ output "stall" stall; output "z" z ]
 ;;
 
-(* ── Tier-1 peripherals: the clean, single-clock peripheral FSMs with a direct standalone
-   .v (RS232R/T, SPI, PS2). Same sequential recipe as the iterative units — emit our
-   Verilog, equiv_make pairs flip-flops by name, equiv_induct closes. Already Verilator-
-   cosim'd (Phase 6a); this is the exhaustive upgrade (AGENT.md §6, README "Planned").
-
-   Ports are named to match the .v; [rst_n] maps to the RTL's active-low [rst] port (same
-   wire — ours does [~:rst_n], the RTL does [~rst]). Our lib registers keep their
-   waveform/SoC-namespaced names; where they differ from the RTL we rename them to the
-   .v's in the yosys script (the [renames] column), exactly as the core proof does. ── *)
+(* ── The single-clock peripherals with a .v of their own: the two UART directions, SPI
+   and the PS/2 keyboard. The recipe is that of the iterative units. [rst_n] is the RTL's
+   active-low [rst] port under our name for it. Where a library register's name differs
+   from the RTL's, the yosys script renames it (the [renames] column of the table below),
+   as the core proof does. ── *)
 
 let rs232t () =
   let open Signal in
@@ -168,10 +163,10 @@ let ps2 () =
     [ output "rdy" rdy; output "shift" shift; output "data" data ]
 ;;
 
-(* Mouse (Tier 2): MousePM.v's [MouseP] has open-drain [inout msclk, msdat]; our port
-   splits each into a drive-low [*_oe] output + the resolved-value input. A Verilog shim
-   ([mouse_shim.v]) recombines them back into the RTL's inout, and the shimmed gate is
-   proven ≡ MouseP (see [run_mouse] + [proofs/mouse.ys.template]). *)
+(* The mouse. MousePM.v's [MouseP] has open-drain [inout] lines; our port splits each into
+   a drive-low [*_oe] output and an input carrying the resolved value. A Verilog shim
+   (mouse_shim.v) recombines them into the RTL's inout, and the shimmed circuit is proven
+   equivalent to MouseP: see [run_mouse]. *)
 let mouse () =
   let open Signal in
   let i =
@@ -188,17 +183,11 @@ let mouse () =
     [ output "msclk_oe" msclk_oe; output "msdat_oe" msdat_oe; output "out" out ]
 ;;
 
-(* VID (Tier 2): two clock domains (pclk raster + clk DMA), and TWO deliberate departures
-   from VID60.v: (1) the framebuffer-fetch CDC (our toggle pulse-synchroniser vs the RTL's
-   async-set [req1]), and (2) the 2-group fetch PREFETCH (our look-ahead [vidadr] +
-   ping-pong banks vs the RTL's single [vidbuf] / current-group address — the board's
-   flicker fix). The gold side needs prep (stub the DCM, [chparam RGBW=6], expose [pclk]);
-   the proof cuts [vidbuf] (our ping-pong read mux, named to pair with the RTL) to a
-   shared free input so the raster + pixel path prove bit-exact GIVEN the same word, and
-   excludes BOTH departed outputs ([req], [vidadr]). The [req] departure is closed by
-   [vid_invariant]; the [vidadr] delivery is checked by a co-located sim test (a formal
-   all-phases version was prototyped but does not converge tractably — col 0 is
-   cross-line; see README "VID prefetch"). See [run_vid] + [proofs/vid.ys.template]. *)
+(* Video. Two clock domains, and two deliberate departures from VID60.v: the clock
+   crossing of the fetch request (a toggle synchroniser, where the RTL sets [req1]
+   asynchronously), and the look-ahead fetch (the next group's address and two alternating
+   buffers, where the RTL has the current group's address and one [vidbuf]). What is
+   proven, and how the departures are closed, is at [run_vid]. *)
 let vid () =
   let open Signal in
   let i =
@@ -219,10 +208,9 @@ let vid () =
     ]
 ;;
 
-(* The VID fetch-CDC invariant (the part run_vid cuts): the toggle pulse synchroniser
-   [Video.pulse_sync], isolated with [req0] as an input, so the property harness
-   ([vid_invariant.v]) can drive it and assert one-req-per-req0. Proven by BMC, not equiv
-   (it's a protocol property, not a cycle-equivalence). *)
+(* The fetch request's synchroniser, [Video.pulse_sync], by itself, with [req0] as an
+   input: the harness vid_invariant.v drives it and asserts one [req] per [req0]. That is
+   a property proof (see [run_vid_invariant]), not an equivalence. *)
 let pulse_sync () =
   let open Signal in
   let clk = input "clk" 1 in
@@ -237,9 +225,9 @@ let pulse_sync () =
   Circuit.create_exn ~name:"pulse_sync_ours" [ output "req" req ]
 ;;
 
-(* VID prefetch addressing (the [vidadr] departure the [vid] equiv excludes): the real
-   look-ahead logic [Video.lookahead], with the raster counters as free inputs so it is a
-   pure combinational function of (hcnt, vcnt). Proven ≡ [vid_addr_spec] below by Sec/z3. *)
+(* The look-ahead logic, [Video.lookahead], by itself, with the raster counters as free
+   inputs: a combinational function of (hcnt, vcnt), proven equal to [vid_addr_spec]
+   below. *)
 let vid_addr_ours () =
   let open Signal in
   let hcnt = input "hcnt" 11 in
@@ -256,16 +244,15 @@ let vid_addr_ours () =
     ]
 ;;
 
-(* Independent geometry spec for the look-ahead address — written from the screen geometry
-   directly and in a deliberately DIFFERENT style from lib/video.ml, so the equivalence is
-   a real cross-check, not a restatement:
-   - next column by natural 5-bit wrap ([col + 1] mod 32) vs vid.ml's explicit [col==31]
-     mux
-   - address by shift/add packing vs vid.ml's [concat_msb]
-   - the framebuffer base and the geometry constants (32 px/group, 768 visible rows ⇒ last
-     row 767) are restated here as the audited spec, pinning vid.ml's [org]/wrap. (The row
-     wrap 767→0 is not a power of two, so both sides need the same explicit compare —
-     there it is a value-pin/regression-guard, like the register-file spec.) *)
+(* A specification of the look-ahead address, written from the screen geometry and in a
+   different style from lib/video.ml, so that the equivalence is a cross-check and not a
+   restatement:
+   - the next column by the natural 5-bit wrap of [col + 1], where video.ml has an
+     explicit mux on [col = 31];
+   - the address by shifts and adds, where video.ml concatenates fields;
+   - the framebuffer base and the geometry (32 pixels to a group, 768 visible rows) stated
+     again here. The row wrap 767 → 0 is not a power of two, so both sides need the same
+     compare: there the spec only pins the value. *)
 let vid_addr_spec () =
   let open Signal in
   let hcnt = input "hcnt" 11 in
@@ -287,13 +274,12 @@ let vid_addr_spec () =
     ]
 ;;
 
-(* ── Behavioural-spec proof: the register file ── proven not against Wirth's Registers.v
-   (64 duplicated, bit-sliced RAM16X1D primitives — structurally incongruent state that
-   defeats FF-pairing and isn't inductive for a memory miter; see README) but against the
-   behavioural CONTRACT it implements (registers_spec.v: 16x32, 3 async reads, 1 sync
-   write). Both sides are a single array, so the [memory] pass lowers them to FFs that
-   pair by name and equiv_induct closes. AGENT.md §2/§3: the register file is the
-   canonical "structure is not the spec" case. ── *)
+(* ── The register file, against a specification. Registers.v is 64 bit-sliced RAM16X1D
+   primitives, duplicated: state of a shape that cannot be paired flip-flop by flip-flop
+   with ours, and a memory miter that is not inductive (see the README). So the proof is
+   against the contract Registers.v implements (registers_spec.v: 16 words of 32 bits,
+   three asynchronous reads, one synchronous write). Both sides are then one array, which
+   the [memory] pass lowers to flip-flops that pair by name. ── *)
 
 let registers () =
   let open Signal in
@@ -314,10 +300,9 @@ let registers () =
 
 (* ── Runner ── *)
 
-(* Scratch root: in-repo + self-contained (git-ignored test/_work; formal_run cd's to the
-   repo root at startup, so this relative path resolves there). Each check runs in its own
-   subdir test/_work/formal/<name>, so the parallel pool's per-check yosys/z3 files never
-   collide. *)
+(* Scratch files go under the git-ignored test/_work (the runner changes to the repo root
+   at startup, so the relative path resolves). Each check has its own directory, so
+   parallel checks' yosys and z3 files never collide. *)
 let work_root = "test/_work/formal"
 let rtl_dir = "test/_po/verilog/src" (* Wirth's originals, fetched on demand *)
 
@@ -380,9 +365,9 @@ let report_seq ~name ~v ~kind =
          kind)
 ;;
 
-(* Every clean single-clock FSM proof: [proofs/sequential.ys.template] filled per row and
-   run by [Yosys_equiv.run_proof]. [dir] is the reference .v's directory (rtl_dir for the
-   Wirth originals, proofs_dir for registers_spec.v). *)
+(* Every single-clock sequential proof: proofs/sequential.ys.template, filled in from a
+   row and run by [Yosys_equiv.run_proof]. [dir] is the reference .v's directory:
+   [rtl_dir] for Wirth's originals, [proofs_dir] for registers_spec.v. *)
 let run_sequential ~work_dir ~dir ~kind (name, ours, v, top_module, renames) =
   let ours = ours () in
   Yosys_equiv.run_proof
@@ -404,11 +389,9 @@ let combinational : (string * (unit -> Circuit.t) * string * string) list =
   ]
 ;;
 
-(* Rows: (name, circuit thunk, reference .v, top module, register renames). [renames] is
-   [[]] when our register names already match the RTL (the iterative units name S/P/…
-   after it; RS232T's run/tick/bitcnt/shreg line up). The peripherals that keep
-   waveform/SoC- namespaced lib names rename to the .v's here (e.g. [q0→Q0],
-   [spi_shreg→shreg]). *)
+(* A row: name, circuit, reference .v, top module, register renames. [renames] is empty
+   when our register names are already the RTL's; otherwise it maps ours to the .v's (for
+   example [q0] to [Q0], [spi_shreg] to [shreg]). *)
 let sequential
   : (string * (unit -> Circuit.t) * string * string * (string * string) list) list
   =
@@ -432,11 +415,12 @@ let behavioral
   [ "registers", registers, "registers_spec.v", "Registers_spec", [] ]
 ;;
 
-(* The in-situ core-glue proof (AGENT.md §6, README): our whole core's glue (decode, the
-   inline ALU, control, flags, the 13 state registers) ≡ RISC5.v with the 8 submodules
-   black-boxed and assumed-equivalent (each proven separately). [Core_blackbox] builds the
-   gate (Instantiation stubs for the units); [proofs/core.ys.template] merges the matched
-   black-box cells, cutpoint -blackbox cuts their outputs, equiv_induct closes the glue. *)
+(* The core's glue, in place: decode, the inline ALU, control, flags and the 13 state
+   registers, against RISC5.v with the eight submodules as black boxes on both sides (each
+   is proven separately). [Core_blackbox] builds our side with instantiation stubs for the
+   units. proofs/core.ys.template pairs the black-box cells, which also checks that both
+   sides drive each unit's inputs alike; cuts the units' outputs to shared free signals;
+   and closes the glue by induction. *)
 let run_core ~work_dir =
   let ours = Core_blackbox.circuit () in
   Yosys_equiv.run_proof
@@ -462,10 +446,10 @@ let run_core ~work_dir =
           units black-boxed · yosys equiv_induct)"
 ;;
 
-(* The Mouse (Tier 2): MouseP's open-drain [inout] needs the two-shim recombination +
-   tristate lowering — see [proofs/mouse_shim.v] and [proofs/mouse.ys.template]. [renames]
-   strips the [g.] instance prefix the flatten adds, pairing the wrapped FFs back to the
-   RTL's names (which our lib already matches: rx/count/filter/tx/x/y/btns/sent/req). *)
+(* The mouse proof needs the two shims and tristate lowering: see proofs/mouse_shim.v and
+   proofs/mouse.ys.template. The renames strip the [g.] prefix that flattening a shim
+   adds, which pairs the wrapped flip-flops with the RTL's; under the prefix the names are
+   already MousePM.v's. *)
 let mouse_renames =
   [ "g.rx", "rx"
   ; "g.count", "count"
@@ -479,9 +463,8 @@ let mouse_renames =
   ]
 ;;
 
-(* The Mouse proof: the open-drain split needs two rename blocks (one per shim), supplied
-   as [{gold_renames}] / [{ours_renames}]; everything else is the same shape as a
-   sequential proof. *)
+(* Two rename blocks, one per shim ([{gold_renames}] and [{ours_renames}]); otherwise the
+   shape of a sequential proof. *)
 let run_mouse ~work_dir =
   Yosys_equiv.run_proof
     ~work_dir
@@ -501,18 +484,16 @@ let run_mouse ~work_dir =
   |> report_seq ~name:"mouse" ~v:"MousePM.v" ~kind:"open-drain inout · yosys equiv_induct"
 ;;
 
-(* VID (Tier 2): two-clock, with TWO deliberate departures from VID60.v — the framebuffer
-   fetch CDC (toggle synchroniser vs async-set [req1]) and the 2-group prefetch
-   (look-ahead [vidadr] + ping-pong banks vs single [vidbuf]). So this is a PARTIAL proof:
-   the raster + pixel datapath ≡ VID60.v GIVEN the same fetched word, with BOTH departed
-   outputs cut/ excluded. [proofs/vid.ys.template] drops the DCM, exposes pclk, cuts
-   [vidbuf] (our read mux, named to pair with the RTL) to a shared free input, and
-   equiv_removes [req] and [vidadr]. Both departures are closed by decomposition: the
-   [req] CDC by [vid_invariant]; the [vidadr] prefetch DELIVERY by [vid_addr] (the
-   look-ahead address ≡ a geometry spec, all hcnt/vcnt) + [vid_invariant] (timing) + a
-   reviewed composition lemma (README "VID prefetch"). The monolithic all-phases delivery
-   proof does not converge tractably (col 0 is cross-line), so that one glue step stays a
-   hand argument, cross-checked by the co-located sim test. *)
+(* Video is a partial proof: the raster and the pixel path equal VID60.v's, given the same
+   fetched word. proofs/vid.ys.template drops the DCM, exposes pclk, cuts [vidbuf] (our
+   buffer read mux, named to pair with the RTL's register) to a shared free input, and
+   removes the two departed outputs, [req] and [vidadr], from the comparison. The
+   departures are closed separately. The request crossing: [vid_invariant]. The look-
+   ahead: [vid_addr] (the address is the right one for every hcnt and vcnt),
+   [vid_invariant] (its timing), and one composition step argued by hand in the README
+   ("VID prefetch") and cross-checked by the simulation test in lib/video.ml. A single
+   proof of the whole delivery does not converge: column 0's word is requested on the line
+   before. *)
 let run_vid ~work_dir =
   Yosys_equiv.run_proof
     ~work_dir
@@ -530,14 +511,14 @@ let run_vid ~work_dir =
           CDC+prefetch cut · yosys equiv_induct)"
 ;;
 
-(* The VID fetch-CDC invariant — the property the vid proof cuts. Proves
-   [Video.pulse_sync] is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
-   interleavings and ALL reachable states, by k-INDUCTION (yosys-smtbmc / z3: a BMC base
-   case plus the [-i] step) — unbounded, the part the single-phase Cyclesim test can't
-   reach. [k] is the induction length: threshold ~38 (k must span a fetch cycle so the
-   k-step history forces a reachable state); 48 leaves margin.
-   [proofs/vid_invariant.ys.template] only emits the SMT problem; run_proof's [~smtbmc]
-   runs the k-induction. *)
+(* The property the video proof cuts out: [Video.pulse_sync] gives exactly one [req] per
+   [req0], none lost and none spurious, in every reachable state and for every
+   interleaving of clk and pclk that the harness admits (vid_invariant.v states its
+   envelope). It is proven by k-induction (yosys-smtbmc over z3: a bounded base case from
+   the initial state, and the step), which reaches what the single-phase simulation test
+   cannot. [k] must span a fetch cycle, so that the k-step history forces a reachable
+   state: the threshold is about 38, and 48 leaves margin. The template only emits the SMT
+   problem; [run_proof]'s [~smtbmc] runs the induction. *)
 let vid_invariant_k = 48
 
 let run_vid_invariant ~work_dir =
@@ -561,16 +542,11 @@ let run_vid_invariant ~work_dir =
             vid_invariant_k)
 ;;
 
-(* C — the addressing half of prefetch DELIVERY (test/formal/README "VID prefetch"). The
-   [vid] equiv excludes [vidadr] (our look-ahead departs from VID60.v's current-group
-   address), so this proves — combinationally, exhaustively over ALL (hcnt, vcnt) — that
-   [Video.lookahead] computes Org + [{~next_vcnt, next_col}] for the correct next group
-   and routes it to the [lsb next_col] bank: i.e. ≡ an independent geometry spec. Pure
-   Sec/z3 on two in-process Hardcaml circuits, no .v import (there is no reference .v for
-   the look-ahead address — VID60.v's is the current group). Together with [vid_invariant]
-   (the timing/CDC half) and the ping-pong margin, this closes the prefetch by
-   decomposition (the composition lemma is in the README). [work_dir] is unused — Sec
-   manages its own z3. *)
+(* The addressing half of the look-ahead. The video proof excludes [vidadr], so this
+   proves, for every (hcnt, vcnt), that [Video.lookahead] computes the next group's
+   address and selects the buffer [lsb next_col]: it equals the geometry spec above. Both
+   circuits are Hardcaml, checked by Sec and z3 with no .v imported (VID60.v has no look-
+   ahead address to compare with). [work_dir] is unused: Sec manages its own z3 files. *)
 let run_vid_addr ~work_dir:_ =
   Formal_equiv.check_circuits ~ours:(vid_addr_ours ()) ~spec:(vid_addr_spec ())
   |> report_sec
@@ -583,11 +559,9 @@ let run_vid_addr ~work_dir:_ =
           (combinational · Sec/z3)"
 ;;
 
-(* All checks as one uniform list — [name, run ~work_dir -> passed?]. The combinational
-   and sequential rows wrap their tuple-driven runners; core/mouse/vid/vid_invariant are
-   their own one-off flows. [run] is only invoked inside a worker (or a single-check run),
-   so building this list touches no circuit / yosys / z3 — keeping the parent clean before
-   [Fork_pool] forks. *)
+(* All the checks as one list of (name, run). [run] is called only inside a worker, or for
+   a single check, so building the list touches no circuit, yosys or z3, and the parent is
+   clean when [Fork_pool] forks. *)
 let checks : (string * (work_dir:string -> bool)) list =
   List.concat
     [ List.map combinational ~f:(fun ((name, _, _, _) as row) ->
@@ -618,8 +592,7 @@ let checks : (string * (work_dir:string -> bool)) list =
 ;;
 
 let () =
-  (* repo-root-relative paths throughout (test/_po, test/_work, the spec .v), wherever
-     we're launched from; the only remaining bash is the toolchain-free fetch-rtl.sh *)
+  (* paths are relative to the repo root, wherever the runner is started from *)
   Fork_pool.cd_to_repo_root ();
   let argv = Stdlib.Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
@@ -649,8 +622,8 @@ let () =
     else
       Int.max 1 (Int.min (List.length selected) (Domain.recommended_domain_count () / 2))
   in
-  (* prep: yosys + z3 on PATH, and the reference RTL fetched + checksum-verified on demand
-     (the fetch itself stays toolchain-free bash). *)
+  (* preparation: yosys and z3 on PATH, and the reference RTL fetched and checksum-
+     verified *)
   List.iter [ "yosys"; "z3" ] ~f:(fun tool ->
     if Stdlib.Sys.command (Printf.sprintf "command -v %s > /dev/null 2>&1" tool) <> 0
     then (

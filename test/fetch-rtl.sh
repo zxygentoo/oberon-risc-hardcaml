@@ -5,9 +5,9 @@
 # archive and checksum-verified against test/rtl-sources.txt — so a fresh clone with
 # verilator just works while we ship only the provenance pins, never the copyrighted RTL.
 #
-# A checksum mismatch means upstream drifted from the exact revision the port (and AGENT.md
-# §8's RTL line-number citations) was verified against, so we refuse rather than co-sim against
-# unknown RTL. Updating to a newer upstream revision is a deliberate edit of rtl-sources.txt.
+# A checksum mismatch means upstream drifted from the exact revision the port was verified
+# against (and whose line numbers the documentation cites), so we refuse rather than co-sim
+# against unknown RTL. Updating to a newer upstream revision is a deliberate edit of rtl-sources.txt.
 #
 # Standalone or called by the cosim/formal runners; toolchain-free (curl/unzip/sha256sum/awk/grep, no opam).
 set -euo pipefail

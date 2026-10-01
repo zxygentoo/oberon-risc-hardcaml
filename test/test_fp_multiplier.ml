@@ -1,10 +1,5 @@
-(* Phase 3b — FPMultiplier value-correctness against the frozen fp_vectors (the always-on,
-   Verilator-free behavioural layer; the RTL-fidelity co-sim in test/cosim/ is the
-   separate, opt-in fidelity oracle — AGENT.md §6).
-
-   Unlike the adder, FML has no compiler-unreachable domain and no emulator-vs-RTL
-   divergence (AGENT.md §8), so it needs no steering: replay every M-vector and fuzz
-   against Emu.Fp via the shared [Fp_replay.simple_value_test]. *)
+(* The FP multiplier's values: every frozen M vector, then a fuzz against [Emu.Fp]. The
+   emulator and FPMultiplier.v agree on every input, so nothing is skipped. *)
 
 open Hardcaml
 module Fp = Risc5.Fp_multiplier

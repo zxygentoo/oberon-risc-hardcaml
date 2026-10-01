@@ -9,8 +9,8 @@ let fb_h = 768
 let fb_words = fb_w * fb_h
 let fb_base_word = 0x39FC0 (* display_start 0xE7F00 / 4 *)
 
-(* Boot the oracle as the frontend / test_boot.ml does, advance [frames] at the synthetic
-   60 Hz clock, and snapshot the framebuffer + its hash. *)
+(* Boot the oracle as its frontend does, advance [frames] at its synthetic 60 Hz clock,
+   and take the framebuffer and its hash. *)
 let boot_oracle_fb ~frames =
   let tmp = Disk.copy_to_temp Disk.image in
   let risc = Oracle.create ~disk:tmp in
@@ -79,13 +79,10 @@ let fb_fnv fb =
   Array.fold_left word offset fb
 ;;
 
-(* The goldens' settle loop: run [chunk]-cycle bursts of [tick] and snapshot [read_fb]
-   after each, until the framebuffer is drawn (nonzero) and then unchanged for [settle]
-   consecutive chunks, or [cap] cycles. [pc]/[spi_bytes] feed the progress line only.
-   [?target] short-circuits: once the snapshot hashes to the oracle's value the verdict is
-   already decided (the report re-diffs word-exact), so the stability confirmation would
-   only burn [settle] more chunks — exit immediately instead. Returns (last framebuffer,
-   settled?). *)
+(* Run [chunk] ticks at a time, reading the framebuffer after each, until it has been
+   drawn and then left unchanged for [settle] chunks, or [cap] is reached. [?target] ends
+   the run as soon as the framebuffer hashes to the oracle's value: the verdict is decided
+   then, and the report compares word for word anyway. *)
 let run_to_settle ?target ~cap ~chunk ~settle ~tick ~read_fb ~pc ~spi_bytes () =
   let cyc = ref 0
   and prev = ref [||]

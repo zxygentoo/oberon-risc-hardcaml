@@ -1,9 +1,4 @@
-(* Shared board-SoC test harness — a thin veneer over {!Nexys4_board.Soc.For_tests} (the
-   SoC + {!Nexys4_board.Cellram_model} closure and the idle-level driver live there, next
-   to the design, shared with its co-located tests). This module pins the test-side
-   configuration — the design boot ROM and the full-size PSRAM model (the gates load the
-   real disk image) — and keeps [read_word] for reconstructing 32-bit words from the
-   model's byte lanes. The public contract is in board_tb.mli. *)
+(* See board_tb.mli. *)
 
 open Hardcaml
 module Soc = Nexys4_board.Soc

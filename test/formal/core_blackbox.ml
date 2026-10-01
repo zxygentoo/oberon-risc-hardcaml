@@ -2,11 +2,10 @@ open! Base
 open Hardcaml
 module Core = Risc5.Cpu
 
-(* Each stub instantiates the same module RISC5.v does, with the same instance and port
-   names — and the output WIRES named to match RISC5.v's (lshout / product / A / …). That
-   shared naming is what lets yosys equiv_make pair the instances and tie the black-box
-   outputs, so the glue cones stop at the units (each proven separately) rather than
-   solving through them. *)
+(* Each stub instantiates the module RISC5.v does, under the same instance and port names,
+   and names its output wires as RISC5.v does (lshout, product, A, …). The shared names
+   let yosys pair the instances and tie the black boxes' outputs together, so the glue's
+   logic cones stop at the units instead of solving through them. *)
 let out inst port name = Signal.( -- ) (Instantiation.output inst port) name
 
 let left_shifter (i : Signal.t Risc5.Left_shifter.I.t) : Signal.t Risc5.Left_shifter.O.t =
@@ -134,8 +133,6 @@ let units : Core.Units.t =
   }
 ;;
 
-(* The names our 13 registers carry vs RISC5.v's — the yosys flow renames ours to these so
-   equiv_make pairs the flip-flops. [irq1] already matches, so it isn't listed. *)
 let register_renames =
   [ "pc", "PC"
   ; "ir", "IR"
@@ -152,8 +149,7 @@ let register_renames =
   ]
 ;;
 
-(* The gate circuit: our core with the 8 submodules as black boxes, ports named to match
-   RISC5.v (clk/rst/stallX/...), module named distinctly so yosys reads both. *)
+(* the module's name differs from RISC5.v's so that yosys can read both *)
 let circuit () =
   let open Signal in
   let i =

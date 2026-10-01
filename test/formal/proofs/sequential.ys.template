@@ -1,8 +1,8 @@
 # Sequential equivalence — the shared tactic for every clean single-clock FSM proven by
-# yosys-native SEC (AGENT.md §6). Driven by Yosys_equiv.run_proof; per-unit data is filled
+# yosys-native SEC. Driven by Yosys_equiv.run_proof; per-unit data is filled
 # from the sequential/behavioral rows in formal_run.ml. Placeholders (named WITHOUT braces
 # here on purpose — substitution is blind and would splice a value into this comment):
-#   rtl      reference .v (rtl_dir for the Wirth originals, spec_dir for registers_spec.v)
+#   rtl      reference .v (rtl_dir for the Wirth originals, proofs_dir for registers_spec.v)
 #   ours/gate  our emitted Verilog + its module name (both harness-supplied)
 #   top      reference top module
 #   renames  a cd/rename block aligning our register names to the RTL's ("" when they match)

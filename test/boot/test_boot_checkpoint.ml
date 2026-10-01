@@ -1,15 +1,10 @@
-(* Phase 5 — boot-handoff checkpoint (AGENT.md §6 layer 5).
+(* The boot-handoff checkpoint on the simulation SoC.
 
-   Boot the minimal SoC from the real disk image — with the SD card modelled test-side by
-   a bit-level SPI slave over [Emu.Disk] — to the OS handoff (pc leaves the boot ROM for
-   low RAM), then compare the loaded image + architectural state against the oracle
-   booting the same [.dsk]. They agree exactly, modulo the §8 code-address skew (which
-   self-heals in low RAM): the static loaded image is byte-identical; only runtime
-   pc-links (R15, boot-stack saved links) carry the constant ROM-base offset.
-
-   The shared halves: {!Boot.Checkpoint} (oracle boot, §8-aware compare, the [run] driver)
-   and {!Boot.Tb} (the Cyclesim drive to the handoff). Here we supply only the BRAM SoC's
-   sim, its reset preamble, and its four-byte-lane RAM read. *)
+   The SoC boots the real disk image — the SD card played by {!Boot.Sd_bridge} — to the OS
+   handoff, where PC leaves the boot ROM for low RAM. The loaded image and the
+   architectural state are then compared with the oracle's after booting the same disk.
+   They must agree exactly, apart from return addresses saved while running from the ROM,
+   which differ by the constant offset between the two ROM bases. *)
 
 open Hardcaml
 module Soc = Risc5.Soc
@@ -17,8 +12,8 @@ module Sim = Cyclesim.With_interface (Soc.I) (Soc.O)
 
 let soc_cycle_cap = 30_000_000
 
-(* SPI_DIV_LOG2 overrides the slow SPI divider depth (default 6 = SPI.v's clk÷64; 2 =
-   clk÷4, a ~4x faster boot — the SD-init/early-read wait is ~80% of boot cycles) *)
+(* SPI_DIV_LOG2 sets the slow SPI divider depth (6 = SPI.v's clk/64; 2 boots about four
+   times faster, most boot cycles being spent waiting on slow SPI transfers) *)
 let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2")
 
 let run_soc_to_handoff () =
@@ -56,5 +51,5 @@ let () =
     ~run_soc_to_handoff
     ~pass_msg:
       "CHECKPOINT PASS — SoC boots the real disk to the OS handoff (pc=0); loaded image \
-       + architectural state match the oracle, modulo the §8 code-address skew."
+       + architectural state match the oracle, modulo the ROM code-address skew."
 ;;

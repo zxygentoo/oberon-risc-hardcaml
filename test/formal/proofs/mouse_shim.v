@@ -1,4 +1,4 @@
-// Open-drain shims for the Mouse formal proof (AGENT.md §6, README Tier 2).
+// Open-drain shims for the Mouse formal proof (see ../README.md).
 //
 // MousePM.v's `MouseP` has two bidirectional open-drain pins:
 //   assign msclk = req    ? 1'b0 : 1'bz;   // pull low, else release (external pull-up -> 1)

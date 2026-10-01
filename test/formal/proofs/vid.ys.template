@@ -1,4 +1,4 @@
-# Partial multiclock equivalence for VID (AGENT.md §6, README Tier 2). VID is two-clock (pclk
+# Partial multiclock equivalence for VID (see ../README.md). VID is two-clock (pclk
 # raster + clk DMA) and its framebuffer-fetch CDC deliberately departs from VID60.v (our toggle
 # pulse-synchroniser vs the RTL async-set req1), so a whole-VID equiv cannot close at the CDC.
 # We prove AROUND it. Driven by Yosys_equiv.run_proof; placeholders (named WITHOUT braces here
@@ -11,7 +11,7 @@ read_verilog {ours}
 chparam -set RGBW 6 {top}
 hierarchy -check
 proc
-# drop VID60.v's Xilinx DCM/BUFG (a Phase-7 primitive) and expose pclk as a free clock like ours
+# drop VID60.v's Xilinx DCM/BUFG (clock generation, the board's job) and expose pclk as a free clock like ours
 delete {top}/c:dcm {top}/c:clkbuf
 expose -input {top}/w:pclk
 # cut the framebuffer word to a shared free input on BOTH sides, so the pixel datapath proves

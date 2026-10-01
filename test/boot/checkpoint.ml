@@ -20,10 +20,10 @@ let oracle_step_cap = 5_000_000
    not a load divergence, so it sits outside this window. *)
 let loaded_image_words = 0x2_0000
 
-(* §8: code addresses (pc-links) differ by a constant byte offset — the oracle's ROM base
-   minus ours — while they point into the boot-ROM frame. A value "reconciles" if it is
-   equal, or equal after adding that offset (mod 2^32). A real divergence reconciles under
-   neither. *)
+(* Code addresses differ between the two machines by a constant: the oracle's ROM sits at
+   another base than the hardware's, so return addresses saved while running from the ROM
+   differ by the difference of the bases. A value reconciles if it is equal, or equal
+   after adding that offset; a real divergence does neither. *)
 let code_offset = 0xFF00_1800
 let reconciles hw oracle = hw = oracle || (hw + code_offset) land 0xFFFF_FFFF = oracle
 
@@ -51,8 +51,8 @@ let boot_oracle_to_handoff () =
   }
 ;;
 
-(* Differential compare, §8-aware: every difference must reconcile under [code_offset] (a
-   code-address link) or it is a real failure. Prints a summary; returns [true] on pass. *)
+(* Every difference must reconcile under [code_offset], or it is a failure. Prints a
+   summary. *)
 let compare_snapshots ~hw ~oracle =
   let fail = ref false in
   let arch_fail = ref false in
@@ -77,7 +77,7 @@ let compare_snapshots ~hw ~oracle =
         else (
           fail := true;
           Printf.printf
-            "  FAIL: R%d hw=0x%X or=0x%X (not a §8 code-address offset)\n"
+            "  FAIL: R%d hw=0x%X or=0x%X (not the ROM code-address offset)\n"
             k
             h
             o))
@@ -107,11 +107,11 @@ let compare_snapshots ~hw ~oracle =
       (hw.ram !first_real)
       (oracle.ram !first_real));
   Printf.printf
-    "arch: pc/flags/H %s; %d reg(s) = §8 code-addr skew (the R15 link)\n"
+    "arch: pc/flags/H %s; %d reg(s) = ROM code-address skew (the R15 link)\n"
     (if !arch_fail then "MISMATCH (see FAIL lines above)" else "match")
     !skew_regs;
   Printf.printf
-    "loaded image [0..0x%X): %d exact, %d §8-skewed (boot-stack links), %d real diffs\n"
+    "loaded image [0..0x%X): %d exact, %d skewed (boot-stack links), %d real diffs\n"
     loaded_image_words
     !exact
     !skew

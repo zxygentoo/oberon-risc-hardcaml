@@ -1,9 +1,4 @@
-(* Public API in [tb.mli]. The Cyclesim-side half shared by the four boot gates: loud
-   by-name lookups, the SPI/SD-card tick, and the run-to-handoff driver. It is
-   SoC-independent — the BRAM and board SoCs expose the same register/memory names (pc,
-   rdy, spi_shreg, spi_ctrl, regfile, z/n/c/ov/h); only sim construction, the reset
-   preamble, and the RAM readback differ, and those come in as closures. The Hardcaml-free
-   halves are [Disk], [Oracle], [Checkpoint] and [Golden]. *)
+(* See [tb.mli]. *)
 
 open Hardcaml
 
@@ -18,7 +13,7 @@ let some what = function
 let lookup_reg sim n = some n (Cyclesim.lookup_reg_by_name sim n)
 let lookup_mem sim n = some n (Cyclesim.lookup_mem_by_name sim n)
 
-(* node-or-reg: plain lookup_node_by_name misses registers (AGENT.md §6) *)
+(* plain [lookup_node_by_name] does not find registers *)
 let lookup_node sim n = some n (Cyclesim.lookup_node_or_reg_by_name sim n)
 
 (* the packed N/Z/C/OV flags word, as the oracle reads it *)

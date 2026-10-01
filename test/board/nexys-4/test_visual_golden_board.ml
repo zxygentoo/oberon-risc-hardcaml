@@ -1,36 +1,18 @@
-(* Phase-10a — board visual golden WITH the I-cache: the definitive coherence proof.
+(* The visual golden through the board SoC: the idle desktop must be byte-identical to the
+   oracle's with the whole memory stack in the way. If the cache ever served stale code or
+   data — the module loader writing code the cache holds, say — the desktop would come out
+   wrong.
 
-   The Phase-6b visual golden (test_visual_golden.ml) renders the idle Oberon desktop on
-   the flat-BRAM {!Risc5.Soc} and asserts it is byte-identical to the oracle. This variant
-   runs the *board* SoC ({!Nexys4_board.Soc} + the {!Nexys4_board.Cellram_model} PSRAM
-   double, via the shared {!Board_tb}) with the Phase-10a I-cache ON, past the handoff,
-   and asserts the *same* framebuffer against the oracle. That is the strong coherence
-   test: if the cache ever served stale code/data — the module loader writing code the
-   cache holds, or a framebuffer word the CPU cached being overwritten — the desktop would
-   render wrong and the hash would differ. Byte-identical ⇒ the cache is transparent
-   through the whole boot + module load + desktop render, not just the boot-to-handoff
-   prefix the lockstep bench covers.
+   By default it boots exactly what the bitstream ships
+   ({!Nexys4_board.Build_config.shipped}); the environment overrides of
+   {!Board_tb.config_of_env} are controls for bisecting (ICACHE=0 is very slow: without
+   the cache the OS runs at some 28 clocks per instruction). SOC_CAP overrides the cycle
+   cap, DISK_IMG the image.
 
-   Feasibility note: this is practical *only* with the cache. Cache-off the board runs OS
-   code at ~26 cyc/instr, so drawing the desktop would take hundreds of millions of
-   cycles; the cache's ~6x (down to ~4.4 cyc/instr) brings it into interpreter range. So
-   the cache is what makes a board-level visual golden runnable at all. (AGENT.md §5 Phase
-   10.)
-
-   The fb geometry, oracle boot, settle loop and verdict are shared in {!Boot.Golden}; the
-   SPI drive in {!Boot.Tb}. This file keeps what is board-specific: the knobs, the board
-   wait counts, and the FB_BRAM shadow readback + its coherence check.
-
-   Opt-in: dune build @visual_golden_board. By default it boots exactly the configuration
-   the bitstream ships ({!Nexys4_board.Build_config.shipped}: 16 KiB cache, write-update,
-   framebuffer shadow, Halftone instantiated, depth-2 write buffer, pipelined DSP
-   multiplies, the board's PSRAM wait counts). The environment overrides of
-   {!Board_tb.config_of_env} are controls for bisecting or A/B runs (e.g. ICACHE=0 — much
-   slower — FB_BRAM=0 HALFTONE=0, WBUF=0, FAST_MUL=0, LINES_LOG2=10); SOC_CAP overrides
-   the cycle cap, DISK_IMG the image. Under [fb_bram] the golden reads the *shadow* — the
-   words the screen actually shows — and additionally asserts shadow ≡ PSRAM framebuffer
-   window over the full span, the shadow's own coherence invariant. After the framebuffer
-   verdict one more raster frame is scanned off the rgb pins and must reproduce it. *)
+   With the framebuffer shadow the golden reads the shadow, the words the screen actually
+   shows, and also requires the shadow to equal the PSRAM's framebuffer window over the
+   whole span. After the framebuffer verdict one more frame is scanned off the rgb pins
+   and must reproduce it. *)
 
 open Hardcaml
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
@@ -92,9 +74,9 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
       ~spi_bytes:(fun () -> Boot.Sd_bridge.nbytes bridge)
       ()
   in
-  (* the shadow's own invariant, checked over the FULL span at the settled (quiet) point:
-     every shadow word equals its PSRAM word — both zero-initialised, and every in-window
-     store wrote both, so any mismatch is a shadow write-path bug *)
+  (* the shadow's own invariant, over the whole span, once the machine has settled: every
+     shadow word equals its PSRAM word (in simulation both start as zero, and every store
+     in the window writes both) *)
   let shadow_mismatches =
     match fb_lanes with
     | None -> None

@@ -1,6 +1,4 @@
-(* Public API and design notes live in [sd_bridge.mli]. Factored out of the three SoC
-   integration tests (boot checkpoint / visual golden / core RTL co-sim capture), which
-   all bit-bang the same off-chip SD card over Emu.Disk. *)
+(* See [sd_bridge.mli]. *)
 
 type t =
   { spi : Emu.Io.spi

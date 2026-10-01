@@ -83,9 +83,11 @@ The flow (`proofs/core.ys.template`): rename our registers to the RTL's → `equ
 flip-flops and *merges* the matched black-box cells, checking their **inputs** via the `$equiv`
 on the named nets) → **`cutpoint -blackbox`** (replaces the merged units with shared free
 signals — the *assume* side) → `equiv_simple` + `equiv_induct` on the resulting pure-glue
-netlist. This is the standard assume-guarantee decomposition; it's sound here because no
-combinational path crosses a submodule boundary (every unit sits behind a clocked or
-non-looping interface), so the core genuinely decomposes into glue + proven leaves.
+netlist. This is the standard assume-guarantee decomposition. Equal unit inputs (checked
+here) give equal unit outputs (the leaf proofs), so the outputs can be one shared signal on
+both sides. Some units are combinational through-paths — the shifters, the register file's
+reads — but none sits on a combinational loop, so the argument is not circular and the core
+decomposes into glue + proven leaves.
 
 *Teeth (verified):* mutating one bit of the reset vector in the gate leaves exactly 2 `$equiv`
 unproven — `PC[0]` and `adr[2]` (= `PC<<2`) — so the proof catches glue bugs and localizes
@@ -275,7 +277,7 @@ mutation-checked (a one-line gate bug leaves exactly the affected `$equiv` cells
   one specific `req0` to one specific consume — that is this lemma.
 
   **Status / honesty.** This is a *weaker* tier than the core's assume-guarantee, whose side-condition (no
-  combinational path crosses a submodule boundary) is essentially mechanical; here the glue is a
+  combinational loop runs through a unit) is essentially mechanical; here the glue is a
   counting/correspondence argument. The co-located sim test "vid — prefetch look-ahead: every column
   delivers its own word, across rows" (`lib/video.ml`) cross-validates the *assembled* property at one
   clk/pclk phase — address-echoing memory, all 32 columns over two consecutive rows (so each row's `c=0`

@@ -1,13 +1,10 @@
-(* Shared harness for the FP units' value-correctness replays (the three
-   test_fp_adder/_multiplier/_divider executables). The sim-drive protocol, the
-   frozen-vector loader and the fuzz RNG live here once; each test supplies its unit (via
-   a [run] closure that hides the interface differences — the adder carries u/v, mul/div
-   don't), its [fp_vectors] line tag and its [Emu.Fp] function.
+(* Shared by the three FP value tests: the protocol for driving a unit, the loader for the
+   frozen vectors, and the fuzz. Each test supplies its unit (as a [run] closure, which
+   hides that the adder has u and v and the others do not), its tag in the vector file and
+   its function in [Emu.Fp].
 
-   This is the value-correctness (behavioural) layer that runs under `dune runtest`,
-   distinct from the opt-in Verilator fidelity co-sim in test/cosim/ (AGENT.md §6). The
-   helper is oracle-agnostic — the oracle function is passed in — so it stays a thin
-   Hardcaml dependency. *)
+   These tests check values against the emulator and run in [dune runtest]. Fidelity to
+   the RTL is the co-simulation's job. *)
 
 open Hardcaml
 
@@ -106,9 +103,8 @@ let fuzz_xy ~name ~run ~oracle =
   Printf.printf "%s fuzz: 20000 QCheck cases vs Emu.Fp, ok\n" name
 ;;
 
-(* No-steering value test for a unit with no compiler-unreachable / divergent domain (FML,
-   FDV): replay the frozen vectors, then fuzz against [oracle]. (The adder can't use this
-   — its FLT/FLOOR domain needs steering — so test_fp_adder drives the helpers directly.) *)
+(* For a unit where the emulator and the RTL agree everywhere (FML, FDV): replay the
+   frozen vectors, then fuzz. The adder cannot use this; see test_fp_adder. *)
 let simple_value_test ~name ~tag ~run ~oracle =
   let fails = replay_simple ~name ~tag ~run in
   fuzz_xy ~name ~run ~oracle;

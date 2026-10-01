@@ -1,24 +1,22 @@
-(* Phase 4.1/4.2 — single-instruction lockstep for the register ops (AGENT.md §6, layer
-   4).
+(* Single-instruction lockstep: the core against the oracle.
 
-   Drive a random register-op instruction into the Hardcaml core and the OCaml oracle, one
-   instruction each, and assert the architectural state (the 16 registers, the N/Z/C/OV
-   flags, PC, and the aux register H) matches. Cases are isolated — a fresh random
-   [{regs, flags, H, instruction}] is poked into both machines, run to completion, and
-   compared — so coverage doesn't depend on a boot sequence and §8 steering is decided per
-   case.
+   A random instruction is run on the Hardcaml core and on the OCaml emulator, and the
+   architectural state — the sixteen registers, the flags N/Z/C/OV, PC and H — must agree.
+   Cases are isolated: a fresh random state and instruction are poked into both machines,
+   run to completion and compared, so coverage does not depend on any boot sequence.
 
-   The Hardcaml core's state is reached through Cyclesim by-name lookups (the [create]
-   harness): the register file is a named [multiport_memory], pc/ir/flags/h are named (--)
-   register outputs, "stall" a named node. The oracle uses its [For_tests] white-box
-   pokes.
+   The core's state is reached by name through Cyclesim (the register file is a named
+   memory; pc, ir, the flags and h are named registers; [stall] a named node), the
+   oracle's through its [For_tests] hooks.
 
-   Scope: register ops 0..15, branches, loads and stores one instruction at a time, then
-   short programs run from RAM under a random stallX. §8 handling (all unreachable from
-   compiled Oberon-07, so we follow the hardware) is in [authority] / [steered_branch]:
-   the ADD'/SUB' carry corner and DIV outside its y > 0 precondition are skipped, the
-   unsigned MUL' high word is compared against the hardware's own definition, and FP is
-   forced register-register (FLT/FLOOR are covered by the FP-unit tests). *)
+   Covered: register operations 0..15, branches, loads and stores one instruction at a
+   time, then short programs run from RAM under a random external stall. Where the oracle
+   is known to differ from the RTL — every case unreachable from compiled Oberon — the
+   port follows the hardware, and [authority] and [steered_branch] say what is done about
+   each: the ADD'/SUB' carry corner and DIV outside its precondition y > 0 are skipped,
+   the high word of an unsigned MUL' is compared with the hardware's own definition, and
+   the FP operations are forced to their register form (FLT and FLOOR are covered by the
+   FP tests). *)
 
 open Hardcaml
 module Core = Risc5.Cpu
@@ -28,9 +26,8 @@ module Sim = Cyclesim.With_interface (Core.I) (Core.O)
 (* a word index safely inside RAM (< mem_size/4) so the oracle fetches from ram.(pc) *)
 let base_pc = 0x1000
 
-(* ─── Harness: the Hardcaml core sim + the OCaml oracle, with the by-name handles used to
-   poke and read each machine's architectural state. The [reg_]/[regfile]/[stall] handles
-   are named so they don't collide with the [case] fields below. ─── *)
+(* ── The harness: the core's sim and the oracle, with the handles used to poke and read
+   each ── *)
 type t =
   { sim : Sim.t
   ; regfile : Cyclesim.Memory.t
@@ -49,10 +46,8 @@ type t =
      cycle *)
   }
 
-(* [?core] swaps the core constructor so the same harness can lockstep a variant build —
-   e.g. the core with the pipelined DSP multipliers (see the runner). Defaults to the
-   faithful [Core.create]; eta-expanded to erase its optional args to the plain
-   [_ I.t -> _ O.t] the simulator wants. *)
+(* [?core] swaps the core's constructor, so that the same harness can check a variant,
+   such as the core with the pipelined DSP multipliers. *)
 let create ?(core = fun i -> Core.create i) () =
   let sim = Sim.create ~config:Cyclesim.Config.trace_all core in
   let inp = Cyclesim.inputs sim in
@@ -187,8 +182,8 @@ let step_oracle t case =
 ;;
 
 (* The high word [Multiplier.v] produces for an unsigned multiply: its second operand is
-   sign-extended regardless (§8), so H is the high half of [b_unsigned * c1_signed]. The
-   oracle multiplies unsigned by unsigned, which differs exactly when [c1] has bit 31 set. *)
+   sign-extended regardless, so H is the high half of [b_unsigned * c1_signed]. The oracle
+   multiplies unsigned by unsigned, which differs exactly when [c1] has bit 31 set. *)
 let rtl_unsigned_mul_h ~b ~c1 =
   let c1_signed = Int64.of_int32 (Int32.of_int c1) in
   let product = Int64.mul (Int64.of_int b) c1_signed in
@@ -203,14 +198,14 @@ let operand_c1 ~instr ~regs =
   if q = 1 then if v = 1 then 0xFFFF_0000 lor imm else imm else regs.(instr land 0xF)
 ;;
 
-(* Where the oracle is not the authority for a register op (§8; all unreachable from
-   compiled Oberon — the port follows the hardware):
-   - [Skip]: ADD'/SUB' with carry-in and a second operand of 0xFFFFFFFF (the oracle's
-     carry-by-comparison misses it), and DIV outside its precondition y > 0 — the divider
-     is defined for positive divisors only ([Divider.v] says so, and the compiler rejects
-     a constant divisor <= 0 and traps on a variable one), so there is no result to agree
-     on;
-   - [Rtl_h h]: unsigned MUL' with C1[31] set — everything but H is compared with the
+(* Where the oracle is not the authority for a register operation (all of it unreachable
+   from compiled Oberon; the port follows the hardware):
+   - [Skip]: ADD'/SUB' with carry-in and a second operand of 0xFFFFFFFF, where the
+     oracle's carry-by-comparison is wrong; and DIV outside its precondition y > 0. The
+     divider is defined for positive divisors only ([Divider.v] says so, and the compiler
+     rejects a constant divisor that is not positive and traps on a variable one), so
+     there is no result to agree on;
+   - [Rtl_h h]: unsigned MUL' with C1[31] set. Everything but H is compared with the
      oracle, H with the value the hardware defines. *)
 type authority =
   | Oracle
@@ -277,10 +272,9 @@ let seed =
 
 (* ─── Generating a random branch case ─── *)
 
-(* decode a raw branch draw into a [case]. A branch is p=q=1; we keep the target in the
-   in-range domain (§8 addressing): the register target R[irc] < 1 MB (so R[irc]>>2 stays
-   in the oracle's RAM and within the core's 22-bit PC) and the relative disp small (so
-   PC+1+disp neither wraps nor branches "into the void"). [op]=0 selects the single-cycle
+(* A branch is p = q = 1. The target is kept in range: a register target below 1 MiB (so
+   that it stays inside the oracle's RAM and the core's 22-bit PC) and a small relative
+   displacement (so that PC + 1 + disp does not wrap). [op] = 0 selects the single-cycle
    path. *)
 let decode_branch (bctrl, target, disp, flags4) =
   let u = (bctrl lsr 29) land 1
@@ -568,9 +562,9 @@ let reset_stats () =
 let print_stats () =
   let pct a b = if b = 0 then 0 else ((100 * a) + (b / 2)) / b in
   Printf.printf
-    "  %d programs compared, %d discarded (§8); %d instructions: %d%% loads, %d%% \
-     stores, %d%% taken branches, %d%% multi-cycle (%d back to back); %d%% of %d cycles \
-     stalled\n\
+    "  %d programs compared, %d discarded (known divergences); %d instructions: %d%% \
+     loads, %d%% stores, %d%% taken branches, %d%% multi-cycle (%d back to back); %d%% \
+     of %d cycles stalled\n\
      %!"
     stats.compared
     stats.discarded
@@ -584,9 +578,9 @@ let print_stats () =
     stats.cycles
 ;;
 
-(* would the instruction the oracle is about to execute leave the two machines apart for a
-   reason §8 already accounts for? In a program any such step ends the comparison (a
-   diverged H or carry feeds everything after it), so the case is discarded. *)
+(* would the instruction the oracle is about to execute leave the two machines apart for
+   one of the known reasons? In a program any such step ends the comparison (a diverged H
+   or carry feeds everything after it), so the case is discarded. *)
 let oracle_next_is_steered t =
   let instr = (R.For_tests.ram t.oracle).(R.For_tests.pc t.oracle) in
   instr lsr 31 = 0
@@ -748,13 +742,11 @@ let () =
     Printf.printf "cpu lockstep (%s): %d QCheck cases, passed\n%!" name count
   in
   let t = create () in
-  (* corner-heavy operands + shrinking minimizes a failure to a small instruction +
-     operands; ~max_gen above ~count absorbs the §8 [assume] discards *)
+  (* corner-heavy operands; [max_gen] above [count] absorbs the discarded cases *)
   run ~name:"register ops 0..15" ~count:50_000 ~max_gen:60_000 seed (fun raw ->
     agree_reg_op t (decode raw));
-  (* branches reuse the same harness — no flags/regs written except a taken link, PC takes
-     the target. The in-range domain is baked into [decode_branch]; the lone §8 corner (BL
-     through R15) is steered with [assume]. *)
+  (* branches: nothing is written except a taken link, and PC takes the target. The one
+     known corner, a branch-and-link through R15, is discarded. *)
   run ~name:"branches" ~count:50_000 ~max_gen:55_000 seed_branch (fun raw ->
     let case = decode_branch raw in
     QCheck.assume (not (steered_branch case));
@@ -777,10 +769,9 @@ let () =
   print_stats ();
   (* The 2-stage pipelined DSP multipliers (the shipped board's choice of
      [Cpu.multipliers]) under the real core's driving: the register-op property, then the
-     program property — where a multiply can directly follow a multiply, which no
-     single-instruction case and neither unit differential (lib/multiplier.ml,
-     fp_multiplier.ml) ever does. The units are bit-identical to the faithful ones, so the
-     same §8 handling applies. *)
+     program property — where a multiply can directly follow a multiply, which no single-
+     instruction case and neither unit differential ever does. The units are bit-identical
+     to the faithful ones, so the same exceptions apply. *)
   let t_fast =
     create ~core:(fun i -> Core.create ~multipliers:(Dsp { stages = 2 }) i) ()
   in

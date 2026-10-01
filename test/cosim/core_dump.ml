@@ -1,32 +1,24 @@
-(* Boot-stream RTL co-sim — capture half (AGENT.md §6 layer 3, for the CPU core).
+(* The capture half of the core's co-simulation.
 
-   Boot the SoC from the real disk and record the CPU core's per-cycle I/O to a trace,
-   which [core.cpp] replays through the reference [RISC5.v] under Verilator to assert the
-   core is cycle-exact to the spec across a real workload — the core's only cycle-level
-   RTL check before the Phase-8 equivalence proof (the unit co-sims cover the peripherals
-   and FP units; this covers the whole core over a boot).
+   The simulation SoC boots the real disk, and the core's inputs and outputs are recorded
+   every cycle. core.cpp replays the trace through [RISC5.v] under Verilator and requires
+   the same outputs, cycle for cycle, over a real workload.
 
-   Why a captured boot trace pins any divergence exactly. Both our core and [RISC5.v]
-   start from the same reset state (the regfile inits to 0 on both sides). Feed [RISC5.v]
-   the identical per-cycle core inputs ([rst]/[irq]/[stallX]/[codebus]/[inbus]) our core
-   saw, and as long as our outputs match the spec's, memory — hence the inputs, which are
-   functions of memory — evolves identically on both sides. So the comparison stays valid
-   right up to the FIRST output mismatch, which is therefore the first cycle our core did
-   something [RISC5.v] wouldn't; there both cores are in identical state fed an identical
-   instruction — a minimal reproducer. (This is how the phase-6b ALU flag-leak — a branch
-   with op-field 8 clobbering C — was found and the fix verified.)
+   Why the first mismatch is exactly the divergence. Both cores start from the same reset
+   state. [RISC5.v] is fed the inputs our core saw, and for as long as the outputs agree,
+   memory — and with it the inputs, which are functions of memory — evolves identically on
+   both sides. So the comparison is valid up to the first output mismatch, which is the
+   first cycle on which our core did something [RISC5.v] would not: both in the same
+   state, given the same instruction.
 
-   Trace format — one fixed 17-byte little-endian record per cycle:
-   - byte 0: control = rst_n | irq<<1 | stallX<<2 | rd<<3 | wr<<4 | ben<<5
-   - bytes 1-4 / 5-8: codebus / inbus (u32) — core INPUTS, drive RISC5.v
-   - bytes 9-12 / 13-16: adr / outbus (u32) — core OUTPUTS, the expected values
+   The trace is one 17-byte little-endian record per cycle:
+   - byte 0: rst_n | irq<<1 | stallX<<2 | rd<<3 | wr<<4 | ben<<5
+   - bytes 1-4 and 5-8: codebus and inbus, the core's inputs, which drive [RISC5.v]
+   - bytes 9-12 and 13-16: adr and outbus, the core's outputs, the values expected
 
-   Boot machinery = the visual golden's [boot_soc] (SoC + the shared {!Boot.Sd_bridge} SD
-   card), trimmed to the capture. Opt-in (run via the cosim runner, cosim_run); needs the
-   disk image. Env: [DISK_IMG] (default the vendored .dsk), [CORE_TRACE] (output path),
-   [CAP] (hard cycle cap, default 2_000_000); for ad-hoc debugging, [CYC_FROM]/[CYC_TO]
-   print a windowed pc/ir/flags/regs dump and [NOTRACE] skips writing the (large) trace
-   file. *)
+   Environment: [DISK_IMG], [CORE_TRACE] (the output path), [CAP] (the cycle cap, 10 M by
+   default); and for debugging, [CYC_FROM]/[CYC_TO] print pc, ir, flags and registers over
+   a window, and [NOTRACE] skips writing the trace. *)
 
 open Hardcaml
 module Soc = Risc5.Soc
@@ -61,16 +53,15 @@ let read_config () =
     match Sys.getenv_opt "CORE_TRACE" with
     | Some p -> p
     | None ->
-      (* Self-contained in-repo default (git-ignored test/_work), matching cosim_run; the
-         normal entry points pass an explicit CORE_TRACE into test/_work anyway. *)
       let dir = "test/_work/cosim/core" in
       ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
   in
-  (* The capture checks the core, not the SPI master, so it boots on the turbo divider:
-     the handoff lands at ~1.9M cycles instead of ~7.6M and the default cap spends the
-     rest on OS initialisation — compiled Oberon code, where byte accesses, DIV/MUL and
-     the shifts first appear (the boot ROM alone is MOV/ADD/SUB, word LD/ST and branches). *)
+  (* The capture checks the core, not the SPI master, so it boots with the fast divider:
+     the handoff comes at about 1.9 M cycles instead of 7.6 M, and the rest of the default
+     cap is OS initialisation — compiled Oberon code, where byte accesses, DIV, MUL and
+     the shifts first appear (the boot loader is MOV, ADD, SUB, word loads and stores, and
+     branches). *)
   { disk_image
   ; trace_path
   ; cap = getenv_int "CAP" ~default:default_cap
@@ -163,9 +154,9 @@ let dump_state (p : probes) ~cyc ~adr ~rd ~wr ~ben ~outbus ~inbus ~codebus =
 
 (* ── the boot capture loop ──────────────────────────────────────────────────── *)
 
-(* stop early if pc stays constant for [spin_limit] cycles — a halted/stuck core (e.g. a
-   trap abort spin). Healthy boots never do (the idle loop oscillates), so this only fires
-   on a fault, and any first divergence is BEFORE it, hence contained in the trace. *)
+(* stop early if pc stays constant for [spin_limit] cycles: a core that is stuck. A
+   healthy boot never does that, and any divergence comes before it, so it is in the
+   trace. *)
 let spin_limit = 4096
 
 (* pc (a word address) below the reset vector's ROM window = running from RAM *)
@@ -181,10 +172,8 @@ type result =
   ; ben_cycles : int (* cycles with a byte access on the bus *)
   }
 
-(* Drive + capture each state, then take the edge: settle the combinational cloud over the
-   CURRENT state, record (the inputs this state consumes, the outputs it drives), then
-   clock to the next state and step the SD bridge. Returns the final progress stats for
-   the summary. *)
+(* For each state: settle the combinational logic, record the inputs this state consumes
+   and the outputs it drives, then take the edge and step the SD card. *)
 let run
   ~cfg
   ~sim
@@ -208,12 +197,9 @@ let run
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
     Boot.Tb.Spi.set_miso spi;
-    (* Record PRE-edge: settle the combinational cloud over the CURRENT state under THIS
-       cycle's inputs, so each record is (inputs this state consumes, outputs this state
-       drives) and the edge below transitions to the next state. [outp] must be the
-       before-edge port refs: the default after-edge refs are not refreshed here and would
-       hand back the previous cycle's settle (the same state under the previous inputs —
-       wrong across the rst 0→1 boundary). *)
+    (* Record before the edge: the record is this state's outputs under this cycle's
+       inputs. [outp] must be the before-edge port refs; the default after-edge refs are
+       not refreshed here and would return the previous cycle's values. *)
     Cyclesim.cycle_before_clock_edge sim;
     let irq = Cyclesim.Node.to_int probes.irq
     and stallx = Cyclesim.Node.to_int probes.stallx
