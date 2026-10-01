@@ -1,11 +1,11 @@
 (** [Framebuf] — Phase-10c: the framebuffer shadowed in on-chip BRAM, so the video DMA
     never touches the PSRAM port (AGENT.md §5).
 
-    The Phase-10 stall profile put the video bus tax at a measured {b 1.228×} same-work
-    ceiling (bench_boot's [?video] A/B): the PSRAM port serves video ~23% of all clocks,
-    and ~9% of clocks the CPU sits frozen while it does. This module removes that traffic
-    at the source — and with it the need for {!Cellram}'s video arbitration {e and}
-    read-preemption logic (with [vidreq] tied low the synthesizer prunes both).
+    The Phase-10 stall profile put the video bus tax at a {b 1.228×} same-work ceiling
+    (measured by gating video off the port): the PSRAM port serves video ~23% of all
+    clocks, and ~9% of clocks the CPU sits frozen while it does. This module removes that
+    traffic at the source — and with it the need for {!Cellram}'s video arbitration
+    {e and} read-preemption logic (with [vidreq] tied low the synthesizer prunes both).
 
     {1 Design: a write-through shadow, PSRAM keeps the truth}
 

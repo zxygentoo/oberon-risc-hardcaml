@@ -85,23 +85,40 @@
  (action
   (run ./test_visual_golden_board.exe)))
 
-; Phase-9/10 board gauge (a report, not a pass/fail test): end-to-end boot cycles on the
-; PSRAM board SoC + the running-OS stall profile / video A/B / cache sweeps. It lives here
-; (not test/bench/) because it is board-specific through and through — it drives the board Soc's
-; full knob surface via board_tb and probes board signal names — while test/bench/ keeps the
-; target-independent gauges. The gauge index is test/bench/README.md.
+; The board gauge (a report, not a pass/fail test): the running-OS stall profile of the
+; configured machine, the memory stack added one layer at a time, and the cache-miss
+; autopsy. It lives here (not test/bench/) because it is board-specific through and through
+; — it builds the board Soc via board_tb and probes board signal names — while test/bench/
+; keeps the target-independent gauges. The gauge index is test/bench/README.md.
 
 (executable
  (name bench_boot)
  (modules bench_boot)
  ; board_tb brings the board Soc + Cellram_model wiring — and risc5 / nexys4_board
  ; transitively; the bench itself derives no interfaces, so no ppx.
- (libraries board_tb emu hardcaml sd_bridge boot_checkpoint_common boot_tb))
+ (libraries
+  board_tb
+  emu
+  hardcaml
+  sd_bridge
+  boot_checkpoint_common
+  boot_tb
+  fork_pool))
 
 (rule
  (alias bench_boot)
  (deps
   ../../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var ICACHE)
+  (env_var LINES_LOG2)
+  (env_var WRITE_UPDATE)
+  (env_var FB_BRAM)
+  (env_var HALFTONE)
+  (env_var WBUF)
+  (env_var FAST_MUL)
+  (env_var MUL_STAGES)
+  (env_var READ_CYCLES)
+  (env_var WRITE_CYCLES)
   (env_var SPI_DIV_LOG2)
   (env_var DISK_IMG))
  (action

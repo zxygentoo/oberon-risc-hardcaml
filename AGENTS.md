@@ -287,10 +287,10 @@ lowers the circuit graph, not OCaml deps).
   input-driven pulses are invisible there; sample `~clock_edge:Before` for the core's
   view.
 - **One clock domain**: pclk-side logic advances 1:1 with `clk` whatever the pclk
-  *input* does — video DMA is live in every board sim, so honest A/B experiments need
-  elaboration-time gates (e.g. `?video` on `vidreq`). Async-set CDC must be modeled
-  explicitly (reset is edge-sampled). Waveterm is unreliable across domains — use
-  text-table expects; `By_input_clocks` gives native multi-clock.
+  *input* does — video DMA is live in every board sim, so an honest A/B takes it off
+  the PSRAM port at elaboration (`fb_bram`), never via the pclk input. Async-set CDC
+  must be modeled explicitly (reset is edge-sampled). Waveterm is unreliable across
+  domains — use text-table expects; `By_input_clocks` gives native multi-clock.
 - **Async-memory reads settle at `after_clock_edge`** — assert post-edge after a full
   cycle, not at `before_clock_edge`.
 

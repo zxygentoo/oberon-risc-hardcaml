@@ -153,3 +153,71 @@ let run ~what ~jobs ~work_root job_list =
       job_list;
   !fail
 ;;
+
+(* Each worker marshals its result to a temp file the parent reads back once the worker
+   has exited 0. The child leaves through [Unix._exit] so it never runs the parent's
+   [at_exit] handlers. *)
+let map ~jobs fs =
+  let fs = Array.of_list fs in
+  let files = Array.map (fun _ -> Filename.temp_file "fork_pool" ".bin") fs in
+  let running : (int, int) Hashtbl.t = Hashtbl.create 16 in
+  let failed = ref [] in
+  let launch k =
+    flush stdout;
+    flush stderr;
+    match Unix.fork () with
+    | 0 ->
+      let code =
+        try
+          let oc = open_out_bin files.(k) in
+          Marshal.to_channel oc (fs.(k) ()) [];
+          close_out oc;
+          0
+        with
+        | e ->
+          Printf.eprintf "fork_pool worker %d: %s\n" k (Printexc.to_string e);
+          1
+      in
+      flush stdout;
+      flush stderr;
+      Unix._exit code
+    | pid -> Hashtbl.replace running pid k
+  in
+  let reap () =
+    let pid, status = Unix.wait () in
+    match Hashtbl.find_opt running pid with
+    | None -> ()
+    | Some k ->
+      Hashtbl.remove running pid;
+      if status <> Unix.WEXITED 0 then failed := k :: !failed
+  in
+  let next = ref 0 in
+  while !next < Array.length fs || Hashtbl.length running > 0 do
+    while Hashtbl.length running < jobs && !next < Array.length fs do
+      launch !next;
+      incr next
+    done;
+    if Hashtbl.length running > 0 then reap ()
+  done;
+  let results =
+    if List.is_empty !failed
+    then
+      Array.to_list
+        (Array.map
+           (fun file ->
+             let ic = open_in_bin file in
+             let v = Marshal.from_channel ic in
+             close_in ic;
+             v)
+           files)
+    else []
+  in
+  Array.iter Sys.remove files;
+  match List.sort compare !failed with
+  | [] -> results
+  | ks ->
+    failwith
+      (Printf.sprintf
+         "Fork_pool.map: worker(s) %s failed"
+         (String.concat ", " (List.map string_of_int ks)))
+;;

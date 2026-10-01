@@ -13,12 +13,11 @@ val drive_idle : Bits.t ref I.t -> unit
 (** [create c i] wires the board SoC in configuration [c], booting the design ROM
     {!Risc5.Rom.bootloader}, to the full-size PSRAM model ([addr_bits] 19 — the gates load
     the real disk image into low RAM): {!Nexys4_board.Soc.For_tests.Tb.create} with those
-    two pinned. [?video] and [?datasheet_chip] forward — the gates hold the chip model to
-    the datasheet when they boot {!config_of_env}. [sclk] and [rgb] are the outputs read
+    two pinned. [?datasheet_chip] forwards — the gates hold the chip model to the
+    datasheet when they boot {!config_of_env}. [sclk] and [rgb] are the outputs read
     directly; everything else is reached by name under [Cyclesim.Config.trace_all]. *)
 val create
-  :  ?video:bool
-  -> ?datasheet_chip:bool
+  :  ?datasheet_chip:bool
   -> Nexys4_board.Build_config.t
   -> Signal.t I.t
   -> Signal.t O.t

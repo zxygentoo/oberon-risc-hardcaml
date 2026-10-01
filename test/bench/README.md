@@ -1,163 +1,136 @@
-# Phase-9 benchmarks (the gauge index)
+# The measurement gauges
 
-Measure-before/after-you-optimise gauges for the Phase-9 optimisation pass (AGENT.md §5).
-They print **reports, not pass/fail assertions**, so they're kept out of the always-on
-`dune runtest` and driven by alias. Together they answer one question in three views:
-**what did the DSP multipliers and the 50 → 60 MHz clock actually buy, end to end?**
-
-This README indexes all three; the two *target-independent* gauges (`bench_core`,
-`profile_boot`) live here, while `bench_boot` — board-specific through and through — lives
-in the board-test mirror, `test/board/nexys-4/`. The aliases work from anywhere.
-
-The short answer, measured: a big *local* win (MUL 17× faster) that Amdahl shrinks to ~nil
-*aggregate*, because the machine is memory-bound. The broad, real win is the clock (1.2×);
-the next real lever is memory, not compute.
-
-## The three gauges
+Measure before you optimise, and again after. These print **reports, not verdicts**, so
+they stay out of `dune runtest` and run by alias; `dune build @check` builds them so they
+cannot rot. Two of them do fail on an inconsistency (noted below).
 
 | Alias | Measures | Scope |
 |---|---|---|
-| `dune build @bench` | MUL/DIV **cycles per op**, iterative vs DSP | one op, memoryless |
-| `dune build @profile_boot` | MUL/DIV **dynamic density** over a boot | oracle (instruction-level, no memory model) |
-| `dune build @bench_boot` | **total boot cycles** on the PSRAM SoC | whole machine, wait-states and all (`test/board/nexys-4/`) |
+| `dune build @bench` | cycles per operation under each choice of multipliers | one instruction through the core, no memory |
+| `dune build @profile_boot` | how often MUL and DIV execute over a boot | the oracle (instruction level) |
+| `dune build @bench_boot` | the board machine: where its clocks go, what each layer of the memory stack buys, why reads miss | the whole board SoC behind the PSRAM model (`test/board/nexys-4/`) |
 
-### `bench_core` — per-op cost (`@bench`)
-White-box A/B in one binary: poke IR + operands, run to retirement, count cycles, swapping
-the multiplier via the core's `Units` seam. Result:
+`bench_core` and `profile_boot` are target-independent and live here. `bench_boot` is
+board-specific through and through and lives with the board tests.
+
+## `bench_core` — one operation (`@bench`)
+
+Pokes an instruction and its operands into the core, runs to retirement and counts
+cycles, for each `Cpu.multipliers` choice. The three cores must compute the same result;
+a difference fails the run.
 
 ```
-MUL signed   34 → 2 cycles   (17.0x faster per MUL).  DIV unchanged (still iterative).
+                             iterative  DSP, combinational       DSP, 2 stages
+ADD                                  2                   2                   2
+MUL                                 34                   2                   3
+MUL' (unsigned)                     34                   2                   3
+DIV                                 34                  34                  34
+FML                                 26                   2                   3
 ```
 
-The FP multiply is analogous (25 → 2) via the same seam. This is the number that *looks*
-impressive — and is, per multiply.
+The board ships the 2-stage DSP products: one cycle more per multiply than the
+combinational ones, in exchange for taking the multiply off the critical path.
 
-### `profile_boot` — how often does it even happen (`@profile_boot`)
-Steps the OCaml oracle (same instruction stream as the hardware) through reset → OS handoff
-→ into the running system, decoding each executed instruction. Result:
+## `profile_boot` — how often it happens (`@profile_boot`)
+
+Steps the oracle through reset, the handoff and into the running system, decoding each
+executed instruction:
 
 ```
 MUL/DIV density: 0.104% of all instr  →  Amdahl stall ceiling 3.32%
-projected compute speedup if MUL drops 33→2:  ~1.03x
 ```
 
-So the 17× per-op win rides on ops that are ~1-in-1000. Amdahl caps the *compute* payoff at
-~3%.
+A multiply that is 11 to 17 times faster, on one instruction in a thousand: the DSP
+multipliers buy clock frequency, not throughput.
 
-### `bench_boot` — the whole machine (`@bench_boot`, in `test/board/nexys-4/`)
-Boots the real memory path — the board `Soc` (core on a clock-enable, main memory behind
-`Cellram` inserting `read_cycles`/`write_cycles` wait-states, driven from the real disk via
-the SD bridge) — to the OS handoff, counting total cycles. Two probes:
+## `bench_boot` — the board machine (`@bench_boot`)
+
+Boots the board SoC from the real disk to the OS handoff, then runs the OS for a window
+of 2 M instructions (or 20 M clocks) and watches every system clock. The machine is what
+the bitstream ships (`Build_config.shipped`), or that with the board gates' environment
+knobs applied — so a candidate change is measured by setting its knob:
 
 ```
-DSP mul, end-to-end (read_cycles=5):  faithful 9,591,225  vs  fast_mul 9,591,225  →  +0.00%
-PSRAM wait (read_cycles sweep 2→5):   ~24% of boot cycles are PSRAM latency
+dune build @bench_boot                                              # everything
+dune exec test/board/nexys-4/bench_boot.exe -- profile              # one gauge
+LINES_LOG2=10 dune exec test/board/nexys-4/bench_boot.exe -- profile
 ```
 
-- **DSP mul: 0.00% end-to-end on boot.** Amdahl made concrete — boot is ~0.1% MUL.
-- **PSRAM wait ≈ 24%** of boot cycles, isolated cleanly by the `read_cycles` sweep: `rc`
-  only touches PSRAM accesses, so the `rc 2→5` delta (+3 cycles/half-word) is *pure* wait,
-  denominator-free. (We deliberately quote **no CPI**: the SoC re-polls the slow SPI far
-  more than the oracle, so the oracle's instruction count is the wrong denominator.)
+The machines of a run simulate in parallel, one forked worker each (seven for the full
+report: about 4 minutes on a host with the cores for it, where the gauges it replaced
+took 20).
 
-**Caveat that matters:** boot runs code from the on-chip **ROM fast-path** (no PSRAM wait on
-fetch) and is dominated by the SD image-copy. The *running OS* fetches **every instruction
-from PSRAM**, so it is **more** memory-bound than boot's 24% shows. Boot is a lower bound on
-memory pressure, not an upper one.
+**profile** — every clock of the window in one of six buckets: the core advanced and
+retired an instruction, spent a load/store data cycle, or ground through an iterative
+unit; or it sat frozen on the PSRAM for a fetch, a load or a store. The shipped machine:
 
-## The end-to-end read-off
+```
+reset to the handoff: 26097357 clocks.  The window past it: 2000000 instructions in 2601599 clocks = 1.30 clocks per instruction.
+frozen on the PSRAM: 41038 clocks = 1.6% (reads 0.5%, stores 1.1%)
+cache: fetches 99.97% hit, loads 99.64% hit;  30795 PSRAM stores (1 per 64 instructions)
+```
 
-Composing the three:
+**ladder** — the same machine with its memory stack removed, then put back a layer at a
+time. Each rung is profiled, and compared with the rung above it over the same work:
 
-- **Per op:** MUL 17× faster (`bench_core`).
-- **Per program:** MUL is 0.1% of instructions → ≤3.3% compute ceiling → ~1.03× projected
-  (`profile_boot`) → **0.00% measured** on boot (`bench_boot`).
-- **Where the cycles actually go:** ≥24% in PSRAM wait on boot, more on the running OS
-  (`bench_boot`).
-- **The win already banked:** the **50 → 60 MHz clock — 1.2× wall-clock**, applied to
-  compute *and* memory alike. That, not the DSP mul, is the broad end-to-end speedup.
+```
+rung                         boot   instrs    CPI  frozen  storeW  fetch hit  load hit   the same work as the rung above
+PSRAM only               28349987   719412  27.80   94.8%    3.4%          -         -
++ cache                  27710417  2000000   1.77   27.5%   11.6%     99.97%    66.26%   5.139x  (861553 -> 167664 clocks over 28985 instructions)
++ write-update           26769987  2000000   1.50   14.5%   13.9%     99.97%    99.64%   1.662x  (172210 -> 103633 clocks over 31939 instructions)
++ framebuffer shadow     26598703  2000000   1.44   11.1%   10.7%     99.97%    99.64%   1.186x  (100864 -> 85044 clocks over 30369 instructions)
++ write buffer           26244269  2000000   1.34    4.5%    4.1%     99.97%    99.64%   1.074x  (2879719 -> 2681879 clocks over 2000000 instructions)
++ depth 2                26097357  2000000   1.30    1.6%    1.1%     99.97%    99.64%   1.031x  (2681879 -> 2601599 clocks over 2000000 instructions)
 
-**Direction this points:** the next real lever is **memory latency — an I-cache (every OS
-fetch is currently a multi-cycle PSRAM read) or a wider/burst PSRAM path — not more
-compute.** The DSP multipliers were correct to build (they're free once the DSP48s are
-there, and they took the multiply *off the critical path*, which is what let the clock reach
-60 MHz) — but as an end-to-end *throughput* play they're Amdahl-bound. See `build-log.md`
-Phase 9 for the full log and the deferred Newton-Raphson divider.
+the whole stack against the PSRAM alone: 17.73x over the same 28985 instructions (29.72 -> 1.68 clocks per instruction)
+```
 
-## The Phase-10 gauges (all in `bench_boot`, same alias)
+**autopsy** — why reads miss. An independent model of the cache (a valid bit and a tag
+per line, the policy with none of the data) follows the design from reset and classifies
+each miss of the window: the line held another address, a store dropped it, or it was
+never filled. The model must predict the design's own hit bit on every read; a
+disagreement fails the run. On the shipped machine: 0 disagreements, and 928 of the 934
+misses in the window are first touches.
 
-Phase 10 turned `bench_boot` into the memory-arc measurement bench. Everything below runs
-the running OS (cache on, boot to the handoff, then a 2M-instruction window) unless noted:
+### Reading the numbers
 
-- **10a same-work compare** — instruction-lockstep the icache-off and icache-on SoCs over
-  the identical post-handoff instruction stream (the honest number; a fixed-cycle window
-  conflates program phases): **5.94×**, 93.5% hit-rate on the 28.8K-instr aligned prefix.
-- **Stall profile** — every system clock bucketed (retire / exec / compute / fetchW /
-  loadW / storeW) with a video-contention overlay, segmented per 250k instructions. It
-  runs the **shipped policy** (write-update since 10b landed — a lesson in itself: the
-  10a-policy profile kept showing loadW 21.6% long after write-update had already
-  eliminated it). True verdict at 10b: CPI 1.75, 25.0% of clocks frozen — **storeW 22.1%
-  (88% of frozen)**, read-wait 3.0%, video overlay 5.0% (22.8% port occupancy); the
-  write-buffer ceiling there **1.28×** at 2.6× bus-free headroom.
-- **`?video` A/B** — gating `vidreq` at elaboration removes video from the PSRAM port =
-  the framebuffer-in-BRAM counterfactual. On the write-update baseline the same-work
-  ceiling is **1.180×** (the earlier 1.228× was measured against the 10a policy — a
-  slower machine overlaps video more).
-- **Miss autopsy** — an OCaml (valid, tag) mirror of the cache, validated **0-mismatch
-  against the RTL's own `cache_hit` over boot + 2M instructions**, classifies every miss
-  and replays counterfactual snoop policies on the same access stream. Verdict: **96.1%
-  of load misses were snoop-invalidate self-inflicted** (store-then-load stack traffic) —
-  which became Phase-10b write-update (landed: load hit 58.7→98.4%, same-work **1.305×**,
-  measured by the lockstep A/B in the same run). Write-allocate measured not worth it.
-- **Load-locality sweep** — per-size fetch/load hit-rates, 1 KB→256 KB: capacity-flat
-  (+1.6 pt), which is what pointed at policy rather than size.
-- **10c framebuffer-in-BRAM, measured** (Phase-10c landed) — the same-work lockstep of
-  PSRAM-video vs the `Framebuf` shadow (`?fb_bram`): **1.180×, exactly the gating
-  ceiling** — the shadow's 1-cycle BRAM read never touches the CPU's clock-enable, so
-  the fb-bram cycle count is identical to the `?video:false` counterfactual's. The
-  shadow-ON profile gave the 10c residual: **CPI 1.64**, frozen 19.9%, storeW 18.3%
-  (92% of frozen), video occupancy/contention 0 — write-buffer ceiling from there
-  **1.22×** at 4.4× bus-free headroom.
-- **10d write buffer, measured** (Phase-10d landed) — the same-work lockstep of
-  synchronous stores vs the 1-entry buffer (`?write_buffer`): **1.237×** (CPI 1.90→1.53
-  over a 126.8K-instr aligned prefix — above the 1.22× ceiling estimate, which priced
-  misses off a different stream). The wbuf-ON profile gave the depth-1 residual: CPI
-  1.45, frozen 9.5% — storeW 7.5% slot-full burst waits (deeper-FIFO ceiling **1.08×**)
-  + read-wait 2.0% (of which drain-before-read costs +0.4% — the conservative hazard
-  rule, priced and kept).
-- **10d follow-up: depth-2 FIFO + the rc=6 margin trade, measured** — the depth-1 vs
-  depth-2 lockstep (`?wbuf_depth`): **1.066×**, near the 1.08× ceiling (the burst waits
-  were Oberon's 2-store procedure prologues, as hypothesised); CPI 1.45→**1.36**, storeW
-  →1.7%, and the ceiling from there is **1.02×** — depth 3+ is measured dead. The rc5 vs
-  rc6 lockstep prices the PSRAM I/O margin trade (`read_cycles:6` after the 13.3 ns
-  budget failed once and grazed twice in synthesis): **0.86%** — only the ~0.3%-of-
-  accesses miss classes pay +2 cycles. Shipped baseline: **CPI 1.37**, frozen 4.2%. Arc
-  trajectory, long windows: CPI 26.28 → 2.16 → 1.75 → 1.64 → 1.45 → **1.37**.
+- **"The same work."** Two machines that boot the same disk reach the handoff in the same
+  architectural state (the boot checkpoint proves it) and then execute the same
+  instruction stream, until the first timing-dependent poll — the SD card, the ms timer —
+  sends the faster one down a different path. Over that aligned prefix their clock counts
+  compare like for like. A fixed-length window does not: the faster machine gets further
+  into the boot and averages different code.
+- **The window is the OS coming up, and that is SD-card work.** Oberon's SD driver sends
+  idle bytes at the slow SPI clock around every command, and the core polls through each
+  one. At the shipped divider (clk÷256, 2048 clocks a byte) those poll loops are most of
+  the window: cheap instructions that hit the cache and store nothing. So the figures
+  describe this machine booting to its desktop, not a compute-bound program — and they
+  move with the SPI divider. `SPI_DIV_LOG2=2` (the boot gates' fast mode) shrinks the
+  polling and leaves a denser window: 1.38 clocks per instruction, 2.9% frozen, a store
+  every 21 instructions instead of every 64, and the last two rungs at 1.197x and 1.102x.
+  Compare runs at one divider only.
+- **Two controls on the shipped figure.** With the 4 KiB cache (`LINES_LOG2=10`) the
+  window costs 1.32 clocks per instruction and 3.1% frozen; with the iterative
+  multipliers (`FAST_MUL=0`) it costs 1.30, 0.2% more clocks.
+- **The model is behavioural.** The PSRAM is `Cellram_model`, held to the datasheet's
+  access times at the configuration's clock. The numbers are for ratios and for finding
+  the lever, not for wall-clock.
 
-Four harness lessons, so they're not relearned: **video DMA is live in every board sim**
-(Cyclesim's one-domain semantics advance the pclk raster 1:1 regardless of the `pclk`
-input level — hold-pclk-low does *not* quiet it; use the `?video` seam); **make probe
-lookups loud** — `cr_busy`/`cr_op_vid` are registers, invisible to `lookup_node_by_name`,
-and the silent `None` zeroed the contention overlay on its first run; **dead-code
-elimination eats unobserved probes' *logic*** — with only `sclk` in `Board_tb.O`, Cyclesim
-pruned the whole pixel path *including the `fb*` shadow BRAMs*, and the golden's
-`lookup_mem_by_name "fb0"` found nothing; `Board_tb` now exposes `hsync`/`vsync`/`rgb` to
-keep the path live; and **`Cyclesim.outputs` samples *after* the clock edge by default**
-— `after(k) = before(k+1)`, so register-driven completions just read one iteration late,
-but an input-driven pulse like the write buffer's accept `ce` is invisible there (its
-first measurement read "6 cycles" for a 1-cycle store); the core's view is
-`~clock_edge:Before`, which the wbuf tests sample.
+## History
 
-## Notes
+The gauges were built during the compute and memory arcs (`build-log.md`, Phases 9 and
+10), and the figures recorded there — the 5.94x cache, 1.305x write-update, 1.180x
+framebuffer shadow, 1.237x write buffer, 1.066x depth 2, running-OS CPI 26.28 → 1.37 —
+were measured on the machine of the time: a 4 KiB cache, the iterative multipliers, the
+25 MHz timer and SPI constants, 5-cycle PSRAM phases (6 for the last figure). The present
+bench was checked against them on that configuration and reproduces each to the clock;
+on the shipped configuration it gives the table above.
 
-- All three are opt-in (built by `@check` so they can't rot; run by alias). `@bench_boot`
-  now carries the whole Phase-10 gauge suite — a dozen boots of the PSRAM SoC plus several
-  2M-instruction windows through the interpreter, ~20–25 minutes end to end.
-- `bench_boot` honours the boot gates' fast mode (`SPI_DIV_LOG2=2`, AGENT.md §9 — ~8 min
-  end to end): the lockstep/A-B/autopsy *ratios* hold (every pair compares at the same
-  divider; validated 2026-07-23, e.g. 10a 5.92× vs 5.94×, fb-BRAM 1.181× vs 1.180×), but
-  boot-cycle *absolutes* and the numbers recorded above are faithful-divider-defined —
-  re-measure knob-unset before updating any of them. The report banners the mode.
-- Numbers above are from this sim harness (behavioural `Cellram_model`, `read_cycles` as
-  noted). They're for *ratios and Amdahl context*, not absolute wall-clock — the point is
-  which lever moves the needle, and by how much.
+Gauges that answered their question and were retired with that rework (they are in the
+history before it): the end-to-end boot with and without the DSP multipliers (0.00%),
+the `read_cycles` 2 → 5 boot sweep (~24% of boot clocks were PSRAM wait), the
+video-gating counterfactual and its `?video` seam (the framebuffer shadow then measured
+exactly that ceiling), the counterfactual snoop policies replayed by the autopsy (they
+became write-update; write-allocate was not worth it), the write-buffer ceiling
+projection, the `read_cycles` 5-against-6 pair (0.86%), and the cache-size sweep (set
+`LINES_LOG2` instead).

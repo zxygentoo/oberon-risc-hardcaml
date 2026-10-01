@@ -83,19 +83,8 @@ module O : sig
 end
 
 (** [create ~contents c i] elaborates the board SoC in configuration [c] — the emitter
-    passes {!Build_config.shipped}.
-
-    [?video] is a sim-only A/B seam, deliberately outside the configuration (default
-    [true] = the board): [false] gates [vidreq], taking the video DMA off the PSRAM port —
-    the framebuffer-in-BRAM counterfactual for the bench. NB holding the [pclk] {e input}
-    low does not do this: in Cyclesim's one-domain sim the pclk raster advances 1:1 with
-    [clk] regardless, so video is live in every board sim unless gated here. *)
-val create
-  :  contents:int array
-  -> ?video:bool
-  -> Build_config.t
-  -> Signal.t I.t
-  -> Signal.t O.t
+    passes {!Build_config.shipped}. *)
+val create : contents:int array -> Build_config.t -> Signal.t I.t -> Signal.t O.t
 
 (** Test scaffolding, not hardware (the {!Risc5.Ps2.For_tests} precedent): the board SoC
     closed with the behavioural {!Cellram_model} on its PSRAM pins, plus the idle-level
@@ -148,7 +137,6 @@ module For_tests : sig
         time the shipped configuration provides (62 ns; see {!Cellram_model.create}). *)
     val create
       :  contents:int array
-      -> ?video:bool
       -> ?addr_bits:int
       -> ?datasheet_chip:bool
       -> Build_config.t
@@ -158,6 +146,7 @@ module For_tests : sig
 
   (** drive every input to its idle level ([rst_n] excluded — reset sequencing belongs to
       the test). NB [pclk] low does not quiet the video DMA under Cyclesim's one-domain
-      semantics; gate with {!Soc.create}'s [?video] if a test needs the bus alone. *)
+      semantics: it contends for the PSRAM port in every sim of a configuration without
+      [fb_bram]. *)
   val drive_idle : Bits.t ref Tb.I.t -> unit
 end

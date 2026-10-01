@@ -135,8 +135,9 @@ same-work ceiling of removing it: 1.180×). `Framebuf` removes that traffic at t
   read is what makes them infer as *block* RAM — **32 RAMB36**, the design's first BRAM use,
   23.7% of the 135 tiles). The span is the full 32768 words `Video.lookahead` can address, so no
   assumption is needed about blanking-time fetches.
-- **Result:** same-work **1.180×** — exactly the `?video` gating ceiling, because the shadow read
-  never touches the CPU's clock-enable — long-window CPI 1.75 → **1.64**, video port
+- **Result:** same-work **1.180×** — exactly the ceiling measured beforehand by gating video
+  off the port, because the shadow read never touches the CPU's clock-enable —
+  long-window CPI 1.75 → **1.64**, video port
   occupancy/contention → 0. The residual is now store-wait (18.3% of clocks, 92% of frozen);
   the write-buffer ceiling from here is 1.22× with 4.4× bus-free headroom. 60 MHz closes at
   WNS +0.213 ns (the critical path is still the cache write). **Boots clean on hardware, desktop

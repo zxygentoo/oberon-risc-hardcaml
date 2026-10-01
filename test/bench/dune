@@ -1,12 +1,11 @@
-; Phase-9 benchmarks & profilers (AGENT.md §5) — the measure-before/after-you-optimise
-; gauges for the DSP-multiplier experiment. Kept out of the always-on `dune runtest`
-; (they print reports, not pass/fail assertions); drive them by alias:
-;   dune build @bench           core cycles/op, iterative vs DSP multiplier
+; The measurement gauges — reports, not pass/fail tests, so kept out of `dune runtest` and
+; driven by alias:
+;   dune build @bench           cycles per operation under each choice of multipliers
 ;   dune build @profile_boot    dynamic MUL/DIV count over a boot (Amdahl context)
-; Only the TARGET-INDEPENDENT gauges live here (lib units / the oracle). The third gauge,
-; @bench_boot (end-to-end cycles on the PSRAM board SoC), is board-specific and lives in
-; the board-test mirror, test/board/nexys-4/ — README.md here stays the index for all
-; three.
+; Only the TARGET-INDEPENDENT gauges live here (the lib core / the oracle). The third,
+; @bench_boot (the board machine's stall profile, memory-stack ladder and miss autopsy),
+; is board-specific and lives in the board-test mirror, test/board/nexys-4/ — README.md
+; here is the index for all three.
 
 (executable
  (name bench_core)

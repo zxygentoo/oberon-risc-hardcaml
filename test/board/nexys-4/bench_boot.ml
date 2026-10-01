@@ -1,133 +1,48 @@
-(* Phase-9 end-to-end bench (AGENT.md §5) — boot the *real memory path* (the PSRAM board
-   SoC) to the OS handoff and count TOTAL cycles, to place the DSP-multiplier and clock
-   wins in the context that actually matters: the whole machine, wait-states and all.
+(* The board gauge — a report, not a gate. It boots the board SoC behind the PSRAM model
+   ({!Board_tb}) from the real disk to the OS handoff, then runs the OS for a window of
+   instructions and watches every system clock. Three gauges:
 
-   The other two gauges look at compute in isolation — bench_core times one op
-   (memoryless), profile_boot counts MUL/DIV density on the oracle (no memory model). This
-   one runs {!Nexys4_board.Soc}: the core on a clock-enable, main memory behind {!Cellram}
-   inserting [read_cycles]/[write_cycles] wait-states per access, driven from the real
-   disk through the SD bridge. Two questions:
+   - [profile] — where the clocks of the configured machine go: cycles per instruction,
+     the share frozen on the PSRAM by cause, the cache hit rates.
+   - [ladder] — what each layer of the memory stack buys: the same machine with the cache,
+     write-update, the framebuffer shadow and the write buffer added one at a time, each
+     rung profiled and compared with the rung above it over the same work.
+   - [autopsy] — why reads miss: every cache miss classified by an independent model of
+     the cache, which must agree with the design's own hit bit on every read (a
+     disagreement fails the run).
 
-   1. Does the DSP multiplier move end-to-end cycles? Boot faithful vs [fast_mul] at the
-      board's read_cycles=5. Expect ~nil — boot is 0.1% MUL (profile_boot), dominated by
-      the SD-copy + PSRAM traffic.
+   The machine is {!Board_tb.config_of_env}: what the bitstream ships, unless the board
+   gates' environment knobs say otherwise — so a candidate change is measured by setting
+   its knob (LINES_LOG2=10, WBUF=1, READ_CYCLES=7, ...).
 
-   2. How memory-bound is it? Sweep read_cycles 2 -> 5. Every memory access costs its
-      wait-states, so the extra cycles are *pure* PSRAM wait: (C5 - C2) = 3 * accesses,
-      and ~rc * accesses is the wait-state overhead at that latency. That fraction is the
-      ceiling a cache could reclaim — the number that says whether the next win is compute
-      or memory.
+   "The same work": two machines that boot the same disk reach the handoff in the same
+   architectural state (the boot checkpoint proves it), and from there execute the same
+   instruction stream until the first timing-dependent poll — the SD card, the ms timer —
+   sends the faster one down a different path. Over that aligned prefix their cycle counts
+   compare like for like; a fixed-length window would average different code.
 
-   Standalone report (no pass/fail); run: dune build @bench_boot. *)
+   Run everything with [dune build @bench_boot], or one gauge with
+   [dune exec test/board/nexys-4/bench_boot.exe -- profile | ladder | autopsy]. The
+   machines run in parallel, one forked worker each. *)
 
 open Hardcaml
-open Boot_checkpoint_common
-
-(* The board SoC + behavioural PSRAM model is the shared {!Board_tb}; the bench varies the
-   multipliers, the PSRAM latency and the memory-stack knobs of its
-   {!Nexys4_board.Build_config.t} across the sweeps below. Only [sclk] is read directly
-   (for the SD bridge); the rest go by name via [trace_all]. *)
-module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
+module BCC = Boot_checkpoint_common
 module Build_config = Nexys4_board.Build_config
+module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
 
-let cycle_cap = 80_000_000
+let boot_cycle_cap = 200_000_000
 
-(* SPI_DIV_LOG2 (the boot gates' fast mode, AGENT.md §9) forwards to every sim built here.
-   Turbo SPI shrinks each boot prefix ~3-4x; the window/lockstep gauges run post-handoff
-   and always compare same-divider pairs, so their RATIOS stay honest — but absolute
-   boot-cycle counts are not comparable to the recorded faithful-divider baselines (the
-   knob removes exactly the SPI-wait cycles boot_cycles measures). *)
-let spi_slow_div_log2 = Option.map int_of_string (Sys.getenv_opt "SPI_DIV_LOG2")
+(* the window: this many instructions past the handoff, or this many clocks if that comes
+   first (the uncached machine spends ~30 clocks on an instruction) *)
+let window_instrs = 2_000_000
+let window_cycle_cap = 20_000_000
+let segment_instrs = 250_000
 
-(* the report must say which divider produced it — first, before any gauge driver *)
-let () =
-  match spi_slow_div_log2 with
-  | Some n ->
-    Printf.printf
-      "\n\
-      \  NB SPI_DIV_LOG2=%d (turbo SPI): boot-cycle ABSOLUTES are not comparable to\n\
-      \  the recorded faithful-divider baselines; ratios/windows compare same-divider.\n\
-       %!"
-      n
-  | None -> ()
-;;
+(* ── One machine under the probes ── *)
 
-(* Every gauge builds on the bare board SoC ({!Build_config.bare}), at the SPI divider the
-   environment asks for. *)
-let base =
-  match spi_slow_div_log2 with
-  | None -> Build_config.bare
-  | Some n -> { Build_config.bare with spi_slow_div_log2 = n }
-;;
-
-(* boot to the OS handoff; return the cycle count (or None if it never leaves the ROM) *)
-let boot_cycles ~icache ~multipliers ~read_cycles ~write_cycles =
-  let tmp = copy_to_temp disk_image in
-  let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
-  let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (Board_tb.create { base with multipliers; icache; read_cycles; write_cycles })
-  in
-  let inp = Cyclesim.inputs sim
-  and outp = Cyclesim.outputs sim in
-  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
-  let pc = Boot_tb.lookup_reg sim "pc" in
-  (* cache stats (Phase-10a): named combinational nodes, present only with [icache]. An
-     access is counted at its retire ([core_ce]=1); a hit lasts one [core_ce]=1 cycle.
-     Sampled after [Spi.tick] — the bridge step never touches the sim, so the values are
-     the post-cycle ones. *)
-  let cnode n = Cyclesim.lookup_node_by_name sim n in
-  let n_cache_read = cnode "cache_read"
-  and n_cache_hit = cnode "cache_hit"
-  and n_core_ce = cnode "core_ce" in
-  let accesses = ref 0
-  and hits = ref 0 in
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
-  Board_tb.drive_idle inp;
-  inp.rst_n := lo;
-  Cyclesim.cycle sim;
-  inp.rst_n := hi;
-  let cycle = ref 0
-  and handoff = ref false in
-  while (not !handoff) && !cycle < cycle_cap do
-    Boot_tb.Spi.tick sim spi;
-    (match n_cache_read, n_cache_hit, n_core_ce with
-     | Some rd, Some h, Some ce ->
-       if Cyclesim.Node.to_int ce = 1 && Cyclesim.Node.to_int rd = 1 then incr accesses;
-       if Cyclesim.Node.to_int h = 1 then incr hits
-     | _ -> ());
-    if Cyclesim.Reg.to_int pc < rom_region_base then handoff := true;
-    incr cycle
-  done;
-  rm_temp tmp;
-  if !handoff then Some (!cycle, !accesses, !hits) else None
-;;
-
-let must = function
-  | Some c -> c
-  | None -> failwith "no handoff within the cycle cap"
-;;
-
-(* Phase-10a — a *same-work* compare of the running OS (post-handoff), fixing the
-   fixed-cycle window's phase drift (there the cached run raced ahead into the idle loop
-   while the uncached one was still in init, so the two averaged different code). Two
-   board SoCs, cache off and on, each boot to the handoff — from the *same* architectural
-   state, since the boot checkpoint proves the loaded image + arch state there are
-   timing-independent — then run in INSTRUCTION LOCKSTEP: advance each by one retired
-   instruction and compare [pc]. While the pc's agree the two execute the identical OS
-   instruction stream, so the cycles each spent are a clean same-work measurement. The
-   first timing-dependent poll (SD / ms-timer, which the faster machine reaches after
-   fewer instructions) diverges the streams; we stop there and report the aligned prefix —
-   the straight-line OS code before the first I/O wait. [make_os] builds one instance; the
-   closures keep the [Sim.t] type private. *)
-(* one CPU PSRAM access retiring this cycle, with its address — the raw material for the
-   miss-autopsy cache mirrors (Phase-10b). [wa] is the 22-bit word address of the 16 MiB
-   space ([adr[23:2]], exactly {!Cache}'s cached address since 2a — DOOM.md §3). Boot only
-   drives the low 1 MB, so the mirror hit/miss stream is unchanged; the wider mask keeps
-   it exact for himem workloads too. *)
-type mem_ev =
+(* a CPU access to PSRAM retiring this clock; [wa] is the word address the cache indexes
+   (adr[23:2]) *)
+type access =
   | Read of
       { wa : int
       ; hit : bool
@@ -138,1118 +53,547 @@ type mem_ev =
       ; byte : bool
       }
 
-type os_inst =
-  { step : unit -> unit
-  ; retired :
-      unit -> bool (* did an instruction retire this cycle ([is_fetch] & [core_ce]) *)
-  ; cache_ev : unit -> bool * bool (* (a cacheable read retired, it hit) this cycle *)
-  ; mem_ev : unit -> mem_ev option (* the PSRAM access retiring this cycle, if any *)
-  ; classify : unit -> int
-      (* this clock's bucket: 0 retire 1 exec 2 compute 3 fetchW 4 loadW 5 storeW *)
-  ; contention : unit -> bool (* frozen this clock because video owns the PSRAM bus *)
-  ; video_bus : unit -> bool (* the PSRAM port is serving a video word this clock *)
-  ; store_ev : unit -> bool (* a store retires this clock (ce=1 & wr) *)
+(* Every clock falls in one bucket, from [core_ce] / [is_fetch] / [core_rd] / [core_wr]:
+   the core advanced (ce = 1) and retired an instruction, or spent a load/store data
+   cycle, or ground through an iterative unit; or it was frozen (ce = 0) waiting on the
+   PSRAM for a fetch, a load or a store. *)
+let bucket_names = [| "retire"; "exec"; "compute"; "fetchW"; "loadW"; "storeW" |]
+let retire = 0
+let fetch_wait = 3
+let load_wait = 4
+let store_wait = 5
+
+type machine =
+  { step : unit -> unit (* one system clock, the SD card on the SPI pins *)
   ; pc : unit -> int
+  ; bucket : unit -> int
+  ; access : unit -> access option
+      (* reads are visible only with the cache: it is the cache's read strobe that marks
+         them *)
+  ; video_bus : unit -> bool (* the PSRAM port is serving a video word *)
   ; cleanup : unit -> unit
   }
 
-let make_os
-  ?(video = true)
-  ?(write_update = false)
-  ?(fb_bram = false)
-  ?(write_buffer = false)
-  ?(wbuf_depth = 1)
-  ?(read_cycles = 5)
-  ~write_cycles
-  ~icache
-  ~lines_log2
-  ()
-  =
-  let tmp = copy_to_temp disk_image in
+let machine (c : Build_config.t) =
+  let tmp = BCC.copy_to_temp BCC.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (Board_tb.create
-         ~video
-         { base with
-           icache
-         ; lines_log2
-         ; write_update
-         ; fb_bram
-         ; write_buffer
-         ; wbuf_depth
-         ; read_cycles
-         ; write_cycles
-         })
+    Sim.create ~config:Cyclesim.Config.trace_all (Board_tb.create ~datasheet_chip:true c)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
   let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
-  let pc = Boot_tb.lookup_reg sim "pc" in
-  let cnode n = Cyclesim.lookup_node_by_name sim n in
-  (* [cache_read]/[cache_hit] exist only under [~icache:true], so they stay optional;
-     everything else is unconditional and must resolve LOUDLY ({!Boot_tb.lookup_node}) — a
-     silent [None] zeroes a whole profile column (it hid the video-contention overlay
-     once: [cr_busy] / [cr_op_vid] are *registers*, invisible to [lookup_node_by_name]). *)
-  let n_cache_read = cnode "cache_read"
-  and n_cache_hit = cnode "cache_hit" in
-  let n_core_ce = Boot_tb.lookup_node sim "core_ce"
-  and n_is_fetch = Boot_tb.lookup_node sim "is_fetch"
-  and n_core_wr = Boot_tb.lookup_node sim "core_wr"
-  and n_core_rd = Boot_tb.lookup_node sim "core_rd"
-  and n_core_adr = Boot_tb.lookup_node sim "core_adr"
-  and n_core_ben = Boot_tb.lookup_node sim "core_ben"
-  and n_cpu_internal = Boot_tb.lookup_node sim "cpu_internal"
-  and r_cr_busy = Boot_tb.lookup_reg sim "cr_busy"
-  and r_cr_op_vid = Boot_tb.lookup_reg sim "cr_op_vid" in
-  let ci = Cyclesim.Node.to_int in
-  let lo = Bits.of_unsigned_int ~width:1 0
-  and hi = Bits.of_unsigned_int ~width:1 1 in
+  (* every probe resolves loudly: a silent miss would read as a column of zeros *)
+  let node name = Boot_tb.lookup_node sim name in
+  let pc = Boot_tb.lookup_reg sim "pc"
+  and core_ce = node "core_ce"
+  and is_fetch = node "is_fetch"
+  and core_wr = node "core_wr"
+  and core_rd = node "core_rd"
+  and core_adr = node "core_adr"
+  and core_ben = node "core_ben"
+  and cpu_internal = node "cpu_internal"
+  and cr_busy = Boot_tb.lookup_reg sim "cr_busy"
+  and cr_op_vid = Boot_tb.lookup_reg sim "cr_op_vid" in
+  (* the cache's strobes exist only in a machine that has the cache *)
+  let cache = if c.icache then Some (node "cache_read", node "cache_hit") else None in
+  let v = Cyclesim.Node.to_int in
   Board_tb.drive_idle inp;
-  inp.rst_n := lo;
+  inp.rst_n := Bits.gnd;
   Cyclesim.cycle sim;
-  inp.rst_n := hi;
-  let step () = Boot_tb.Spi.tick sim spi in
-  let retired () = ci n_core_ce = 1 && ci n_is_fetch = 1 in
-  let cache_ev () =
-    match n_cache_read, n_cache_hit with
-    | Some rd, Some h -> ci n_core_ce = 1 && ci rd = 1, ci h = 1
-    | _ -> false, false
+  inp.rst_n := Bits.vdd;
+  let bucket () =
+    if v core_ce = 1
+    then if v is_fetch = 1 then 0 else if v core_rd = 1 || v core_wr = 1 then 1 else 2
+    else if v core_wr = 1
+    then store_wait
+    else if v core_rd = 1
+    then load_wait
+    else fetch_wait
   in
-  (* classify this system clock into one stall bucket (see [stall_profile]): 0 retire | 1
-     exec | 2 compute | 3 fetchW | 4 loadW | 5 storeW *)
-  let classify () =
-    let ce = ci n_core_ce
-    and f = ci n_is_fetch
-    and r = ci n_core_rd
-    and w = ci n_core_wr in
-    if ce = 1
-    then if f = 1 then 0 else if r = 1 || w = 1 then 1 else 2
-    else if w = 1
-    then 5
-    else if r = 1
-    then 4
-    else 3
-  in
-  (* the PSRAM port is serving a video word ([cr_busy & cr_op_vid]); [contention] is that
-     while the CPU sits frozen — the tax framebuffer-in-BRAM removes. Both registers read
-     post-edge ([Cyclesim.Reg]) vs the nodes' in-cycle values: a ±1-cycle skew, noise
-     against a video word's ~11-cycle port occupancy. *)
-  let video_bus () =
-    Cyclesim.Reg.to_int r_cr_busy = 1 && Cyclesim.Reg.to_int r_cr_op_vid = 1
-  in
-  let contention () = ci n_core_ce = 0 && video_bus () in
-  let store_ev () = ci n_core_ce = 1 && ci n_core_wr = 1 in
-  (* the PSRAM access retiring this cycle, with its cached word address. Reads need the
-     icache instance ([cache_read]/[cache_hit]); on a cache-off instance they are
-     invisible (None) — the autopsy only runs cache-on. *)
-  let mem_ev () =
-    if ci n_core_ce <> 1
+  let access () =
+    if v core_ce <> 1
     then None
     else (
-      let wa = (ci n_core_adr lsr 2) land 0x3FFFFF in
-      let read, hit = cache_ev () in
-      if read
-      then Some (Read { wa; hit; fetch = ci n_is_fetch = 1 })
-      else if ci n_core_wr = 1 && ci n_cpu_internal = 0
-      then Some (Store { wa; byte = ci n_core_ben = 1 })
-      else None)
+      let wa = (v core_adr lsr 2) land 0x3FFFFF in
+      match cache with
+      | Some (read, hit) when v read = 1 ->
+        Some (Read { wa; hit = v hit = 1; fetch = v is_fetch = 1 })
+      | _ ->
+        if v core_wr = 1 && v cpu_internal = 0
+        then Some (Store { wa; byte = v core_ben = 1 })
+        else None)
   in
-  { step
-  ; retired
-  ; cache_ev
-  ; mem_ev
-  ; classify
-  ; contention
-  ; video_bus
-  ; store_ev
+  (* the two registers read post-edge, the nodes in-cycle: a one-clock skew, noise against
+     a video word's ~11 clocks on the port *)
+  let video_bus () =
+    Cyclesim.Reg.to_int cr_busy = 1 && Cyclesim.Reg.to_int cr_op_vid = 1
+  in
+  { step = (fun () -> Boot_tb.Spi.tick sim spi)
   ; pc = (fun () -> Cyclesim.Reg.to_int pc)
-  ; cleanup = (fun () -> rm_temp tmp)
+  ; bucket
+  ; access
+  ; video_bus
+  ; cleanup = (fun () -> BCC.rm_temp tmp)
   }
 ;;
 
-let boot_to_handoff t =
-  let c = ref 0
-  and hand = ref false in
-  while (not !hand) && !c < cycle_cap do
-    t.step ();
-    if t.pc () < rom_region_base then hand := true;
-    incr c
+(* ── One measurement: boot, then the window ── *)
+
+type segment =
+  { s_instrs : int
+  ; s_cycles : int
+  ; s_buckets : int array
+  ; s_contend : int
+  }
+
+type run =
+  { boot_cycles : int (* reset to the handoff *)
+  ; instrs : int
+  ; cycles : int
+  ; buckets : int array
+  ; contend : int (* frozen while video owns the port *)
+  ; video_port : int (* clocks the port serves video *)
+  ; fetch_reads : int
+  ; fetch_hits : int
+  ; load_reads : int
+  ; load_hits : int
+  ; stores : int (* PSRAM stores retired *)
+  ; segments : segment list
+  ; pcs : int array (* pc after each instruction of the window ... *)
+  ; at : int array (* ... and the clocks since the handoff when it retired *)
+  }
+
+(* [observe ~measuring access] sees every PSRAM access from reset on ([measuring] turns
+   true at the handoff) — the autopsy's cache model follows along through it. *)
+let measure ?(observe = fun ~measuring:_ _ -> ()) (c : Build_config.t) =
+  let m = machine c in
+  let boot_cycles = ref 0 in
+  while m.pc () >= BCC.rom_region_base do
+    if !boot_cycles >= boot_cycle_cap
+    then failwith "bench_boot: no handoff within the cycle cap";
+    m.step ();
+    Option.iter (observe ~measuring:false) (m.access ());
+    incr boot_cycles
   done;
-  if not !hand then failwith "no handoff within the cycle cap"
-;;
-
-(* advance one retired instruction; return (cycles, cacheable-read retires, hits) it took *)
-let advance_instr t =
-  let cyc = ref 0
-  and acc = ref 0
-  and hit = ref 0
-  and go = ref true in
-  while !go do
-    t.step ();
-    incr cyc;
-    let a, h = t.cache_ev () in
-    if a then incr acc;
-    if h then incr hit;
-    if t.retired () then go := false;
-    if !cyc > 100_000 then failwith "advance_instr: no retire in 100k cycles (hang?)"
-  done;
-  !cyc, !acc, !hit
-;;
-
-(* boot both instances to the handoff, then lockstep by instruction over the same OS code
-   until [pc] diverges (the first timing-dependent poll) or [max_instrs]. Returns
-   (aligned_instrs, diverged, cycles_a, cycles_b, b_accesses, b_hits) — the honest
-   same-work A/B for any single-knob pair (icache off/on, video on/off, ...). *)
-let compare_pair ~max_instrs (a : os_inst) (b : os_inst) =
-  boot_to_handoff a;
-  boot_to_handoff b;
-  let cyc_a = ref 0
-  and cyc_b = ref 0
-  and acc = ref 0
-  and hit = ref 0
-  and i = ref 0
-  and diverged = ref false in
-  while !i < max_instrs && not !diverged do
-    let ca, _, _ = advance_instr a in
-    let cb, ab, hb = advance_instr b in
-    if a.pc () <> b.pc ()
-    then diverged := true
-    else (
-      cyc_a := !cyc_a + ca;
-      cyc_b := !cyc_b + cb;
-      acc := !acc + ab;
-      hit := !hit + hb;
-      incr i)
-  done;
-  a.cleanup ();
-  b.cleanup ();
-  !i, !diverged, !cyc_a, !cyc_b, !acc, !hit
-;;
-
-let compare_os ~max_instrs ~lines_log2 =
-  compare_pair
-    ~max_instrs
-    (make_os ~write_cycles:5 ~icache:false ~lines_log2 ())
-    (make_os ~write_cycles:5 ~icache:true ~lines_log2 ())
-;;
-
-(* Phase-10b spike — MISS AUTOPSY. Why do loads miss 35-41% when capacity doesn't move
-   them (the size sweep is flat)? Hypothesis: snoop-INVALIDATE self-inflicts them — a
-   store to a cached line drops it, so store-then-load (stack slots, record fields) is a
-   guaranteed miss. Two measurements over one run:
-
-   1. Taxonomy: for every read miss, what state was the line in — conflict (valid, other
-      tag), store-killed (invalid, killed by a store to THIS tag; split word/byte store),
-      or cold (anything else)?
-   2. Counterfactual snoop policies, replayed on the same access stream: A (RTL today)
-      fill on read-miss; store-hit INVALIDATES B1 (update) word store-hit UPDATES in
-      place; byte store-hit still kills B2 (update+merge) any store-hit updates (byte
-      merges via the async-read port) B3 (B2+allocate) word store-miss also fills the line
-      (write-allocate)
-
-   The mirrors track (valid, tag) only — policy hit-rates need no data. Mirror A is
-   validated against the RTL's own [cache_hit] on every read (a mismatch = harness bug,
-   reported loudly; note [multiport_memory]'s post-write async read, cache.ml — events are
-   applied at retire, which matches it). Events feed the mirrors from RESET (the boot
-   warms the cache); stats collect past the OS handoff only. Caveat: the stream is the one
-   the RTL policy produced — a different policy shifts poll-loop timing slightly; fine for
-   a ceiling. *)
-let miss_autopsy
-  ?(video = true)
-  ?(write_update = false)
-  ~lines_log2
-  ~instr_budget
-  ~cycle_cap:cap
-  ()
-  =
-  let t = make_os ~video ~write_update ~write_cycles:5 ~icache:true ~lines_log2 () in
-  let lines = 1 lsl lines_log2 in
-  let idx_of wa = wa land (lines - 1)
-  and tag_of wa = wa lsr lines_log2 in
-  (* mirror A (the RTL policy) + why-invalid; mirrors B1/B2/B3 *)
-  let a_val = Array.make lines false
-  and a_tag = Array.make lines 0
-  and killed = Array.make lines 0 (* 0 live/cold; 1 killed by word store; 2 by byte *)
-  and killed_tag = Array.make lines 0 in
-  let b_val = Array.init 3 (fun _ -> Array.make lines false)
-  and b_tag = Array.init 3 (fun _ -> Array.make lines 0) in
-  let mism = ref 0
-  and measuring = ref false
-  and cyc = ref 0
-  and instr = ref 0
-  and loadw = ref 0
-  and stores_w = ref 0
-  and stores_b = ref 0 in
-  (* per read class: 0 = fetch, 1 = load *)
-  let reads = [| 0; 0 |]
-  and hits_rtl = [| 0; 0 |]
-  and miss_conflict = [| 0; 0 |]
-  and miss_killed_w = [| 0; 0 |]
-  and miss_killed_b = [| 0; 0 |]
-  and miss_cold = [| 0; 0 |]
-  and hits_b = Array.make_matrix 3 2 0 in
-  let apply = function
-    | Read { wa; hit; fetch } ->
-      let idx = idx_of wa
-      and tag = tag_of wa in
-      let k = if fetch then 0 else 1 in
-      if (a_val.(idx) && a_tag.(idx) = tag) <> hit then incr mism;
-      if !measuring
-      then (
-        reads.(k) <- reads.(k) + 1;
-        if hit
-        then hits_rtl.(k) <- hits_rtl.(k) + 1
-        else if a_val.(idx)
-        then miss_conflict.(k) <- miss_conflict.(k) + 1
-        else if killed.(idx) = 1 && killed_tag.(idx) = tag
-        then miss_killed_w.(k) <- miss_killed_w.(k) + 1
-        else if killed.(idx) = 2 && killed_tag.(idx) = tag
-        then miss_killed_b.(k) <- miss_killed_b.(k) + 1
-        else miss_cold.(k) <- miss_cold.(k) + 1;
-        for p = 0 to 2 do
-          if b_val.(p).(idx) && b_tag.(p).(idx) = tag
-          then hits_b.(p).(k) <- hits_b.(p).(k) + 1
-        done);
-      (* every policy fills on its read-miss (a no-op when it hit) *)
-      a_val.(idx) <- true;
-      a_tag.(idx) <- tag;
-      killed.(idx) <- 0;
-      for p = 0 to 2 do
-        b_val.(p).(idx) <- true;
-        b_tag.(p).(idx) <- tag
-      done
-    | Store { wa; byte } ->
-      let idx = idx_of wa
-      and tag = tag_of wa in
-      if !measuring then if byte then incr stores_b else incr stores_w;
-      (* A mirrors the RTL policy under test: a store-hit kills the line — except a word
-         store-hit under [write_update], which refreshes it in place *)
-      if a_val.(idx) && a_tag.(idx) = tag && not (write_update && not byte)
-      then (
-        a_val.(idx) <- false;
-        killed.(idx) <- (if byte then 2 else 1);
-        killed_tag.(idx) <- tag);
-      (* B1: word store-hit updates in place (no mirror change); byte store-hit kills *)
-      if byte && b_val.(0).(idx) && b_tag.(0).(idx) = tag then b_val.(0).(idx) <- false;
-      (* B2: any store-hit updates — nothing to do. B3: word stores also allocate *)
-      if not byte
-      then (
-        b_val.(2).(idx) <- true;
-        b_tag.(2).(idx) <- tag)
+  let pcs = Array.make window_instrs 0
+  and at = Array.make window_instrs 0 in
+  let buckets = Array.make 6 0
+  and seg_buckets = Array.make 6 0 in
+  let instrs = ref 0
+  and cycles = ref 0
+  and contend = ref 0
+  and video_port = ref 0
+  and fetch_reads = ref 0
+  and fetch_hits = ref 0
+  and load_reads = ref 0
+  and load_hits = ref 0
+  and stores = ref 0
+  and seg_instrs = ref 0
+  and seg_cycles = ref 0
+  and seg_contend = ref 0
+  and segments = ref [] in
+  let close_segment () =
+    segments
+    := { s_instrs = !seg_instrs
+       ; s_cycles = !seg_cycles
+       ; s_buckets = Array.copy seg_buckets
+       ; s_contend = !seg_contend
+       }
+       :: !segments;
+    Array.fill seg_buckets 0 6 0;
+    seg_instrs := 0;
+    seg_cycles := 0;
+    seg_contend := 0
   in
-  (* boot to the handoff, mirrors following along *)
-  let booted = ref false
-  and bc = ref 0 in
-  while (not !booted) && !bc < cycle_cap do
-    t.step ();
-    (match t.mem_ev () with
-     | Some ev -> apply ev
-     | None -> ());
-    if t.pc () < rom_region_base then booted := true;
-    incr bc
+  while !instrs < window_instrs && !cycles < window_cycle_cap do
+    m.step ();
+    incr cycles;
+    incr seg_cycles;
+    let b = m.bucket () in
+    buckets.(b) <- buckets.(b) + 1;
+    seg_buckets.(b) <- seg_buckets.(b) + 1;
+    if m.video_bus ()
+    then (
+      incr video_port;
+      if b >= fetch_wait
+      then (
+        incr contend;
+        incr seg_contend));
+    (match m.access () with
+     | None -> ()
+     | Some a ->
+       observe ~measuring:true a;
+       (match a with
+        | Read { hit; fetch = true; _ } ->
+          incr fetch_reads;
+          if hit then incr fetch_hits
+        | Read { hit; fetch = false; _ } ->
+          incr load_reads;
+          if hit then incr load_hits
+        | Store _ -> incr stores));
+    if b = retire
+    then (
+      pcs.(!instrs) <- m.pc ();
+      at.(!instrs) <- !cycles;
+      incr instrs;
+      incr seg_instrs;
+      if !seg_instrs = segment_instrs then close_segment ())
   done;
-  if not !booted then failwith "miss_autopsy: no handoff within the cycle cap";
-  Printf.printf
-    "    boot: mirror-A vs RTL hit-bit mismatches = %d %s\n%!"
-    !mism
-    (if !mism = 0
-     then "(mirror validated)"
-     else "** HARNESS BUG — numbers below suspect **");
-  mism := 0;
-  measuring := true;
-  while !instr < instr_budget && !cyc < cap do
-    t.step ();
-    incr cyc;
-    if t.classify () = 4 then incr loadw;
-    (match t.mem_ev () with
-     | Some ev -> apply ev
-     | None -> ());
-    if t.retired () then incr instr
+  if !seg_cycles > 0 then close_segment ();
+  m.cleanup ();
+  { boot_cycles = !boot_cycles
+  ; instrs = !instrs
+  ; cycles = !cycles
+  ; buckets
+  ; contend = !contend
+  ; video_port = !video_port
+  ; fetch_reads = !fetch_reads
+  ; fetch_hits = !fetch_hits
+  ; load_reads = !load_reads
+  ; load_hits = !load_hits
+  ; stores = !stores
+  ; segments = List.rev !segments
+  ; pcs = Array.sub pcs 0 !instrs
+  ; at = Array.sub at 0 !instrs
+  }
+;;
+
+let pct part whole = if whole = 0 then 0.0 else 100.0 *. float part /. float whole
+let ratio a b = if b = 0 then 0.0 else float a /. float b
+let frozen r = r.buckets.(fetch_wait) + r.buckets.(load_wait) + r.buckets.(store_wait)
+
+(* the instructions two runs execute in common from the handoff, and the clocks each spent
+   on them *)
+let same_work a b =
+  let n = min a.instrs b.instrs in
+  let i = ref 0 in
+  while !i < n && a.pcs.(!i) = b.pcs.(!i) do
+    incr i
   done;
-  t.cleanup ();
-  let pct a b = if b = 0 then 0.0 else 100.0 *. float_of_int a /. float_of_int b in
+  if !i = 0 then 0, 0, 0 else !i, a.at.(!i - 1), b.at.(!i - 1)
+;;
+
+(* ── profile ── *)
+
+let print_profile r =
   Printf.printf
-    "    window: %d instr / %d cyc (CPI %.2f);  window mismatches = %d;  stores: %d word \
-     + %d byte\n\
-     %!"
-    !instr
-    !cyc
-    (float_of_int !cyc /. float_of_int (max 1 !instr))
-    !mism
-    !stores_w
-    !stores_b;
-  Printf.printf "\n    miss taxonomy (per read class; %% of that class's misses):\n%!";
+    "  reset to the handoff: %d clocks.  The window past it: %d instructions in %d \
+     clocks = %.2f clocks per instruction.\n\n"
+    r.boot_cycles
+    r.instrs
+    r.cycles
+    (ratio r.cycles r.instrs);
+  Printf.printf
+    "    through   instrs    clocks    CPI   fetchW%% loadW%% storeW%% video%%\n";
+  let through = ref 0 in
+  List.iter
+    (fun s ->
+      through := !through + s.s_instrs;
+      Printf.printf
+        "    %6dk  %7d  %8d  %5.2f   %6.1f  %5.1f  %6.1f  %5.1f\n"
+        (!through / 1000)
+        s.s_instrs
+        s.s_cycles
+        (ratio s.s_cycles s.s_instrs)
+        (pct s.s_buckets.(fetch_wait) s.s_cycles)
+        (pct s.s_buckets.(load_wait) s.s_cycles)
+        (pct s.s_buckets.(store_wait) s.s_cycles)
+        (pct s.s_contend s.s_cycles))
+    r.segments;
+  Printf.printf "\n    every clock of the window, by what the core was doing:\n";
+  Array.iteri
+    (fun i n ->
+      Printf.printf "      %-8s %9d  %5.1f%%\n" bucket_names.(i) n (pct n r.cycles))
+    r.buckets;
+  Printf.printf
+    "    frozen on the PSRAM: %d clocks = %.1f%% (reads %.1f%%, stores %.1f%%); frozen \
+     while video held the port: %.1f%% (video holds it %.1f%% of all clocks)\n"
+    (frozen r)
+    (pct (frozen r) r.cycles)
+    (pct (r.buckets.(fetch_wait) + r.buckets.(load_wait)) r.cycles)
+    (pct r.buckets.(store_wait) r.cycles)
+    (pct r.contend r.cycles)
+    (pct r.video_port r.cycles);
+  if r.fetch_reads + r.load_reads > 0
+  then
+    Printf.printf
+      "    cache: fetches %d/%d = %.2f%% hit, loads %d/%d = %.2f%% hit;  %d PSRAM stores \
+       (1 per %d instructions)\n"
+      r.fetch_hits
+      r.fetch_reads
+      (pct r.fetch_hits r.fetch_reads)
+      r.load_hits
+      r.load_reads
+      (pct r.load_hits r.load_reads)
+      r.stores
+      (r.instrs / max 1 r.stores)
+;;
+
+(* ── ladder ── *)
+
+(* [top] with the memory stack peeled off, then put back one layer at a time. A layer
+   [top] lacks leaves two equal rungs; the later one is dropped. *)
+let rungs (top : Build_config.t) =
+  let psram =
+    { top with
+      icache = false
+    ; write_update = false
+    ; fb_bram = false
+    ; halftone = false
+    ; write_buffer = false
+    ; wbuf_depth = 1
+    }
+  in
+  let cache = { psram with icache = top.icache } in
+  let update = { cache with write_update = top.write_update } in
+  let shadow = { update with fb_bram = top.fb_bram; halftone = top.halftone } in
+  let buffer = { shadow with write_buffer = top.write_buffer } in
+  let rec dedupe = function
+    | ((_, a) as rung) :: (_, b) :: rest when a = b -> dedupe (rung :: rest)
+    | rung :: rest -> rung :: dedupe rest
+    | [] -> []
+  in
+  dedupe
+    [ "PSRAM only", psram
+    ; "+ cache", cache
+    ; "+ write-update", update
+    ; "+ framebuffer shadow", shadow
+    ; "+ write buffer", buffer
+    ; Printf.sprintf "+ depth %d" top.wbuf_depth, top
+    ]
+;;
+
+let print_ladder named_runs =
+  Printf.printf
+    "    %-22s %10s %8s %6s %7s %7s %10s %9s   %s\n"
+    "rung"
+    "boot"
+    "instrs"
+    "CPI"
+    "frozen"
+    "storeW"
+    "fetch hit"
+    "load hit"
+    "the same work as the rung above";
+  let hit hits reads =
+    if reads = 0 then "-" else Printf.sprintf "%.2f%%" (pct hits reads)
+  in
+  let above = ref None in
+  List.iter
+    (fun (name, r) ->
+      Printf.printf
+        "    %-22s %10d %8d %6.2f %6.1f%% %6.1f%% %10s %9s"
+        name
+        r.boot_cycles
+        r.instrs
+        (ratio r.cycles r.instrs)
+        (pct (frozen r) r.cycles)
+        (pct r.buckets.(store_wait) r.cycles)
+        (hit r.fetch_hits r.fetch_reads)
+        (hit r.load_hits r.load_reads);
+      (match !above with
+       | None -> Printf.printf "\n"
+       | Some a ->
+         let n, ca, cr = same_work a r in
+         Printf.printf
+           "   %.3fx  (%d -> %d clocks over %d instructions)\n"
+           (ratio ca cr)
+           ca
+           cr
+           n);
+      above := Some r)
+    named_runs;
+  match named_runs with
+  | (_, first) :: _ :: _ ->
+    let _, last = List.nth named_runs (List.length named_runs - 1) in
+    let n, cf, cl = same_work first last in
+    Printf.printf
+      "\n\
+      \    the whole stack against the PSRAM alone: %.2fx over the same %d instructions \
+       (%.2f -> %.2f clocks per instruction)\n"
+      (ratio cf cl)
+      n
+      (ratio cf n)
+      (ratio cl n)
+  | _ -> ()
+;;
+
+(* ── autopsy ── *)
+
+type autopsy =
+  { boot_mismatches : int (* model vs the design's hit bit, reset to handoff ... *)
+  ; window_mismatches : int (* ... and over the window *)
+  ; word_stores : int
+  ; byte_stores : int
+  ; reads : int array (* per class: 0 = fetch, 1 = load *)
+  ; hits : int array
+  ; conflict : int array (* the line held another address *)
+  ; killed : int array (* the line was dropped by a store to this address *)
+  ; cold : int array (* the line was never filled, or dropped by a store to another *)
+  }
+
+(* The model keeps a valid bit and a tag per line — the cache's policy with none of its
+   data: a read fills its line; a store to a cached word refreshes the line when the
+   machine has write-update and the store is a whole word, and drops it otherwise. It
+   follows the design from reset (the boot warms the cache) and classifies the misses of
+   the window. *)
+let autopsy (c : Build_config.t) =
+  if not c.icache then failwith "bench_boot autopsy: this machine has no cache";
+  let lines = 1 lsl c.lines_log2 in
+  let valid = Array.make lines false
+  and tag = Array.make lines 0
+  and killed_tag = Array.make lines (-1) in
+  let boot_mismatches = ref 0
+  and window_mismatches = ref 0
+  and word_stores = ref 0
+  and byte_stores = ref 0 in
+  let reads = [| 0; 0 |]
+  and hits = [| 0; 0 |]
+  and conflict = [| 0; 0 |]
+  and killed = [| 0; 0 |]
+  and cold = [| 0; 0 |] in
+  let bump a k = a.(k) <- a.(k) + 1 in
+  let observe ~measuring access =
+    match access with
+    | Read { wa; hit; fetch } ->
+      let i = wa land (lines - 1)
+      and t = wa lsr c.lines_log2 in
+      let k = if fetch then 0 else 1 in
+      if (valid.(i) && tag.(i) = t) <> hit
+      then incr (if measuring then window_mismatches else boot_mismatches);
+      if measuring
+      then (
+        bump reads k;
+        if hit
+        then bump hits k
+        else if valid.(i)
+        then bump conflict k
+        else if killed_tag.(i) = t
+        then bump killed k
+        else bump cold k);
+      valid.(i) <- true;
+      tag.(i) <- t;
+      killed_tag.(i) <- -1
+    | Store { wa; byte } ->
+      let i = wa land (lines - 1)
+      and t = wa lsr c.lines_log2 in
+      if measuring then incr (if byte then byte_stores else word_stores);
+      if valid.(i) && tag.(i) = t && not (c.write_update && not byte)
+      then (
+        valid.(i) <- false;
+        killed_tag.(i) <- t)
+  in
+  let (_ : run) = measure ~observe c in
+  { boot_mismatches = !boot_mismatches
+  ; window_mismatches = !window_mismatches
+  ; word_stores = !word_stores
+  ; byte_stores = !byte_stores
+  ; reads
+  ; hits
+  ; conflict
+  ; killed
+  ; cold
+  }
+;;
+
+(* returns whether the model and the design agreed *)
+let print_autopsy a =
+  let agreed = a.boot_mismatches = 0 && a.window_mismatches = 0 in
+  Printf.printf
+    "  the cache model against the design's hit bit: %d disagreements through the boot, \
+     %d over the window%s\n"
+    a.boot_mismatches
+    a.window_mismatches
+    (if agreed then "" else "  ** the numbers below are suspect **");
+  Printf.printf
+    "  stores to PSRAM in the window: %d word, %d byte\n\n"
+    a.word_stores
+    a.byte_stores;
+  Printf.printf
+    "    %-6s %9s %8s %8s   %-18s %-18s %s\n"
+    "reads"
+    "count"
+    "hit"
+    "misses"
+    "conflict"
+    "dropped by a store"
+    "cold";
   List.iteri
     (fun k name ->
-      let m = miss_conflict.(k) + miss_killed_w.(k) + miss_killed_b.(k) + miss_cold.(k) in
+      let misses = a.reads.(k) - a.hits.(k) in
+      let share n = Printf.sprintf "%d (%.1f%%)" n (pct n misses) in
       Printf.printf
-        "      %-5s : %8d reads, %.2f%% hit, %6d misses = conflict %5d (%4.1f%%) | \
-         store-killed word %5d (%4.1f%%) byte %5d (%4.1f%%) | cold %5d (%4.1f%%)\n\
-         %!"
+        "    %-6s %9d %7.2f%% %8d   %-18s %-18s %s\n"
         name
-        reads.(k)
-        (pct hits_rtl.(k) reads.(k))
-        m
-        miss_conflict.(k)
-        (pct miss_conflict.(k) m)
-        miss_killed_w.(k)
-        (pct miss_killed_w.(k) m)
-        miss_killed_b.(k)
-        (pct miss_killed_b.(k) m)
-        miss_cold.(k)
-        (pct miss_cold.(k) m))
+        a.reads.(k)
+        (pct a.hits.(k) a.reads.(k))
+        misses
+        (share a.conflict.(k))
+        (share a.killed.(k))
+        (share a.cold.(k)))
     [ "fetch"; "load" ];
-  (* counterfactual policies: hit-rates + a cycle projection. Extra hits vs the RTL saved
-     ~the average measured load-miss cost each (loadW cycles / load misses). *)
-  let load_misses = reads.(1) - hits_rtl.(1) in
-  let avg_miss = float_of_int !loadw /. float_of_int (max 1 load_misses) in
-  Printf.printf
-    "\n\
-    \    counterfactual snoop policies (same stream; avg load-miss cost measured %.1f \
-     cyc):\n\
-     %!"
-    avg_miss;
-  List.iteri
-    (fun p name ->
-      let extra = hits_b.(p).(1) - hits_rtl.(1) in
-      let saved = float_of_int extra *. avg_miss in
-      let proj = float_of_int !cyc -. saved in
-      Printf.printf
-        "      %-18s: load hit %.2f%% (fetch %.2f%%)  ->  +%d load hits, ~%.0fk cyc \
-         saved, CPI %.2f -> %.2f (%.3fx)\n\
-         %!"
-        name
-        (pct hits_b.(p).(1) reads.(1))
-        (pct hits_b.(p).(0) reads.(0))
-        extra
-        (saved /. 1000.)
-        (float_of_int !cyc /. float_of_int (max 1 !instr))
-        (proj /. float_of_int (max 1 !instr))
-        (float_of_int !cyc /. proj))
-    [ "B1 update"; "B2 update+merge"; "B3 +allocate" ]
+  agreed
 ;;
 
-(* Phase-10b spike: the autopsies + the write-update A/B run FIRST for fast iteration; the
-   heavier gauges follow. *)
-let () =
-  Printf.printf
-    "  Miss autopsy — snoop-INVALIDATE, the Phase-10a baseline (cache on, 4KB, video \
-     live):\n\
-     %!";
-  miss_autopsy ~lines_log2:10 ~instr_budget:2_000_000 ~cycle_cap:20_000_000 ();
-  Printf.printf
-    "\n\
-    \  Miss autopsy — WRITE-UPDATE, the Phase-10b policy. Mismatches = 0 validates the RTL\n\
-    \  change against the independent OCaml mirror; B1/B2 should now project +0.\n\
-     %!";
-  miss_autopsy
-    ~write_update:true
-    ~lines_log2:10
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ();
-  Printf.printf
-    "\n\
-    \  Write-update — same-work instruction lockstep, snoop-invalidate vs WRITE-UPDATE\n\
-    \  (cache on, 4KB, video live): the honest Phase-10b number.\n\
-     %!";
-  let aligned, _, c_inv, c_upd, upd_reads, upd_hits =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os ~write_cycles:5 ~icache:true ~lines_log2:10 ())
-      (make_os ~write_update:true ~write_cycles:5 ~icache:true ~lines_log2:10 ())
-  in
-  let f = float_of_int in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : invalidate %d   write-update %d\n\
-    \    cycles / instruction    : invalidate %.2f   write-update %.2f\n\
-    \    same-work speedup       : %.3fx\n\
-    \    cache (write-update)    : %d hits / %d PSRAM reads = %.2f%% hit-rate\n\
-     %!"
-    aligned
-    c_inv
-    c_upd
-    (f c_inv /. f (max 1 aligned))
-    (f c_upd /. f (max 1 aligned))
-    (f c_inv /. f (max 1 c_upd))
-    upd_hits
-    upd_reads
-    (100. *. f upd_hits /. f (max 1 upd_reads))
-;;
+(* ── The report ── *)
+
+(* what a forked worker hands back *)
+type result =
+  | Run of run
+  | Autopsy of autopsy
+
+let in_parallel jobs = Fork_pool.map ~jobs:(List.length jobs) jobs
 
 let () =
+  let top = Board_tb.config_of_env () in
+  let shipped = Build_config.shipped in
   Printf.printf
-    "\n\
-     Phase-9 end-to-end bench — PSRAM board SoC, reset -> OS handoff, total cycles\n\n\
-     %!";
-  Printf.printf "  booting (faithful mul, read_cycles=5) ...\n%!";
-  let f5, _, _ =
-    must (boot_cycles ~icache:false ~multipliers:Iterative ~read_cycles:5 ~write_cycles:5)
-  in
-  Printf.printf "  booting (DSP fast_mul mul_stages:2, read_cycles=5) ...\n%!";
-  let x5, _, _ =
-    must
-      (boot_cycles
-         ~icache:false
-         ~multipliers:(Dsp { stages = 2 })
-         ~read_cycles:5
-         ~write_cycles:5)
-  in
-  Printf.printf "  booting (faithful mul, read_cycles=2) ...\n%!";
-  let f2, _, _ =
-    must (boot_cycles ~icache:false ~multipliers:Iterative ~read_cycles:2 ~write_cycles:2)
-  in
-  (* rc only touches PSRAM accesses, so the rc 2->5 delta is *pure* wait: +3 cycles per
-     half-word, so (C5 - C2) / 3 = half-word accesses and ~rc * that = the wait at that
-     latency. The SoC's instruction count isn't observed (it re-polls the slow SPI far
-     more than the oracle), so we quote no CPI — the rc-delta is denominator-free, the
-     honest memory number. *)
-  let halfword_accesses = (f5 - f2) / 3 in
-  let wait5 = 5 * halfword_accesses in
-  let pct x tot = 100.0 *. float_of_int x /. float_of_int tot in
-  Printf.printf "\n  DSP multiplier, end-to-end (read_cycles=5, the board latency):\n";
-  Printf.printf "    faithful : %d cycles\n" f5;
-  Printf.printf "    fast_mul : %d cycles\n" x5;
-  Printf.printf
-    "    gain     : %+.2f%%  (%d cycles)  — boot is 0.1%% MUL, so ~nil, as Amdahl predicts\n"
-    (pct (f5 - x5) f5)
-    (f5 - x5);
-  Printf.printf "\n  PSRAM wait-states (faithful mul), from the read_cycles sweep:\n";
-  Printf.printf "    read_cycles=2 : %d cycles\n" f2;
-  Printf.printf "    read_cycles=5 : %d cycles\n" f5;
-  Printf.printf
-    "    +3 wait/access delta = %d cycles (%.1f%% of the rc=5 boot); ~%d half-word \
-     accesses\n\
-    \    => ~%d cycles = ~%.0f%% of the rc=5 boot spent in PSRAM latency\n"
-    (f5 - f2)
-    (pct (f5 - f2) f5)
-    halfword_accesses
-    wait5
-    (pct wait5 f5);
-  Printf.printf
-    "\n\
-    \  Read-off. The DSP mul (17x per-op) is Amdahl-capped to ~nil end-to-end. ~%.0f%% \
-     of boot\n\
-    \  cycles are PSRAM wait — and that UNDERSTATES the running OS: boot fetches code \
-     from the\n\
-    \  on-chip ROM fast-path, but post-handoff every instruction fetch is a PSRAM read, \
-     so the\n\
-    \  live system is more memory-bound still. The broad win already banked is the \
-     50->60 MHz\n\
-    \  clock (1.2x, on compute AND memory); the next real lever is memory latency — an \
-     I-cache /\n\
-    \  wider PSRAM — not more compute. See test/bench/README.md.\n\
-     %!"
-    (pct wait5 f5);
-  (* ── Phase-10a: I-cache on vs off (faithful mul, read_cycles=5) ── reuses [f5] as the
-     cache-off baseline, so this is one extra boot. Reaching the handoff at all with the
-     cache on is itself the coherence check: the loader writes the OS to low RAM then
-     jumps into it, so a stale-code bug would trap or hang before the handoff. *)
-  Printf.printf "\n  I-cache (Phase-10a) — faithful mul, read_cycles=5:\n%!";
-  Printf.printf "  booting (I-CACHE ON) ...\n%!";
-  let c_on, acc, hits =
-    must (boot_cycles ~icache:true ~multipliers:Iterative ~read_cycles:5 ~write_cycles:5)
-  in
-  let hr = if acc = 0 then 0.0 else 100.0 *. float_of_int hits /. float_of_int acc in
-  Printf.printf "    icache off : %d cycles\n" f5;
-  Printf.printf "    icache on  : %d cycles\n" c_on;
-  Printf.printf "    gain       : %+.2f%%  (%d cycles)\n" (pct (f5 - c_on) f5) (f5 - c_on);
-  Printf.printf
-    "    cache      : %d hits / %d PSRAM read-accesses = %.1f%% hit-rate\n"
-    hits
-    acc
-    hr;
-  Printf.printf
-    "    NB boot runs code from the on-chip ROM fast-path, so PSRAM *fetches* are few — \
-     this\n\
-    \    is a lower bound; the running OS fetches every instruction from PSRAM. See \
-     README.\n\
-     %!";
-  (* ── Phase-10a: same-work post-handoff compare (OS code only, instr lockstep) ── *)
-  let max_instrs = 2_000_000 in
-  Printf.printf
-    "\n\
-    \  Running OS — same-work instruction lockstep past the handoff (faithful, rc=5):\n\
-     %!";
-  Printf.printf "  booting both configs to the handoff, then lockstepping ...\n%!";
-  let aligned, diverged, oc, cc, cacc, chits = compare_os ~max_instrs ~lines_log2:10 in
-  let denom = max 1 aligned in
-  let cpi c = float_of_int c /. float_of_int denom in
-  let hr = if cacc = 0 then 0.0 else 100.0 *. float_of_int chits /. float_of_int cacc in
-  Printf.printf
-    "    aligned OS instructions   :  %d %s\n"
-    aligned
-    (if diverged
-     then "(streams then diverge — the first timing-dependent SD/timer poll)"
-     else "(reached max_instrs; never diverged)");
-  Printf.printf "    cycles over that prefix   :  off %d   on %d\n" oc cc;
-  Printf.printf "    cycles / instruction      :  off %.2f   on %.2f\n" (cpi oc) (cpi cc);
-  Printf.printf
-    "    same-work speedup         :  %.2fx\n"
-    (if cc = 0 then 0.0 else float_of_int oc /. float_of_int cc);
-  Printf.printf
-    "    cache (on, this prefix)   :  %d hits / %d PSRAM reads = %.1f%% hit-rate\n"
-    chits
-    cacc
-    hr
-;;
-
-(* ── Phase-10: split the on-cycle stall over a long post-handoff window ── The size sweep
-   settled the read side (the residual miss is compulsory, not capacity), so the question
-   is *where the stall cycles go*, over more than the 28.8K same-work prefix.
-   [stall_profile] runs the running OS (cache on) forward from the handoff and classifies
-   EVERY system clock into one bucket from [core_ce]/[is_fetch]/[core_rd]/[core_wr]:
-   {v
-     0 retire  ce=1 & fetch          an instruction boundary (= #instrs)
-     1 exec    ce=1 & ~fetch & mem   a load/store data or completion cycle
-     2 compute ce=1 & ~fetch & ~mem  an iterative unit grinding (MUL/DIV/FP)
-     3 fetchW  ce=0 & fetch          frozen on an instruction-fetch miss
-     4 loadW   ce=0 & load           frozen on a data-load miss
-     5 storeW  ce=0 & store          frozen on a write-through store (UNCACHED)
-   v}
-   [contend] overlays frozen cycles where the PSRAM port is serving VIDEO
-   ([cr_busy & cr_op_vid]) — the bus tax framebuffer-in-BRAM removes. read-wait
-   (fetchW+loadW) vs store-wait is the lever question: reads -> multi-word/prefetch/burst;
-   stores -> a write buffer. Segmented per 250k instr so bring-up (heavy) vs idle (light)
-   is visible. *)
-let stall_profile
-  ?(video = true)
-  ?(write_update = false)
-  ?(fb_bram = false)
-  ?(write_buffer = false)
-  ?wbuf_depth
-  ?read_cycles
-  ~lines_log2
-  ~write_cycles
-  ~instr_budget
-  ~cycle_cap
-  ~seg
-  ()
-  =
-  let t =
-    make_os
-      ~video
-      ~write_update
-      ~fb_bram
-      ~write_buffer
-      ?wbuf_depth
-      ?read_cycles
-      ~icache:true
-      ~lines_log2
-      ~write_cycles
-      ()
-  in
-  boot_to_handoff t;
-  let names = [| "retire"; "exec"; "compute"; "fetchW"; "loadW"; "storeW" |] in
-  let tot = Array.make 6 0
-  and seg_b = Array.make 6 0
-  and contend = ref 0
-  and vidbus = ref 0
-  and seg_contend = ref 0
-  and creads = ref 0
-  and chits = ref 0
-  and stores = ref 0
-  and fr_reads = ref 0
-  and fr_hits = ref 0
-  and ld_reads = ref 0
-  and ld_hits = ref 0
-  and instr = ref 0
-  and seg_instr = ref 0
-  and cyc = ref 0
-  and seg_cyc = ref 0 in
-  let pctc v c = if c = 0 then 0.0 else 100.0 *. float_of_int v /. float_of_int c in
-  Printf.printf
-    "      seg     instrs        cyc    CPI   fetchW%% loadW%% storeW%% contend%%\n%!";
-  Printf.printf
-    "      -----   -------   --------   ----   ------- ------- ------- --------\n%!";
-  let flush_seg lbl =
-    let c = !seg_cyc in
-    let cpi = if !seg_instr = 0 then 0.0 else float_of_int c /. float_of_int !seg_instr in
+    "The board gauge — %s machine:\n  %s\n"
+    (if top = shipped then "the SHIPPED" else "an OVERRIDDEN (not the shipped)")
+    (Build_config.to_string top);
+  if top.spi_slow_div_log2 <> shipped.spi_slow_div_log2
+  then
     Printf.printf
-      "    %6s  %8d  %9d  %5.2f   %6.1f  %6.1f  %6.1f  %7.1f\n%!"
-      lbl
-      !seg_instr
-      c
-      cpi
-      (pctc seg_b.(3) c)
-      (pctc seg_b.(4) c)
-      (pctc seg_b.(5) c)
-      (pctc !seg_contend c);
-    Array.fill seg_b 0 6 0;
-    seg_contend := 0;
-    seg_instr := 0;
-    seg_cyc := 0
+      "  NB the SPI divider is not the shipped one: boot-cycle counts are not comparable \
+       with shipped-divider runs (the window figures are).\n";
+  Printf.printf "%!";
+  let rungs = rungs top in
+  let ladder_jobs = List.map (fun (_, c) () -> Run (measure c)) rungs in
+  let report_ladder results =
+    let runs =
+      List.filter_map
+        (function
+          | Run r -> Some r
+          | Autopsy _ -> None)
+        results
+    in
+    Printf.printf "\nThe memory stack, one layer at a time:\n\n";
+    print_ladder (List.map2 (fun (name, _) r -> name, r) rungs runs);
+    runs
+  and report_profile r =
+    Printf.printf "\nWhere the clocks go:\n\n";
+    print_profile r
+  and report_autopsy a =
+    Printf.printf "\nWhy reads miss:\n\n";
+    if not (print_autopsy a) then exit 1
   in
-  while !instr < instr_budget && !cyc < cycle_cap do
-    t.step ();
-    incr cyc;
-    incr seg_cyc;
-    let b = t.classify () in
-    tot.(b) <- tot.(b) + 1;
-    seg_b.(b) <- seg_b.(b) + 1;
-    if t.video_bus () then incr vidbus;
-    if t.contention ()
-    then (
-      incr contend;
-      incr seg_contend);
-    let a, h = t.cache_ev () in
-    if a
-    then (
-      incr creads;
-      if h then incr chits;
-      if b = 0
-      then (
-        incr fr_reads;
-        if h then incr fr_hits)
-      else (
-        incr ld_reads;
-        if h then incr ld_hits));
-    if t.store_ev () then incr stores;
-    if b = 0
-    then (
-      incr instr;
-      incr seg_instr);
-    if !seg_instr >= seg then flush_seg (Printf.sprintf "%dk" (!instr / 1000))
-  done;
-  if !seg_cyc > 0 then flush_seg "tail";
-  t.cleanup ();
-  let cpi = if !instr = 0 then 0.0 else float_of_int !cyc /. float_of_int !instr in
-  Printf.printf
-    "\n    totals: %d instr / %d cyc  (CPI %.2f);  cache %d/%d = %.1f%% hit\n%!"
-    !instr
-    !cyc
-    cpi
-    !chits
-    !creads
-    (pctc !chits !creads);
-  Array.iteri
-    (fun i n -> Printf.printf "      %-8s %9d  %5.1f%%\n" names.(i) n (pctc n !cyc))
-    tot;
-  Printf.printf
-    "      %-8s %9d  %5.1f%%   (overlay: frozen while video owns the bus)\n%!"
-    "contend"
-    !contend
-    (pctc !contend !cyc);
-  let readw = tot.(3) + tot.(4) in
-  let frozen = readw + tot.(5) in
-  Printf.printf
-    "\n\
-    \    frozen PSRAM-wait = %d cyc = %.1f%% of the run (the residual the cache leaves):\n\
-     %!"
-    frozen
-    (pctc frozen !cyc);
-  Printf.printf
-    "      read-wait  (fetchW+loadW)  : %9d  (%.1f%% run, %.0f%% of frozen)\n%!"
-    readw
-    (pctc readw !cyc)
-    (pctc readw (max 1 frozen));
-  Printf.printf
-    "      store-wait (write-through) : %9d  (%.1f%% run, %.0f%% of frozen)\n%!"
-    tot.(5)
-    (pctc tot.(5) !cyc)
-    (pctc tot.(5) (max 1 frozen));
-  Printf.printf
-    "      video-contention (overlay) : %9d  (%.1f%% run, %.0f%% of frozen) — removed by \
-     framebuffer-in-BRAM\n\
-     %!"
-    !contend
-    (pctc !contend !cyc)
-    (pctc !contend (max 1 frozen));
-  Printf.printf
-    "      video port occupancy       : %9d  (%.1f%% of all clocks the PSRAM port serves \
-     video)\n\
-     %!"
-    !vidbus
-    (pctc !vidbus !cyc);
-  (* load probe (cheap first step): split the cache read hit-rate by fetch vs load *)
-  Printf.printf
-    "\n\
-    \    read hit-rate split:  fetch %d/%d = %.2f%%   load %d/%d = %.2f%%  (loads are \
-     the miss source)\n\
-     %!"
-    !fr_hits
-    !fr_reads
-    (pctc !fr_hits !fr_reads)
-    !ld_hits
-    !ld_reads
-    (pctc !ld_hits !ld_reads);
-  (* write-buffer ceiling: a perfect async buffer hides storeW entirely — realistic while
-     the bus has free headroom (below: cycles neither frozen on a CPU access nor serving
-     video), bounded below by drain-vs-load/video arbitration (unmodelled) + buffer-full
-     on store bursts *)
-  let ceil_cyc = !cyc - tot.(5) in
-  Printf.printf
-    "\n\
-    \    WRITE-BUFFER ceiling (stores fully hidden):  CPI %.2f -> %.2f  (%.2fx),  frozen \
-     %.1f%% -> %.1f%%\n\
-     %!"
-    cpi
-    (float_of_int ceil_cyc /. float_of_int (max 1 !instr))
-    (float_of_int !cyc /. float_of_int (max 1 ceil_cyc))
-    (pctc frozen !cyc)
-    (pctc readw !cyc);
-  (* bus-free = not frozen on a CPU access AND not serving video (video-owned cycles
-     outside frozen ones still occupy the port) *)
-  let idle_bus = !cyc - frozen - (!vidbus - !contend) in
-  Printf.printf
-    "    feasibility: bus-free %d cyc (%.1f%%) vs store-work %d cyc (%.1f%%) = %.1fx \
-     headroom to hide stores; ~%d store events (1 per %d instr)\n\
-     %!"
-    idle_bus
-    (pctc idle_bus !cyc)
-    tot.(5)
-    (pctc tot.(5) !cyc)
-    (float_of_int idle_bus /. float_of_int (max 1 tot.(5)))
-    !stores
-    (!instr / max 1 !stores)
-;;
-
-(* the LOAD lever: the aggregate size sweep was fetch-dominated (flat) and hid loads. This
-   sweeps the cache size reporting fetch vs LOAD hit-rate separately, over the long window
-   — does load-hit climb with capacity (a bigger / split D-cache is the win) or stay flat
-   (loads are low-locality: only burst / penalty-reduction helps)? Unified cache; a rising
-   curve implies a split I/D would help too (and cheaper — it stops fetches evicting load
-   lines). *)
-let load_point ~lines_log2 ~instr_budget ~cycle_cap =
-  let t = make_os ~write_cycles:5 ~icache:true ~lines_log2 () in
-  boot_to_handoff t;
-  let tot = Array.make 6 0
-  and fr_reads = ref 0
-  and fr_hits = ref 0
-  and ld_reads = ref 0
-  and ld_hits = ref 0
-  and instr = ref 0
-  and cyc = ref 0 in
-  while !instr < instr_budget && !cyc < cycle_cap do
-    t.step ();
-    incr cyc;
-    let b = t.classify () in
-    tot.(b) <- tot.(b) + 1;
-    let a, h = t.cache_ev () in
-    if a
-    then
-      if b = 0
-      then (
-        incr fr_reads;
-        if h then incr fr_hits)
-      else (
-        incr ld_reads;
-        if h then incr ld_hits);
-    if b = 0 then incr instr
-  done;
-  t.cleanup ();
-  let pct v c = if c = 0 then 0.0 else 100.0 *. float_of_int v /. float_of_int c in
-  Printf.printf
-    "  %7dB %7d   fetch %6.2f%%   load %6.2f%%   loadW %5.1f%%   storeW %5.1f%%   CPI %.2f\n\
-     %!"
-    ((1 lsl lines_log2) * 4)
-    (1 lsl lines_log2)
-    (pct !fr_hits !fr_reads)
-    (pct !ld_hits !ld_reads)
-    (pct tot.(4) !cyc)
-    (pct tot.(5) !cyc)
-    (float_of_int !cyc /. float_of_int (max 1 !instr))
-;;
-
-let () =
-  Printf.printf
-    "\n\
-    \  Running-OS stall profile (cache on, 4KB, WRITE-UPDATE — the shipped board config;\n\
-    \  video DMA live; long post-handoff window, every system clock bucketed; segmented\n\
-    \  per 250k instr).\n\
-     %!";
-  stall_profile
-    ~video:true
-    ~write_update:true
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  Printf.printf
-    "\n\
-    \  Same profile, video DMA gated OFF — the framebuffer-in-BRAM counterfactual.\n\
-    \  (NB a different instruction mix past the first timer poll; the honest same-work\n\
-    \  number is the lockstep below.)\n\
-     %!";
-  stall_profile
-    ~video:false
-    ~write_update:true
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  Printf.printf
-    "\n\
-    \  Framebuffer-in-BRAM ceiling — same-work instruction lockstep, video on vs OFF\n\
-    \  (cache on, 4KB, write-update — the shipped config): what removing ALL video\n\
-    \  traffic from the PSRAM port buys.\n\
-     %!";
-  let aligned, _diverged, c_on, c_off, _, _ =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os
-         ~video:true
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-      (make_os
-         ~video:false
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-  in
-  let f = float_of_int in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : video-on %d   video-off %d\n\
-    \    cycles / instruction    : video-on %.2f   video-off %.2f\n\
-    \    same-work speedup       : %.3fx  (the whole-machine ceiling of \
-     framebuffer-in-BRAM)\n\
-     %!"
-    aligned
-    c_on
-    c_off
-    (f c_on /. f (max 1 aligned))
-    (f c_off /. f (max 1 aligned))
-    (f c_on /. f (max 1 c_off));
-  (* ── Phase-10c: the BUILT framebuffer-in-BRAM, measured the same way ── video stays
-     live on both sides; only where its fetches are served differs (PSRAM port vs the
-     Framebuf shadow). Should land at the gating ceiling above — the shadow read is
-     1-cycle and never touches the PSRAM port. *)
-  Printf.printf
-    "\n\
-    \  FRAMEBUFFER-IN-BRAM (Phase-10c) — same-work instruction lockstep, video via the\n\
-    \  PSRAM port vs via the Framebuf BRAM shadow (cache on, 4KB, write-update): the\n\
-    \  honest measured win, to compare against the gating ceiling above.\n\
-     %!";
-  let aligned, _diverged, c_psram, c_fb, _, _ =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os ~write_update:true ~write_cycles:5 ~icache:true ~lines_log2:10 ())
-      (make_os
-         ~fb_bram:true
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-  in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : psram-video %d   fb-bram %d\n\
-    \    cycles / instruction    : psram-video %.2f   fb-bram %.2f\n\
-    \    same-work speedup       : %.3fx\n\
-     %!"
-    aligned
-    c_psram
-    c_fb
-    (f c_psram /. f (max 1 aligned))
-    (f c_fb /. f (max 1 aligned))
-    (f c_psram /. f (max 1 c_fb));
-  Printf.printf
-    "\n\
-    \  Stall profile with the shadow ON (write-update + fb_bram — the Phase-10c config):\n\
-    \  the 10c residual, and the write-buffer ceiling/headroom for the next lever.\n\
-     %!";
-  stall_profile
-    ~fb_bram:true
-    ~write_update:true
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  (* ── Phase-10d: the WRITE BUFFER, measured ── same-work lockstep of the 10c config vs
-     10c + the 1-entry buffer (ceiling 1.22x = all storeW hidden). The residual storeW in
-     the profile below is the slot-full burst cost — the number that says whether a deeper
-     buffer is worth building. *)
-  Printf.printf
-    "\n\
-    \  WRITE BUFFER (Phase-10d) — same-work instruction lockstep, synchronous stores vs\n\
-    \  the 1-entry write buffer (cache on, 4KB, write-update, fb_bram): the honest\n\
-    \  measured win vs the 1.22x all-hidden ceiling.\n\
-     %!";
-  let aligned, _diverged, c_sync, c_wbuf, _, _ =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os
-         ~fb_bram:true
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-      (make_os
-         ~fb_bram:true
-         ~write_buffer:true
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-  in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : sync-stores %d   write-buffer %d\n\
-    \    cycles / instruction    : sync-stores %.2f   write-buffer %.2f\n\
-    \    same-work speedup       : %.3fx\n\
-     %!"
-    aligned
-    c_sync
-    c_wbuf
-    (f c_sync /. f (max 1 aligned))
-    (f c_wbuf /. f (max 1 aligned))
-    (f c_sync /. f (max 1 c_wbuf));
-  Printf.printf
-    "\n\
-    \  Stall profile with the write buffer ON (write-update + fb_bram + wbuf — the\n\
-    \  Phase-10d config): residual storeW = slot-full waits (the depth-vs-payoff data).\n\
-     %!";
-  stall_profile
-    ~fb_bram:true
-    ~write_buffer:true
-    ~write_update:true
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  (* ── Depth-2 FIFO A/B ── the depth-1 residual storeW is slot-full waits; depth 2 makes
-     bursts of two free (Oberon's 2-store procedure prologues are the hypothesis). The
-     all-depths ceiling is storeW -> 0; this lockstep + profile says how much depth 2
-     actually collects of it. *)
-  Printf.printf
-    "\n\
-    \  WRITE-BUFFER DEPTH (Phase-10d follow-up) — same-work instruction lockstep,\n\
-    \  1-entry vs 2-entry FIFO (cache on, 4KB, write-update, fb_bram).\n\
-     %!";
-  let aligned, _diverged, c_d1, c_d2, _, _ =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os
-         ~fb_bram:true
-         ~write_buffer:true
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-      (make_os
-         ~fb_bram:true
-         ~write_buffer:true
-         ~wbuf_depth:2
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-  in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : depth-1 %d   depth-2 %d\n\
-    \    cycles / instruction    : depth-1 %.2f   depth-2 %.2f\n\
-    \    same-work speedup       : %.3fx\n\
-     %!"
-    aligned
-    c_d1
-    c_d2
-    (f c_d1 /. f (max 1 aligned))
-    (f c_d2 /. f (max 1 aligned))
-    (f c_d1 /. f (max 1 c_d2));
-  Printf.printf
-    "\n\
-    \  Stall profile with the DEPTH-2 buffer (write-update + fb_bram + wbuf_depth:2):\n\
-    \  residual storeW = bursts of 3+ (what a deeper FIFO still would not catch cheaply).\n\
-     %!";
-  stall_profile
-    ~fb_bram:true
-    ~write_buffer:true
-    ~wbuf_depth:2
-    ~write_update:true
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  (* ── read_cycles 5 -> 6 A/B ── the PSRAM I/O timing budget at rc=5 (13.3 ns) became a
-     standing knife-edge in synthesis (failed once, grazed twice); rc=6 buys 16.7 ns of
-     margin. Its cost is only the cache misses (~2 extra cycles each) + slower drains'
-     slot-full waits — this lockstep prices it on the full shipped config. *)
-  Printf.printf
-    "\n\
-    \  READ_CYCLES 5 vs 6 (PSRAM I/O margin trade) — same-work instruction lockstep on\n\
-    \  the shipped config (cache, write-update, fb_bram, wbuf depth-2).\n\
-     %!";
-  let aligned, _diverged, c_rc5, c_rc6, _, _ =
-    compare_pair
-      ~max_instrs:200_000
-      (make_os
-         ~fb_bram:true
-         ~write_buffer:true
-         ~wbuf_depth:2
-         ~write_update:true
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-      (make_os
-         ~fb_bram:true
-         ~write_buffer:true
-         ~wbuf_depth:2
-         ~write_update:true
-         ~read_cycles:6
-         ~write_cycles:5
-         ~icache:true
-         ~lines_log2:10
-         ())
-  in
-  Printf.printf
-    "    aligned OS instructions : %d\n\
-    \    cycles over that prefix : rc5 %d   rc6 %d\n\
-    \    cycles / instruction    : rc5 %.2f   rc6 %.2f\n\
-    \    rc6 cost                : %.2f%%\n\
-     %!"
-    aligned
-    c_rc5
-    c_rc6
-    (f c_rc5 /. f (max 1 aligned))
-    (f c_rc6 /. f (max 1 aligned))
-    (100. *. (f c_rc6 -. f c_rc5) /. f (max 1 c_rc5));
-  Printf.printf
-    "\n  Stall profile at rc=6 (the shipped board config after the margin trade):\n%!";
-  stall_profile
-    ~fb_bram:true
-    ~write_buffer:true
-    ~wbuf_depth:2
-    ~write_update:true
-    ~read_cycles:6
-    ~lines_log2:10
-    ~write_cycles:5
-    ~instr_budget:2_000_000
-    ~cycle_cap:20_000_000
-    ~seg:250_000
-    ();
-  Printf.printf
-    "\n\
-    \  Load-locality sweep (cache on, video live, per-size fetch vs LOAD hit-rate, long \
-     window):\n\
-     %!";
-  Printf.printf "     size    lines    fetch-hit    load-hit    loadW   storeW    CPI\n%!";
-  List.iter
-    (fun ll2 -> load_point ~lines_log2:ll2 ~instr_budget:1_000_000 ~cycle_cap:15_000_000)
-    [ 8; 9; 10; 12; 14; 16 ]
+  match List.tl (Array.to_list Sys.argv) with
+  | [ "profile" ] -> report_profile (measure top)
+  | [ "ladder" ] -> ignore (report_ladder (in_parallel ladder_jobs) : run list)
+  | [ "autopsy" ] -> report_autopsy (autopsy top)
+  | [] | [ "all" ] ->
+    (* the ladder's last rung is the configured machine, so its run is the profile *)
+    let autopsy_jobs = if top.icache then [ (fun () -> Autopsy (autopsy top)) ] else [] in
+    let results = in_parallel (ladder_jobs @ autopsy_jobs) in
+    let runs = report_ladder results in
+    report_profile (List.nth runs (List.length runs - 1));
+    List.iter
+      (function
+        | Autopsy a -> report_autopsy a
+        | Run _ -> ())
+      results
+  | _ ->
+    prerr_endline "usage: bench_boot [all | profile | ladder | autopsy]";
+    exit 2
 ;;

@@ -58,7 +58,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ~contents ?(video = true) (c : Build_config.t) (i : _ I.t) : _ O.t =
+let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   (* [halftone] without [fb_bram] would silently elaborate with no Halftone at all (its
      claim muxes against the Framebuf shadow) — an A/B run would then "measure" a build
      that never instantiated the module. Fail loudly instead, like the lib guards. *)
@@ -87,12 +87,7 @@ let create ~contents ?(video = true) (c : Build_config.t) (i : _ I.t) : _ O.t =
       ~viddata_par:vidpar
       { Video.I.clk = i.clock; pclk = i.pclk; inv = bit i.sw ~pos:7; viddata }
   in
-  (* [?video] is a sim-only A/B seam: gating [vidreq] takes the video DMA off the PSRAM
-     port entirely — the framebuffer-in-BRAM counterfactual (bench_boot). Elaboration-time
-     and default [true], so the board netlist is untouched. (The [pclk] *input* cannot
-     serve as the gate: under Cyclesim's one-domain semantics the pclk raster advances 1:1
-     with [clk] regardless of the input's level — video DMA is live in every board sim.) *)
-  let vidreq = (if video then vid.req else gnd) -- "vidreq" in
+  let vidreq = vid.req -- "vidreq" in
   let vidadr = vid.vidadr -- "vidadr" in
   (* ── Core ── on the arbiter's clock-enable; [stall_x] tied off (video is arbitrated in
      {!Cellram}, which freezes the core via [ce] instead). The
@@ -375,7 +370,6 @@ module For_tests = struct
        unnoticed. A configuration whose phases are too short for its clock then fails. *)
     let create
       ~contents
-      ?video
       ?(addr_bits = 12)
       ?(datasheet_chip = false)
       (c : Build_config.t)
@@ -386,7 +380,6 @@ module For_tests = struct
       let soc =
         sb_create
           ~contents
-          ?video
           c
           { Sb_I.clock = i.clock
           ; pclk = i.pclk
@@ -437,8 +430,8 @@ module For_tests = struct
      own). NB [pclk] low does NOT quiet the video DMA: under Cyclesim's one-domain
      semantics the pclk-clocked raster advances 1:1 with [clk] whatever this input holds
      (lib/soc.ml's video test relies on exactly that), so video contends for the PSRAM
-     port in every board sim — gate it with [create]'s [?video] if a test needs the bus to
-     itself. *)
+     port in every board sim that does not serve it from the framebuffer shadow
+     ([fb_bram]). *)
   let drive_idle (inp : _ Tb.I.t) =
     let lo = Bits.gnd
     and hi = Bits.vdd in
