@@ -1,20 +1,20 @@
-(** PS/2 mouse — a faithful port of [MousePM.v] (the [MouseP] module).
+(** PS/2 mouse, a port of [MousePM.v].
 
-    A bidirectional PS/2 mouse with the Microsoft/IntelliMouse scroll-wheel init magic.
-    Two phases, sequenced by [sent] (0..7) with [run = sent==7]:
+    A bidirectional PS/2 mouse with the IntelliMouse initialisation that enables the wheel
+    and the third button. Two phases, sequenced by [sent] (0..7), with
+    [run = (sent == 7)]:
+    - initialisation ([run] = 0): the host sends seven commands (set sample rate 200, 100,
+      80, and enable). For each it requests to send by pulling [msclk] low for about 1.1
+      ms, releases it, and shifts the 9-bit command out on [msdat] while the device
+      supplies the clock;
+    - reports ([run] = 1): the device sends 33-bit movement packets; the module assembles
+      each, with a walking start bit as in [PS2.v], and accumulates [x], [y] and the
+      buttons.
 
-    - INIT ([run]=0): the host transmits a 7-command sequence (set-sample-rate
-      200/100/80 + enable) that unlocks the 3rd/scroll button. Each command needs a
-      request-to-send: pull [msclk] low for ~1.1 ms ([req]), release, then clock the 9-bit
-      command out on [msdat] while the device supplies the clock.
-    - REPORT ([run]=1): the device streams 33-bit movement packets; the module assembles
-      each frame (a walking start bit, as in [PS2.v]) and accumulates [x]+=dx, [y]+=dy,
-      [btns].
-
-    [msclk]/[msdat] are open-drain bidirectional in the RTL ([line = drive ? 0 : z]).
-    Hardcaml has no inout, so each splits into a drive-low OUTPUT ([*_oe]) and the
-    resolved wire-value INPUT; the pad (Phase 7) / testbench does the open-drain
-    wired-AND. *)
+    [msclk] and [msdat] are open-drain and bidirectional in the RTL. Hardcaml has no
+    inout, so each is split into an output that pulls the line low ([msclk_oe],
+    [msdat_oe]) and an input carrying the resolved line; the pad, or the testbench, does
+    the wired-AND. *)
 
 open Hardcaml
 
@@ -40,10 +40,6 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the mouse, cycle-faithful to [MousePM.v]: the request-to-send [req]
-    oscillator (count to ~1.1 ms), the [sent] init-command sequencer, the [msclk]-debounce
-    [filter] + [shift] strobe, the walking-start-bit [rx]/[tx] frames, and the
-    [x]/[y]/[btns] accumulation. The Verilator co-sim proves it bit-exact to [MousePM.v]. *)
 val create : Signal.t I.t -> Signal.t O.t
 
 (** Test scaffolding, not hardware (the {!Ps2.For_tests} precedent): the PS/2 mouse on the

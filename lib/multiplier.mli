@@ -1,29 +1,22 @@
-(** [Multiplier] — iterative signed/unsigned 32×32→64 multiply; the RISC5 [MUL]/[MUL']
-    unit.
-
-    A faithful port of Oberon's [Multiplier.v]: a shift-and-add sequential multiplier that
-    computes [z = x * y] over 33 cycles, holding the core with [stall] until its state
-    counter reaches the terminal value.
+(** Signed and unsigned 32 x 32 -> 64 multiply, the MUL unit: a port of [Multiplier.v], a
+    shift-and-add multiplier that takes 33 cycles and holds the core with [stall]
+    meanwhile.
 
     {1 Timing}
-    (mirrored exactly from the RTL — AGENT.md §2/§8)
 
-    [run] is asserted by the core while [MUL] is decoded, and doubles as enable {e and}
-    synchronous clear: while [run] is low the 6-bit state counter [S] is pinned at 0, so
-    the next multiply always begins from a clean load — there is no reset. Once [run]
-    asserts, [S] walks 0→33: [S=0] loads [x], [S=1..32] are the 32 accumulate/shift
-    iterations, and at [S=33] [stall] drops with the product valid. Thus
-    [stall = run & ~(S==33)], and the core keeps PC/IR frozen for the whole run.
+    [run] is high while the core decodes MUL. It is the enable and also the synchronous
+    clear: while it is low the state counter [S] stays at 0, so every multiply starts
+    clean, and there is no reset. With [run] high [S] walks from 0 to 33: 0 loads [x],
+    1..32 are the accumulate-and-shift steps, and at 33 [stall] drops with the product
+    valid. So [stall = run & ~(S == 33)].
 
     {1 Signedness}
 
-    The module's [u] is the {e signed} flag: the core drives it as [~u] (the inverse of
-    the ISA u-bit), so ISA [MUL] (signed) → [u=1] and [MUL'] (unsigned) → [u=0]. [u] flips
-    only the {e first} operand [x]: on the last step ([S=32]) it subtracts the partial
-    product, giving [x]'s MSB its negative two's-complement weight. The {e second} operand
-    [y] is sign-extended unconditionally — so unsigned [MUL'] computes
-    [x_unsigned × y_signed], which is why its high word diverges from the emulators when
-    [y[31]=1] (AGENT.md §8). *)
+    [u] here means {e signed}: the core passes the inverse of the instruction's u bit. It
+    affects only the first operand: on the last step the partial product is subtracted,
+    which gives [x]'s top bit its negative weight. The second operand is sign-extended
+    always. Unsigned MUL' therefore computes [x_unsigned * y_signed], and its high word
+    differs from the emulators' whenever [y[31]] is set. *)
 
 open Hardcaml
 
@@ -46,27 +39,18 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create] is the [MUL] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
-    simulation. [?ce] is the board clock-enable (default [vdd]); see {!Divider.create}. *)
+(** [?ce] (default [vdd]) is the clock enable the core passes on; see {!Divider.create}. *)
 val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 
-(** [create_opt] — the Phase-9 optimised drop-in for {!create} (AGENT.md §5): the same
-    32×32→64 multiply expressed as a single signed 33×33 multiply, which Vivado lowers
-    onto the board's DSP48 slices. {b Combinational} — it retires in one cycle ([stall]
-    tied low) instead of {!create}'s 33. Bit-identical to {!create} for every input: it
-    reproduces [Multiplier.v]'s §8 sign handling ([y] always signed, [x] signed iff [u]),
-    proven by the co-located differential qcheck against the formally-proven {!create}
-    rather than re-formalised. [?ce] is accepted for signature compatibility but ignored
-    (no state). *)
+(** The same product from one signed 33 x 33 multiply, which the synthesizer maps onto
+    DSP48 blocks. Combinational: [stall] never rises. It reproduces [Multiplier.v]'s sign
+    handling ([y] always signed, [x] signed when [u]) and is checked bit-identical to
+    {!create} by a differential property test; it is not proven. [?ce] is accepted and
+    ignored, there being no state. *)
 val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 
-(** [create_opt_pipelined] — the Phase-9 {e pipelined} DSP multiply (experiment
-    [feat/fast-clock]), for pushing the system clock past ~52 MHz where {!create_opt}'s
-    combinational [regfile→DSP→result] hop is the critical path. Same single [*+], but the
-    product is registered through [stages] flops (default 2) that Vivado retimes into the
-    DSP48's MREG/PREG, so no single hop spans the multiply. Multi-cycle again — [stall]
-    holds for [stages] cycles via a run-gated counter, the core's normal protocol — but
-    still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
-    pipeline (board clock-enable, default [vdd]). [stages] must be in 1..15 (the run
-    counter is 4 bits); anything else fails at elaboration. *)
+(** {!create_opt} with the product passed through [stages] registers (1..15, default 2),
+    which the synthesizer retimes into the DSP48 so that no single path spans the
+    multiply. [stall] holds for [stages] cycles. Checked bit-identical to {!create} by a
+    differential property test. [?ce] gates the pipeline. *)
 val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

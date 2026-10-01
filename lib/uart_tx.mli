@@ -1,12 +1,11 @@
-(** RS232 transmitter — a faithful port of [RS232T.v].
+(** RS-232 transmitter, a port of [RS232T.v].
 
-    Serialises one byte as a 10-bit UART frame on [txd]: a start bit (0), the 8 data bits
-    LSbit-first, then a stop bit (1); the line idles high. [fsel] picks 19200 baud
-    (clk/1302) or 115200 (clk/217), at a 25 MHz clock.
+    It sends one byte as a 10-bit frame on [txd]: a start bit (0), the eight data bits
+    least significant first, a stop bit (1). The line idles high. [fsel] selects one of
+    two rates: clk/1302 or clk/217 in the RTL, which are 19200 and 115200 baud at 25 MHz.
 
-    Pulse [start] for one cycle with [data] valid while [rdy] is high to begin a frame;
-    [rdy] drops to 0 for the ~10 bit-times of the frame and returns to 1 when the
-    transmitter is idle again (software polls [rdy] before sending the next byte). *)
+    Pulse [start] for one cycle with [data] valid while [rdy] is high. [rdy] is low for
+    the frame's ten bit times; software polls it before sending the next byte. *)
 
 open Hardcaml
 
@@ -30,21 +29,14 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the transmitter, cycle-accurate to [RS232T.v]: the [tick] baud
-    divider, the [bitcnt] frame counter, the [run]/[rdy] handshake, and the 9-bit shift
-    register whose implicit framing emits start/data/stop.
-
-    [?baud_slow]/[?baud_fast] are the bit-window lengths in clocks for the two [fsel]
-    rates (default {!default_baud_slow}/{!default_baud_fast}); the 60 MHz board passes
-
-    [521]/[521] (both settings ~115200; see emit_verilog.ml) so the wire stays at a
-    standard baud. Must match the receiver ({!Uart_rx.create}) and be in 1..4095 (the
-    12-bit [tick]; enforced at elaboration). *)
+(** [?baud_slow] and [?baud_fast] are the divider limits for the two settings of [fsel] (a
+    bit lasts limit + 1 clocks), defaulting to the RTL's. A design on another clock passes
+    its own, so that the line keeps a standard rate. They must equal the receiver's
+    ({!Uart_rx.create}) and lie in 1..4095, which is checked at elaboration. *)
 val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t
 
-(** [RS232T.v]'s 25 MHz constants — [1302] (19200 baud) and [217] (115200).
-    {!Uart_rx.create} defaults to the same pair: the SoC's single [bitrate] bit drives
-    both directions, so the defaults must stay equal. *)
+(** [RS232T.v]'s constants for 25 MHz: 1302 (19200 baud) and 217 (115200).
+    {!Uart_rx.create} has the same defaults; one rate-select bit drives both directions. *)
 val default_baud_slow : int
 
 val default_baud_fast : int

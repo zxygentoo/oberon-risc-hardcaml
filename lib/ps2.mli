@@ -1,12 +1,12 @@
-(** PS/2 keyboard receiver — a faithful port of [PS2.v].
+(** PS/2 keyboard receiver, a port of [PS2.v].
 
-    The keyboard drives both a clock [ps2c] (~10-16 kHz) and data [ps2d]; this module
-    recovers bytes from that device-clocked serial stream. A 2-FF synchronizer detects
-    each falling edge of [ps2c] ([shift]) and samples [ps2d] into an 11-bit shift
-    register; the start bit (0), against an all-1s reset, walks down to bit 0 over the
-    frame's 11 bits (start, 8 data LSbit-first, parity, stop), self-timing frame
-    completion. Each completed byte ([shreg[8:1]]) is pushed into a 16-byte FIFO; [rdy] =
-    FIFO non-empty, [data] = its head, and a read pulse [done_] pops it. *)
+    The keyboard drives both the clock [ps2c] (10 to 16 kHz) and the data [ps2d]. Two
+    flip-flops synchronise [ps2c] and detect each of its falling edges, on which [ps2d] is
+    shifted into an 11-bit register. The register is reset to all ones, and the frame's
+    start bit, a 0, walks down it over the eleven bits (start, eight data bits least
+    significant first, parity, stop); its arrival at bit 0 marks the frame complete. Each
+    byte goes into a 16-byte FIFO: [rdy] says the FIFO is not empty, [data] is its head,
+    and a pulse on [done_] pops it. *)
 
 open Hardcaml
 
@@ -32,14 +32,10 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the keyboard receiver, cycle-accurate to [PS2.v]: the [Q0]/[Q1]
-    synchronizer + [shift] edge detect, the walking-start-bit 11-bit frame assembly, and
-    the 16-byte FIFO (an inferred RAM, async-read like the register file). *)
 val create : Signal.t I.t -> Signal.t O.t
 
-(** Test scaffolding, not hardware: the device-side PS/2 frame shape, shared by every
-    testbench that plays a PS/2 device (this module's keyboard tests, the {!Mouse} device
-    model, the SoC keyboard test). *)
+(** Test scaffolding, not hardware: the device's side of a PS/2 frame, for every testbench
+    that plays a PS/2 device. *)
 module For_tests : sig
   (** odd parity over the 8 data bits *)
   val odd_parity : int -> int

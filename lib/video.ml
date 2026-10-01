@@ -1,37 +1,17 @@
-(* Public API and behaviour spec live in [video.mli].
+(* A port of VID60.v; the contract, and the two departures from the RTL, are in
+   [video.mli].
 
-   Port of [VID60.v]. Two clock domains — and per AGENT.md §3 the clock *generation* (the
-   Xilinx [DCM]/[BUFG]) is the Phase-7 board shim, so they are dropped and [pclk] is an
-   input here:
+   [pclk], the raster: the counters [hcnt] (0..1343) and [vcnt] (0..805) walk the frame;
+   [hsync] and [vsync] are pulse latches; [pixbuf] shifts out one pixel per tick and loads
+   a new word every 32. [clk], the DMA: one [req] per 32 pixels reads a word into [buf0]
+   or [buf1], which [pixbuf] loads at [xfer].
 
-   - [pclk] (65 MHz) — the raster. Free-running counters [hcnt] (0..1343) and [vcnt]
-     (0..805) walk the 1024x768 + blanking frame; [hsync]/[vsync] are pulse latches; the
-     32-bit [pixbuf] shifts out one pixel per tick and reloads a fresh word every 32 px.
-   - [clk] (25 MHz) — the framebuffer DMA. A one-cycle request [req] (= core [stallX])
-     reads a word per 32 px into a ping-pong buffer ([buf0]/[buf1]), which [pixbuf] loads
-     at [xfer]. The request is issued ONE GROUP EARLY (a prefetch —
-     [next_col]/[next_vcnt]) so the read has ~2 group-times to land; this is a deliberate
-     departure from [VID60.v]'s single-[vidbuf], 31-px-deadline fetch, added to kill
-     PSRAM-contention flicker on the board (see [video.mli]). The pixel/sync datapath
-     downstream of the buffer is unchanged.
+   The range tests need no comparator, as in the RTL: [vcnt >= 768] is
+   [vcnt[9] & vcnt[8]], and [hcnt >= 1024] is [hcnt[10]].
 
-   Comparator-free range tests, straight from the RTL: [vcnt >= 768] is
-   [vcnt[9] & vcnt[8]] ([vblank]) and [hcnt >= 1024] is [hcnt[10]] ([hblank]) — the
-   constants are chosen so a magnitude compare collapses to a single bit.
-
-   The pulse latch [x <= start | x & ~stop] is an SR latch folded into one flop: set at
-   [start], hold, clear at [stop]. The sync offsets ([1032+31], [1176+31] etc.) delay the
-   pulses to track the pixel-pipeline latency ([xfer] lands at [hcnt[4:0] = 31]).
-
-   CDC — the one structural departure from the RTL (see [video.mli]). [req0] is a 1-[pclk]
-   pulse at the start of each 32-px group; the DMA consumes it in the [clk] domain. The
-   RTL catches it with a clk-domain async-set flop ([req1],
-   [always @(posedge req0, posedge clk)]), which Cyclesim can't represent. We use the
-   standard metastability-safe crossing instead — a TOGGLE pulse synchroniser
-   ([req_toggle] in [pclk] → a [sync0]/[sync1]/[sync2] [clk] synchroniser → edge-detect
-   [req]); see the body. Same one-req-per-[req0] behaviour, and — unlike the earlier
-   [caught]+feedback handshake, which sampled a [pclk] flop in [clk] with no synchroniser
-   — safe across the real asynchronous pclk/clk on silicon. *)
+   A pulse latch, [x <= start | x & ~stop], is a set-reset latch in one flop. The sync
+   positions carry an offset of 31 to follow the pixel pipeline: [xfer] falls at
+   [hcnt[4:0] = 31]. *)
 
 open! Base
 open Hardcaml
@@ -64,23 +44,16 @@ end
 (* framebuffer base Org = DFF00H >> 2 (word address); rows 0..255 sit off-screen *)
 let org = 0x37FC0
 
-(* the DMA span: [vidadr] packs [{~vcnt(10), col(5)}] above [org] — 5 column bits under 10
-   row bits, a 2^15-word window. The packing itself is pinned by the [vid_addr] formal
-   check; these just name its field widths for the board shadows. *)
+(* [vidadr] packs [{~vcnt, col}] above [org]: 5 column bits under 10 row bits *)
 let cols_log2 = 5
 let span_log2 = 10 + cols_log2
 
-(* Toggle pulse synchroniser — cross a 1-cycle [pulse] in the [src_spec] clock domain into
-   the [dst_spec] domain as a 1-cycle pulse, metastability-safe. [pulse] TOGGLES a flop in
-   the source domain (so the request becomes a LEVEL change, never a narrow pulse a
-   sampling flop could miss); the level crosses a 3-FF [dst_spec] synchroniser ([sync0]
-   absorbs any metastability, [sync1]/[sync2] are settled); an edge-detect on the two
-   SETTLED flops regenerates exactly one [dst_spec] pulse. Safe by construction provided
-   [pulse] recurs slower than the synchroniser depth (in [vid], every 32 px ≈ 12 [clk] ≫
-   3). The metastability-safe substitute for VID60.v's async-set capture [req1]
-   (unrepresentable in Cyclesim — see [video.mli]); proven no-loss/no-spurious for all
-   clk/pclk phases in test/formal (the [vid_invariant] @formal check). The [sync0]/[sync1]
-   flops want an ASYNC_REG / CDC constraint in the board [.xdc]. *)
+(* The toggle synchroniser. The pulse toggles a flop in its own domain, so what crosses is
+   a level, which a sampling flop cannot miss as it could a narrow pulse. Three flops in
+   the destination domain take the level — the first absorbs any metastability — and an
+   edge detector on the two settled ones makes exactly one pulse. It needs the pulses to
+   come further apart than the synchroniser is deep: here every 32 pixels, about 12 [clk]
+   cycles. *)
 let pulse_sync ~src_spec ~dst_spec ~pulse =
   let req_toggle = reg_fb src_spec ~width:1 ~f:(fun t -> t ^: pulse) -- "req_toggle" in
   let sync0 = reg dst_spec req_toggle -- "sync0" in
@@ -89,15 +62,9 @@ let pulse_sync ~src_spec ~dst_spec ~pulse =
   (sync1 ^: sync2) -- "req"
 ;;
 
-(* Look-ahead framebuffer addressing — the prefetch's one ADDRESS departure from [VID60.v]
-   (whose [vidadr] is the CURRENT group, [{~vcnt, hcnt[9:5]}]). From the raster position
-   it computes the NEXT consumed 32-px group — next column, wrapping at column 31 to
-   column 0 of the next VISIBLE row, and the last visible row (767) to row 0 (skipping
-   vblank) — and packs its word address [vidadr] = [Org + {~next_vcnt, next_col}]. [wpar]
-   is the ping-pong write parity (= the bank that group's fetch lands in, [lsb next_col]).
-   Purely combinational in [hcnt]/[vcnt]; shared by [create] and the [vid_addr] formal
-   check, which proves it ≡ an independent geometry spec over ALL (hcnt, vcnt) — the
-   addressing half of prefetch delivery (test/formal/README "VID prefetch"). *)
+(* The address of the group shown next: the next column, wrapping from column 31 to column
+   0 of the next visible row, and from row 767 to row 0 across the blanking. [wpar] is the
+   buffer that group's fetch lands in. *)
 module Lookahead = struct
   type 'a t =
     { next_col : 'a
@@ -136,44 +103,24 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   (* comparator-free blanking *)
   let vblank = (bit vcnt ~pos:8 &: bit vcnt ~pos:9) -- "vblank" in
   let hblank = bit hcnt ~pos:10 in
-  (* look-ahead framebuffer addressing (the prefetch's address departure from [VID60.v] —
-     see [lookahead] above and [video.mli]): the request targets the NEXT consumed group,
-     so [la.vidadr] is the look-ahead word address and [la.wpar] the ping-pong write bank. *)
   let la = lookahead ~hcnt ~vcnt in
   (* request the next word at the start of each visible 32-px group; transfer it 31 px on *)
   let req0 = (sel_bottom hcnt ~width:5 ==:. 0 &: ~:hblank &: ~:vblank) -- "req0" in
   let xfer = sel_bottom hcnt ~width:5 ==:. 31 in
-  (* pclk→clk request synchroniser ([pulse_sync] above): cross the 1-pclk [req0] fetch
-     pulse into the clk DMA domain as a 1-clk [req]. The metastability-safe substitute for
-     VID60.v's async-set [req1] (a literal pclk-flop-sampled-in-clk crossing, as the
-     Phase-6 [caught]+feedback handshake did, is deterministic in sim but metastable on
-     silicon — horizontal pixel tearing). Proven no-loss/no-spurious for all phases in
-     test/formal. *)
+  (* The request crosses into the [clk] domain. Sampling a [pclk] flop directly in [clk]
+     works in simulation and is metastable on silicon, where it showed as torn pixels. *)
   let req = pulse_sync ~src_spec:pspec ~dst_spec:cspec ~pulse:req0 in
-  (* Prefetch double-buffer (ping-pong). The fetched word lands in [buf0] or [buf1] chosen
-     by the requested column's parity; [pixbuf] reads the matching buffer at [xfer]
-     (below). Because the request is issued one group EARLY ([next_col] above), each fetch
-     now has ~2 group-times (~970 ns) to complete instead of one (~480 ns) — the board's
-     flicker fix. A buffer is read every other group, so it survives a slow (contended)
-     fetch.
-
-     [viddata_valid] latches the word: single-cycle memory (the sim [Soc] cycle-steal) has
-     it valid the cycle [req] fires (the default); the board's [Cellram] returns it some
-     cycles later on its [vid_ack]. [viddata_par] selects the write buffer: [Cellram]
-     supplies the parity of the fetch it is COMPLETING (robust to a late, contended
-     completion landing in a later group); the default — the live request parity [la.wpar]
-     (= [lsb next_col]) — is exact for the single-cycle path, where the fetch retires in
-     its own group. *)
+  (* The two fetch buffers, written alternately by column parity and read by [pixbuf] at
+     [xfer]. A buffer is read only every other group, which is what lets a slow fetch
+     still arrive in time. [valid] and [par] say when the word arrives and which buffer
+     takes it; see [video.mli]. *)
   let valid = Option.value viddata_valid ~default:req in
   let wpar = Option.value viddata_par ~default:la.wpar in
   let buf0 = reg ~enable:(valid &: ~:wpar) cspec i.viddata -- "buf0" in
   let buf1 = reg ~enable:(valid &: wpar) cspec i.viddata -- "buf1" in
-  (* ── pclk domain: pixel shift register + sync/blank latches ────────────────── *)
-  (* the word feeding [pixbuf] this group: the ping-pong bank selected by parity [hcnt[5]]
-     (the native raster group-parity at [xfer], matching the parity the fetch wrote).
-     Named [vidbuf] — it plays the exact role of VID60.v's [vidbuf] (the word [pixbuf]
-     loads), so the Phase-8 equiv pairs it as the shared cut point (see
-     test/formal/proofs/vid.ys.template). *)
+  (* ── pclk: the pixel shift register, sync and blanking ── The word [pixbuf] loads this
+     group has the role, and so the name, of VID60.v's [vidbuf]: the equivalence proof
+     cuts both designs at it. *)
   let vidbuf = mux2 (bit hcnt ~pos:5) buf1 buf0 -- "vidbuf" in
   let pixbuf =
     reg_fb pspec ~width:32 ~f:(fun p ->
@@ -190,11 +137,9 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   let blank =
     reg_fb pspec ~width:1 ~f:(fun b -> mux2 xfer (vblank |: hblank) b) -- "blank"
   in
-  (* ── outputs ───────────────────────────────────────────────────────────────── *)
-  (* displayed pixel: framebuffer bit [pixbuf[0]] XOR [inv] ([^:] binds tighter than
-     [&:]), forced dark outside the visible region *)
+  (* the pixel: [pixbuf[0]] xor [inv], dark outside the visible region ([^:] binds tighter
+     than [&:]) *)
   let pixel = lsb pixbuf ^: i.inv &: ~:blank in
-  (* [la.vidadr]: look-ahead framebuffer word address (one group early — see [lookahead]) *)
   { O.req
   ; vidadr = la.vidadr
   ; hsync = ~:hs
@@ -203,12 +148,11 @@ let create ?viddata_valid ?viddata_par (i : _ I.t) : _ O.t =
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────────── VID
-   is two-clock, so the sim runs under [By_input_clocks] at the real 65:25 ratio ([pclk]
-   period 5, [clk] period 13); each [Cyclesim.cycle] is one fine base tick. We freeze TEXT
-   tables, not waveterm — waveforms render unreliably under multi-clock (see the
-   cyclesim-multiclock-and-cdc memory). The exhaustive bit-for-bit fidelity check vs
-   [VID60.v] is the Verilator co-sim. *)
+(* ── Tests ── Two clocks, so the simulation runs under [By_input_clocks] at the real
+   65:25 ratio ([pclk] period 5, [clk] period 13), one [Cyclesim.cycle] being one base
+   tick. The expected outputs are text tables: waveforms do not render reliably with two
+   clocks. Fidelity of the pixel path to VID60.v is the co-simulation's and the proof's
+   job. *)
 
 let sim_config =
   { Cyclesim.Config.trace_all with
@@ -267,12 +211,10 @@ let%expect_test "vid — CDC: req0 pulse crosses pclk→clk via the toggle synch
   let outp = Cyclesim.outputs sim in
   inp.inv := bits1 false;
   inp.viddata := word 0xDEADBEEF;
-  (* At power-on [hcnt = 0], so [req0] fires at once (prefetching column 1, parity 1, so
-     the word lands in [buf1]). Watch [req_toggle] flip in the [pclk] domain, the level
-     cross the [sync0]→[sync1] clk synchroniser, the edge-detect [req = sync1 ^ sync2]
-     fire for one clk cycle, then [buf1] grab [viddata]. NB [req0] is combinational
-     ([hcnt[4:0] = 0]); the trace samples it one base-tick behind [hcnt]'s registered
-     update (a Cyclesim trace-phase artifact, not hardware). *)
+  (* At power-on [hcnt] is 0, so a request fires at once, for column 1, whose word goes to
+     [buf1]. The table follows the toggle in the [pclk] domain, the level through the
+     synchroniser, the one-cycle [req], and [buf1] taking [viddata]. ([req0] is
+     combinational; the trace shows it one base tick behind [hcnt].) *)
   Stdlib.Printf.printf "tick | hcnt req0 toggle sync0 sync1 req | buf1\n";
   for t = 0 to 44 do
     Cyclesim.cycle sim;
@@ -362,11 +304,9 @@ let%expect_test "vid — every req0 pulse yields exactly one req (no CDC drops)"
   [%expect {| over 6000 ticks: req0 pulses = 32, req pulses = 32 |}]
 ;;
 
-(* fill the pipeline, align to a freshly-loaded visible group ([hcnt[4:0] = 0]), then read
-   32 pixels one [pclk] apart — reconstructing the displayed word LSB-first. Align on a
-   STEADY-STATE line ([vcnt >= 2]): the two-group prefetch leaves the very first group of
-   the first frame unprimed (frame-top gap; self-heals after one frame), so sampling line
-   0 would read the cold buffer. *)
+(* Fill the pipeline, align to the start of a visible group, and read 32 pixels a [pclk]
+   apart, least significant first. The line must be 2 or later: the very first group of
+   the first frame was never fetched (see the last test). *)
 let sample_word sim ~pattern ~inv =
   let inp : _ I.t = Cyclesim.inputs sim in
   let outp : _ O.t = Cyclesim.outputs sim in
@@ -412,24 +352,17 @@ let%expect_test "vid — pixel shift-out: word streams LSB-first; inv inverts it
     |}]
 ;;
 
-(* The constant-pattern shift-out above proves the buffer→pixbuf→rgb datapath, but its
-   address-independent data can't see the prefetch's LOOK-AHEAD addressing. These two
-   tests drive an address-keyed "memory" — echo the requested [vidadr] back as the data —
-   so each displayed 32-px group reconstructs to the framebuffer word address it was
-   fetched from, and assert each column still shows its OWN word ([Org + {~vcnt, col}],
-   the original VID60.v mapping) despite being fetched a group early into a ping-pong
-   buffer.
+(* A constant pattern cannot show whether the look-ahead fetches the right word. These
+   tests answer every fetch with its own address, so that each group displayed reads back
+   as the address it was fetched from, and check that every column still shows its own
+   word, [org + {~vcnt, col}], although it was fetched a group early. They cover all 32
+   columns over consecutive rows: the look-ahead within a line, and the wrap, where a
+   row's column 0 is fetched during the previous row's column 31.
 
-   This is the sim half of the prefetch-DELIVERY check (test/formal/README "VID
-   prefetch"): the [vid] equiv proof cuts [vidbuf] + excludes [vidadr], so it proves the
-   display is right GIVEN the right word; these tests show the look-ahead actually
-   DELIVERS that word. They sweep all 32 columns over consecutive rows — covering the
-   within-line look-ahead (cols 1..31) AND the cross-line wrap (each row's col 0 is
-   fetched from the PREVIOUS row's col 31) — at a single clk/pclk phase (phase is
-   irrelevant to the pclk-domain addressing; the all-phase robustness of the fetch
-   HANDSHAKE is the separate [vid_invariant] proof).
+   The equivalence proof shows the display is right given the right word in [vidbuf];
+   these tests show the right word gets there.
 
-   Shared rig: echo memory + a steady-line aligner + an LSB-first group reader. *)
+   The rig: the echoing memory, an aligner, and a group reader. *)
 let make_echo_rig () =
   let sim = make () in
   let inp = Cyclesim.inputs sim in
@@ -437,8 +370,7 @@ let make_echo_rig () =
   inp.inv := bits1 false;
   let hcnt = node sim "hcnt"
   and vcnt = node sim "vcnt" in
-  (* address-echoing memory: [viddata] follows [vidadr], so each fetched word equals the
-     address it came from and a displayed group reconstructs to its framebuffer address *)
+  (* [viddata] follows [vidadr] *)
   let step () =
     inp.viddata := word (Bits.to_unsigned_int !(outp.vidadr));
     Cyclesim.cycle sim
@@ -516,14 +448,10 @@ let%expect_test "vid — prefetch look-ahead: every column delivers its own word
     |}]
 ;;
 
-(* The two-group prefetch leaves the FIRST frame's first group unprimed: line 0 col 0 is
-   fetched at the look-ahead wrap of the PREVIOUS frame's last line (req0 at line 767, col
-
-   31) — which never ran at power-on, so it reads the cold (zero) buffer. This is the
-   frame-top gap [sample_word]/the test above skip with [min_row >= 2]. It is exactly ONE
-   group: line 0 cols 1..31 are fetched within line 0, and from line 1 on every col 0 is
-   filled by the previous line's wrap (the steady-line test above). So it self-heals after
-   the first group and is invisible (Oberon clears the screen long before it matters). *)
+(* At power-on the first group of the first frame has no word: line 0, column 0 is fetched
+   during the last column of line 767, which has not happened yet, so the buffer is still
+   zero. It is exactly one group — columns 1..31 of line 0 are fetched within line 0 — and
+   it is gone after the first frame. *)
 let%expect_test "vid — prefetch: frame-top gap is exactly one group (line 0 col 0), then \
                  heals"
   =

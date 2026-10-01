@@ -1,18 +1,11 @@
-(* Public API and behaviour spec live in [multiplier.mli].
+(* A port of Multiplier.v; the contract is in [multiplier.mli].
 
-   Implementation note. This is a *sequential* unit, so per AGENT.md §2 we mirror
-   RISC5.v's skeleton exactly — which signals are registered and the state/stall timing
-   are the spec the oracle checks cycle-by-cycle and synthesis preserves. The original RTL
-   is [test/_po/verilog/src/Multiplier.v] (25 lines).
-
-   The 64-bit [P] register is dual-role: its low half is the multiplier being consumed
-   (its LSB is the current bit), its high half is the running accumulator. Each step adds
-   the gated multiplicand to the top — a 33-bit add, whose carry/sign becomes the new MSB
-   — then shifts the whole register right by one, so the multiplier slides down and the
-   sum lands above it. The 6-bit counter [S] sequences it: S=0 loads x, S=1..32
-   accumulate-and-shift, S=33 ends. No reset — [run] gates [S] (run=0 → S:=0), and S=0
-   forces the load, faithful to the RTL. The signed correction is the lone subtract on the
-   last step (S=32; see §8). *)
+   The 64-bit register [P] plays two roles: its low half is the multiplier being consumed,
+   bit 0 the current bit; its high half is the running sum. Each step adds the
+   multiplicand, gated by that bit, to the high half — a 33-bit add whose carry or sign
+   becomes the new top bit — and shifts the whole register right by one. The counter [S]
+   sequences it: 0 loads [x], 1..32 add and shift, 33 ends. The signed correction is the
+   one subtraction, on the last step. *)
 
 open! Base
 open Hardcaml
@@ -39,16 +32,11 @@ end
 
 let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* Phase 7: ce-gate the unit's state so it freezes with the ce-gated core during a
-     multi-cycle PSRAM wait (else the counter overruns the fetch-wait and the op restarts
-     — see [Divider]). [ce = vdd] (the default) ⇒ byte-identical. *)
+  (* the state freezes with the core under [ce]; see [Divider] *)
   let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
-  (* S : 6-bit state counter; [run] is both enable and synchronous clear (no reset). *)
-  (* Registers named to match the RTL ([S]/[P]) so the Phase-8 formal harness can pair the
-     flip-flops with Multiplier.v's (yosys [equiv_make] matches FFs by name —
-     test/formal). *)
+  (* [run] is the enable and the synchronous clear. The registers carry the RTL's names,
+     [S] and [P]: the equivalence proof pairs registers by name. *)
   let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) -- "S" in
-  (* P : 64-bit dual-role register. [s] is in scope, so P's feedback can test S==0/S==32. *)
   let p =
     reg_fb spec ~width:64 ~f:(fun p ->
       (* the multiplicand, gated by the current multiplier bit P[0] *)
@@ -56,7 +44,7 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
       (* sign-extend both to 33 bits so the add's carry/sign becomes the new MSB *)
       let hi = sresize (select p ~high:63 ~low:32) ~width:33 in
       let pp = sresize w0 ~width:33 in
-      (* signed correction: the lone subtract on the last step (S=32; §8) *)
+      (* the signed correction: subtract on the last step *)
       let w1 = mux2 (s ==:. 32 &: i.u) (hi -: pp) (hi +: pp) in
       (* S=0 loads x into the low half; otherwise accumulate-then-shift-right-by-one *)
       mux2 (s ==:. 0) (zero 32 @: i.x) (w1 @: select p ~high:31 ~low:1))
@@ -65,17 +53,9 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = i.run &: ~:(s ==:. 33); z = p }
 ;;
 
-(* Phase-9 optimised variant (AGENT.md §5). The structural 33-cycle shift-add above is
-   just computing one product; here we say that directly — a single signed 33×33 multiply
-   ([*+]) that Vivado lowers onto the board's idle DSP48 slices. Combinational, so the op
-   retires in ONE cycle ([stall] tied low) instead of 33. It reproduces [Multiplier.v]'s
-   §8 sign handling exactly so it stays bit-identical to [create]: [y] is sign-extended
-   unconditionally, [x] only when signed ([u]) — so unsigned [MUL'] still yields
-   [x_unsigned × y_signed] (the low 32 bits, R.a, always agree; only [H] carries the
-   quirk). The whole structural multiplier collapses to operand-prep + one [*+]. Verified
-   by the co-located differential qcheck against the formally-proven [create] (not
-   re-formalised). [ce] is irrelevant to a stateless unit — accepted only to match
-   [create]'s signature. *)
+(* The same product from one signed 33 x 33 multiply. The sign handling follows the RTL
+   exactly, so that the high word agrees too: [y] is sign-extended always, [x] only when
+   [u]. *)
 let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
   ignore (ce : Signal.t);
   let x' = mux2 i.u (sresize i.x ~width:33) (uresize i.x ~width:33) in
@@ -83,17 +63,9 @@ let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = gnd; z = sel_bottom (x' *+ y') ~width:64 }
 ;;
 
-(* Phase-9 experiment (feat/fast-clock) — a *pipelined* DSP multiply, for pushing the
-   system clock past ~52 MHz. {!create_opt} is combinational (regfile→DSP→result in one
-   cycle), which is the critical path at 50 MHz; here the 64-bit product is pushed through
-   [stages] output flops that Vivado retimes into the DSP48's own MREG/PREG, splitting
-   that one long hop into [stages] short ones. The op is then multi-cycle again: a small
-   counter holds [stall] for [stages] cycles — the core's ordinary multi-cycle protocol
-   (like the iterative unit, but 2 cycles instead of 33). The core freezes PC/IR across
-   the run, so [x]/[y] are held stable and the product is constant from cycle 0 — it just
-   arrives [stages] cycles later, bit-identical to {!create_opt}/{!create} (differential
-   qcheck). [stages = 0] would be the combinational case, but that is {!create_opt}; use
-   [stages >= 1] here. *)
+(* [create_opt] with [stages] registers on the product. The core holds the operands for
+   the whole run, so the product is the same from the first cycle on and simply arrives
+   [stages] cycles later. *)
 let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
   (* the run counter below is 4 bits and must reach [stages] *)
   if stages < 1 || stages > 15
@@ -106,31 +78,24 @@ let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
   let x' = mux2 i.u (sresize i.x ~width:33) (uresize i.x ~width:33) in
   let y' = sresize i.y ~width:33 in
   let prod = sel_bottom (x' *+ y') ~width:64 in
-  (* [stages] registers on the product; Vivado pulls them into the DSP (PREG/MREG/…) *)
+  (* the synthesizer retimes these into the DSP48 (MREG, PREG) *)
   let z = Fn.apply_n_times ~n:stages (Signal.reg spec ~enable:ce) prod in
-  (* counter: run-gated (run=0 ⇒ S:=0, no reset); [stall] high until S reaches [stages] *)
+  (* [stall] until the run counter reaches [stages] *)
   let s =
     Signal.reg_fb spec ~enable:ce ~width:4 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 4))
   in
   { O.stall = i.run &: ~:(s ==:. stages); z }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: qcheck the full multiply against a pure-OCaml Int64 reference (3a's oracle
-   — no fp_vectors, no emulator). The reference encodes the *hardware* semantics: [y] is
-   always signed, [x] is signed iff [u=1] (so unsigned [MUL'] = x_unsigned × y_signed,
-   §8). One sim is reused across cases; a multiply ends when [stall] drops, after which
-   [run] is dropped for one cycle to clear [S]=0 for the next case — exactly how the core
-   sequences it. Behaviour: since the full run is 33 cycles, two tight windows of a signed
-   −3×5 — the head (run→stall asserts) and the tail (stall drops, run releases) — bracket
-   the uniform middle; the 64-bit product is too wide for the wave, so it's printed below. *)
+(* ── Tests ── A property test against an Int64 reference that has the hardware's
+   semantics ([y] always signed, [x] signed when [u]); differential tests of the two DSP
+   variants against the iterative unit; and a waveform of the head and the tail of a
+   signed -3 x 5. *)
 
 let set r v w = r := Bits.of_unsigned_int ~width:w v
 
-(* Run one multiply through the run/stall handshake, exactly as the core sequences it: run
-   asserts, cycle until stall drops, read the 64-bit product, then a run=0 cycle to clear
-   S for the next case. Also drives the combinational [create_opt] (stall never asserts;
-   the first cycle evaluates it). Guards against a wedged stall. *)
+(* One multiply as the core sequences it: [run] up, clock until [stall] drops, read the
+   product, then one cycle with [run] low to clear [S]. *)
 let run_mul (inp : _ I.t) (out : _ O.t) sim ~u ~x ~y =
   set inp.u u 1;
   set inp.x x 32;
@@ -176,10 +141,9 @@ let%expect_test "MUL = x*y reference (signed & unsigned) [qcheck, 2000 cases]" =
 let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 20000 \
                  cases)"
   =
-  (* The Phase-9 fast variant rides [create]'s Phase-8 proof: show the combinational DSP
-     multiply is bit-identical to the formally-proven iterative unit over random (u, x,
-     y), comparing the full 64-bit product. The §8 unsigned-MUL' quirk is covered for free
-     — half the cases have y[31]=1, where the H words must still agree. *)
+  (* The DSP variant has no proof of its own: it is compared with the proven iterative
+     unit over random (u, x, y), on all 64 bits. Half the cases have y[31] set, where the
+     high words must still agree. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let ref_sim = Sim.create create
   and opt_sim = Sim.create create_opt in
@@ -200,11 +164,8 @@ let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 
 let%expect_test "MUL create_opt_pipelined ≡ create (differential qcheck, stages=2, 20000 \
                  cases)"
   =
-  (* Same differential check as above, but the fast side is the *pipelined* DSP variant:
-     drive it through the run/stall handshake exactly as the core does (it is multi-cycle
-     now), and confirm the registered product matches the iterative unit bit-for-bit. This
-     also exercises the pipeline's counter/stall timing — [stall] must hold for [stages]
-     cycles then drop with the product valid. *)
+  (* The same for the pipelined variant, driven through the run/stall handshake, which
+     also checks that [stall] holds for [stages] cycles. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let ref_sim = Sim.create create
   and opt_sim = Sim.create (create_opt_pipelined ~stages:2) in
@@ -230,10 +191,9 @@ let%expect_test "MUL timing — signed -3*5: stall envelope head/tail + product"
   let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  (* one idle cycle (run=0) so the run/stall rising edges are visible, then a full signed
-     −3 × 5 = −15; run is released the cycle stall clears, exactly as the core sequences
-     it (otherwise S would tick past 33 and re-stall). z is 64-bit — too wide to render at
-     wave_width 4 — so the wave shows the control/timing and the product is printed below. *)
+  (* one idle cycle, then signed -3 x 5; [run] is released on the cycle [stall] clears, as
+     the core does (otherwise [S] would run past 33 and stall again). The 64-bit product
+     does not fit the waveform and is printed below it. *)
   set inp.u 1 1;
   set inp.x 0xFFFF_FFFD 32;
   set inp.y 0x0000_0005 32;

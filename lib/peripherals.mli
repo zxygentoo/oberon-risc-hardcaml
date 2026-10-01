@@ -1,14 +1,11 @@
-(** The RISC5Top peripheral/MMIO cluster — the faithful block both SoCs share.
+(** The peripheral cluster of RISC5Top, shared by both SoCs: the millisecond timer, the
+    SPI master and its control register, the UART in both directions and its rate bit, the
+    PS/2 keyboard and mouse, the switches, buttons and LED latch, GPIO, and the MMIO read
+    mux — everything RISC5Top.OStation.v hangs off its [iowadr] decode. Each SoC does its
+    own address decode and passes the decoded bus in.
 
-    Millisecond timer, SPI master + [spiCtrl], UART (both directions) + [bitrate], PS/2
-    keyboard, PS/2 mouse, switches/buttons + the LED latch, GPIO, and the MMIO read mux —
-    everything RISC5Top.OStation.v hangs off its [iowadr] decode, in one instantiable
-    block. Each SoC keeps its own address decode and hands this block the decoded bus
-    (strobes + window + word); pad-side lines are driven directly.
-
-    Extracted from the sim SoC so the board SoC stops hand-copying it. The board's
-    departures are the explicit seams on {!create}; the block itself is never ce-gated
-    (peripherals run at clock speed under a wait-stated CPU, as on real hardware). *)
+    The block is never clock-gated: a CPU slowed by memory waits polls peripherals that
+    run at full speed, as on any real machine. *)
 
 open Hardcaml
 
@@ -38,8 +35,7 @@ module O : sig
   type 'a t =
     { io_data : 'a (** the MMIO read word for [iowadr] (mux into [inbus] on [ioenb]) *)
     ; ms_tick : 'a
-    (** [limit] — a 1-clock pulse per millisecond. The sim SoC wires it straight to the
-        core's [irq]; the board wraps it in its ce-domain IRQ stretch first. *)
+    (** the timer's one-clock pulse per millisecond, for the core's [irq] *)
     ; spi_ctrl : 'a
     (** the 4-bit [spiCtrl] register, exported for board-side derivations (RISC5Top's
         [SS]: [sd_cs = ~spi_ctrl[0]]) *)
@@ -56,20 +52,15 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create i] builds the cluster.
+(** [?clocks_per_ms] (default 25000, 1 ms at 25 MHz) is the timer's prescaler and must fit
+    the 16-bit [cnt0]. [?slow_div_log2] is {!Spi.create}'s; [?baud_slow] and [?baud_fast]
+    are the UARTs', passed to both directions. The defaults are RISC5Top's constants for
+    25 MHz.
 
-    [?clocks_per_ms] (default [25000] = 1 ms at 25 MHz) is the timer prescaler; must fit
-    the faithful 16-bit [cnt0] (enforced at elaboration). [?slow_div_log2] is
-    {!Spi.create}'s divider-depth seam; [?baud_slow]/[?baud_fast] are the UART
-    clock-scaling seams, passed to both directions together (they share the one [bitrate]
-    bit). Defaults everywhere = the 25 MHz RISC5Top constants — the sim SoC passes
-    nothing.
-
-    [?extra_read_slots] maps SoC-specific read words (the board's Halftone status word at
-    slot 10) into the otherwise-zero part of the 16-word window; a slot colliding with the
-    faithful map or with another extra slot, out of range, or not 32 bits wide fails at
-    elaboration. Write-side extensions need no hook: an SoC derives its own strobe from
-    [wr &: ioenb &: (iowadr ==:. word)] beside its extra logic. *)
+    [?extra_read_slots] maps a SoC's own read words into the unused part of the 16-word
+    window. A slot that collides with the cluster's map or with another extra slot, lies
+    outside the window, or is not 32 bits wide fails at elaboration. Writes need no hook:
+    a SoC derives its own strobe, [wr &: ioenb &: (iowadr ==:. word)]. *)
 val create
   :  ?clocks_per_ms:int
   -> ?slow_div_log2:int

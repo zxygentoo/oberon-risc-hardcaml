@@ -1,12 +1,8 @@
-(* Public API and behaviour spec live in [right_shifter.mli].
+(* A port of RightShifter.v; the contract is in [right_shifter.mli].
 
-   Implementation note. Wirth's RTL ([RightShifter.v]) is the mirror of [LeftShifter.v] —
-   the same radix-4 barrel (stages sc[1:0] / sc[3:2] / sc[4]) run rightward — with one
-   twist: each stage's vacated top bits are filled by [md], the sign bit for ASR or the
-   outgoing low bits for ROR. We express that as the two idiomatic barrels
-   [log_shift ~f:sra] (ASR) and [log_shift ~f:rotr] (ROR) selected by [md]; synthesis
-   rebuilds the shared staged tree. Per AGENT.md §2: be idiomatic in the combinational
-   datapath. *)
+   The RTL is one staged barrel whose vacated top bits are filled according to [md]: with
+   the sign for ASR, with the bits shifted out for ROR. Here it is two barrels,
+   [log_shift ~f:sra] and [log_shift ~f:rotr], selected by [md]. *)
 
 open Hardcaml
 open Signal
@@ -30,11 +26,8 @@ let create (i : _ I.t) : _ O.t =
   { O.y = mux2 i.md ror_ asr_ }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: qcheck both modes against pure-OCaml references — ASR is sign-extend then
-   arithmetic-shift then mask to 32 bits; ROR is the shift-or-shift identity with the sc=0
-   case handled (no oracle needed for a combinational block). Behaviour: a frozen waveform
-   of the sign flooding in under ASR and a pattern wrapping under ROR — living docs. *)
+(* ── Tests ── Property tests of both modes against plain-OCaml references, and a waveform
+   of each. *)
 
 let%expect_test "ASR/ROR = references [qcheck, 10k cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in

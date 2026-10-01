@@ -1,23 +1,14 @@
-(* Public API and behaviour spec live in [uart_tx.mli].
+(* A port of RS232T.v; the contract is in [uart_tx.mli].
 
-   Port of [RS232T.v]. The hardware idea: a baud-rate divider ([tick]) plus a 9-bit shift
-   register ([shreg]) serialise one byte as a UART frame on [txd] — start bit, 8 data bits
-   LSbit-first, stop bit — with the framing carried *implicitly* by the shift register
-   rather than an explicit start/stop state machine.
+   A divider [tick] and a 9-bit shift register [shreg] produce the frame, and the framing
+   is implicit in the shift register: there is no start/stop state machine. [start] loads
+   [{data, 0}], which puts the start bit in bit 0, and [txd] is always bit 0. Each bit
+   time shifts right and brings a 1 in at the top, so the stop bit and the idle-high line
+   need no logic of their own. [bitcnt] counts the ten bit times; [run] is set by [start]
+   and cleared at the end of the tenth, and [rdy = ~run].
 
-   Loading [{data, 1'b0}] on [start] drops the start bit (0) into [shreg]'s LSB, and [txd]
-   is always [shreg[0]]. Each elapsed bit-time ([endtick]) shifts right and feeds a 1 in
-   at the top, so the stop bit and the idle-high line fall out for free. [bitcnt] counts
-   the ten bit-times (start + 8 + stop, [endbit] at 9); [run]/[rdy] frame the transfer
-   ([start] sets [run], [endtick & endbit] clears it, [rdy = ~run]).
-
-   Two baud rates share the one datapath via the [tick] threshold: [fsel] picks 19200 baud
-   (clk/1302) or 115200 (clk/217), at 25 MHz. Unlike [Spi] this is output-only (no
-   sampling) and shifts LSbit-out (vs SPI's MSbit-out tap at bit 7).
-
-   [rst] is active-low and synchronous — woven into each register's next-state as in the
-   RTL, so a plain clock-only [Reg_spec] with no separate reset port (matches [Spi] /
-   [Cpu]). *)
+   Reset is synchronous and active low, part of each register's next-state logic as in the
+   RTL. *)
 
 open! Base
 open Hardcaml
@@ -42,9 +33,8 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* RS232T.v's 25 MHz constants (clk/1302 = 19200 baud, clk/217 = 115200). {!Uart_rx}
-   shares these defaults: the SoC's single [bitrate] bit drives both directions, so the
-   pair must stay equal. *)
+(* RS232T.v's constants for 25 MHz. [Uart_rx] takes the same defaults: one rate-select bit
+   drives both directions. *)
 let default_baud_slow = 1302
 let default_baud_fast = 217
 
@@ -61,11 +51,6 @@ let create ?(baud_slow = default_baud_slow) ?(baud_fast = default_baud_fast) (i 
   let tick_v = tick.value -- "tick" in
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
-  (* combinational: end-of-bit / end-of-frame, line driver, ready *)
-  (* The board passes clock-scaled baud values (feat/fast-clock: 60 MHz ⇒ 521/521, both
-     ~115200) so the wire stays at a standard rate. Built via [of_unsigned_int] so a
-     retune past the (faithful) 12-bit [tick] fails loudly at elaboration, like
-     {!Uart_rx}'s [limit]. *)
   List.iter
     [ "baud_slow", baud_slow; "baud_fast", baud_fast ]
     ~f:(fun (name, v) ->
@@ -107,12 +92,10 @@ let create ?(baud_slow = default_baud_slow) ?(baud_fast = default_baud_fast) (i 
   { O.rdy; txd }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── A frozen
-   waveform can't show a whole frame (clk/217 per bit), so the functional doc is a decode
-   — drive a byte, sample [txd] at each bit-centre like a UART receiver and recover the
-   frame — plus a qcheck round-trip; a tight waveform (below) freezes one bit boundary
-   instead. The exhaustive bit-for-bit fidelity check vs [RS232T.v] is the Verilator
-   co-sim (layer 3). *)
+(* ── Tests ── A frame is too long for a waveform, so the tests decode it: send a byte,
+   sample [txd] at the centre of each bit as a receiver would, and recover the frame, for
+   chosen bytes and in a round-trip test. One waveform shows a bit boundary. Fidelity to
+   RS232T.v is the co-simulation's and the proof's job. *)
 
 let lo = Bits.gnd
 let hi = Bits.vdd
@@ -128,10 +111,8 @@ let reset_idle sim (inp : _ I.t) =
   Cyclesim.cycle sim
 ;;
 
-(* Send one byte and sample [txd] at the centre of all 10 bit-times, like a receiver. One
-   bit-time is [limit+1] clocks (fast: 217+1, slow: 1302+1). Leaves the TX idle (rdy=1).
-   Returns the 10 sampled bits [|start; d0..d7; stop|] and the minimum [rdy] seen (0 while
-   the frame is in flight). *)
+(* Send one byte and sample [txd] at the centre of each of the ten bit times (a bit time
+   is limit + 1 clocks). Returns the ten bits and the lowest [rdy] seen. *)
 let send_frame sim (inp : _ I.t) (outp : _ O.t) ~fast ~data =
   let period = if fast then 218 else 1303 in
   inp.fsel := if fast then hi else lo;
@@ -231,9 +212,8 @@ let%expect_test "rs232t — every byte round-trips" =
   [%expect {| |}]
 ;;
 
-(* A tight window around the first bit boundary: when [endtick] pulses, [shreg] shifts
-   right (a 1 entering the top), [txd] advances start(0)→d0, and [bitcnt] increments — the
-   cycle-accurate heart of the port. *)
+(* Around the first bit boundary: on [endtick], [shreg] shifts right with a 1 entering at
+   the top, [txd] moves from the start bit to d0, and [bitcnt] steps. *)
 let%expect_test "rs232t — bit boundary [waveform: endtick shifts shreg, txd start→d0]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.Waveform in

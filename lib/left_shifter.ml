@@ -1,11 +1,8 @@
-(* Public API and behaviour spec live in [left_shifter.mli].
+(* A port of LeftShifter.v; the contract is in [left_shifter.mli].
 
-   Implementation note. Wirth's RTL ([LeftShifter.v]) stages the shift radix-4 — the
-   groups [sc[1:0]] / [sc[3:2]] / [sc[4]], three mux levels. We use Hardcaml's [log_shift]
-   barrel-shifter combinator instead; it lowers to a radix-2 net (five 2:1-mux stages —
-   shifts 1/2/4/8/16) — a different netlist but the identical combinational function,
-   which synthesis re-maps onto the LUT6 fabric either way. Per AGENT.md §2: be idiomatic
-   in the combinational datapath. *)
+   The RTL stages the shift in three mux levels (sc[1:0], sc[3:2], sc[4]). [log_shift]
+   builds five 2:1 levels instead: another netlist for the same function, and the function
+   is all a combinational block has to preserve. *)
 
 open Hardcaml
 open Signal
@@ -24,10 +21,7 @@ end
 
 let create (i : _ I.t) : _ O.t = { O.y = log_shift ~f:sll i.x ~by:i.sc }
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: qcheck the circuit against the pure-OCaml reference [x lsl sc] (no oracle
-   needed for a combinational block). Behaviour: a frozen waveform of a single bit walking
-   left, plus a pattern shift — living documentation. *)
+(* ── Tests ── A property test against [x lsl sc], and a waveform of a bit walking left. *)
 
 let%expect_test "LSL = (x lsl sc) reference [qcheck, 10k cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in

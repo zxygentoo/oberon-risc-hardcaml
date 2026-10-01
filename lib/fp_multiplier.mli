@@ -1,29 +1,21 @@
-(** [Fp_multiplier] — iterative IEEE-754 single-precision multiply; the RISC5 [FML] unit.
-
-    A faithful port of Oberon's [FPMultiplier.v]: a shift-and-add sequential multiplier
-    that forms the 48-bit product of the two 24-bit mantissas over 25 cycles, then rounds,
-    normalizes, and repacks it into a 32-bit float — holding the core with [stall] until
-    its state counter reaches the terminal value. The mantissa engine is the {!Multiplier}
-    idea in miniature (24 bits instead of 32); the floating-point work is the
-    combinational exponent/round wrapper around it.
+(** Single-precision multiply, the FML unit: a port of [FPMultiplier.v]. A shift-and-add
+    multiplier forms the 48-bit product of the two 24-bit mantissas in 25 cycles —
+    {!Multiplier} in miniature — and combinational logic around it handles the exponents,
+    rounds and repacks.
 
     {1 Number format}
 
-    IEEE-754 single precision: [{sign:1, exp:8 (bias 127), frac:23}], value
-    [(-1)^sign * 2^(exp-127) * 1.frac] with the leading [1.] implicit. A zero (or
-    denormal) operand is detected by [exp = 0] and forces a zero result. The result sign
-    is simply [x[31] ^ y[31]]; the result exponent is [xe + ye - 127], bumped by one when
-    the mantissa product reaches [2.0].
+    IEEE-754 single precision, [{sign:1, exp:8 (bias 127), frac:23}], the leading 1
+    implicit. An operand with exponent 0 counts as zero and gives a zero result. The
+    result's sign is [x[31] ^ y[31]] and its exponent [xe + ye - 127], one more when the
+    mantissa product reaches 2.0.
 
     {1 Timing}
-    (mirrored exactly from the RTL — AGENT.md §2)
 
-    [run] is asserted by the core while [FML] is decoded, and doubles as enable {e and}
-    synchronous clear: while [run] is low the 5-bit state counter [S] is pinned at 0, so
-    the next multiply always begins from a clean load — there is no reset. Once [run]
-    asserts, [S] walks 0->25: [S=0] loads [x]'s mantissa, [S=1..24] are the 24
-    accumulate/shift iterations, and at [S=25] [stall] drops with [z] valid. Thus
-    [stall = run & ~(S==25)], and the core keeps PC/IR frozen for the whole run. *)
+    [run] is high while the core decodes FML; it is the enable and the synchronous clear,
+    and there is no reset. With [run] high [S] walks from 0 to 25: 0 loads [x]'s mantissa,
+    1..24 are the accumulate-and-shift steps, and at 25 [stall] drops with [z] valid. So
+    [stall = run & ~(S == 25)]. *)
 
 open Hardcaml
 
@@ -32,9 +24,7 @@ module I : sig
     { clock : 'a (** clock; the state counter [S] advances on each rising edge *)
     ; run : 'a (** [FML] decoded — enable + synchronous clear for the counter *)
     ; x : 'a (** 32-bit operand 1 (operand [B]) *)
-    ; y : 'a
-    (** 32-bit operand 2 (operand [C0] — the raw register read: the FP units are
-        register-register, never the q-muxed immediate) *)
+    ; y : 'a (** operand 2, the register C0 (the FP units never take the immediate) *)
     }
   [@@deriving hardcaml]
 end
@@ -47,26 +37,17 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create] is the [FML] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
-    simulation. [?ce] is the board clock-enable (default [vdd]); see {!Divider.create}. *)
+(** [?ce] (default [vdd]) is the clock enable the core passes on; see {!Divider.create}. *)
 val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 
-(** [create_opt] — the Phase-9 optimised drop-in for {!create} (AGENT.md §5), the FP
-    analogue of {!Multiplier.create_opt}: the 24-iteration mantissa loop is expressed as a
-    single unsigned 24×24 multiply, which Vivado lowers onto the board's DSP48 slices. The
-    exponent/round wrapper is shared verbatim with {!create}, so the result is
-    bit-identical for every input. {b Combinational} — it retires in one cycle ([stall]
-    tied low) instead of {!create}'s 25. Proven equal to {!create} by the co-located
-    differential qcheck against the formally-proven iterative unit, rather than
-    re-formalised. [?ce] is accepted for signature compatibility but ignored (no state). *)
+(** The mantissa product from one unsigned 24 x 24 multiply, which the synthesizer maps
+    onto DSP48 blocks; the exponent and rounding logic is {!create}'s own. Combinational:
+    [stall] never rises. Checked bit-identical to {!create} by a differential property
+    test; it is not proven. [?ce] is accepted and ignored. *)
 val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
 
-(** [create_opt_pipelined] — the {e pipelined} FP multiply (experiment [feat/fast-clock]),
-    analogue of {!Multiplier.create_opt_pipelined}: the mantissa product is registered
-    through [stages] flops (default 2, Vivado → DSP48 MREG/PREG) so the multiply and the
-    exponent/round [pack] (a private [.ml] helper) land in separate cycles, keeping the
-    DSP off the critical path above ~52 MHz. Multi-cycle via a run-gated counter/[stall],
-    still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
-    pipeline (default [vdd]). [stages] must be in 1..15 (the run counter is 4 bits);
-    anything else fails at elaboration. *)
+(** {!create_opt} with the mantissa product passed through [stages] registers (1..15,
+    default 2), which the synthesizer retimes into the DSP48; the multiply and the
+    rounding then fall in different cycles. [stall] holds for [stages] cycles. Checked
+    bit-identical to {!create} by a differential property test. [?ce] gates the pipeline. *)
 val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

@@ -1,22 +1,15 @@
-(* Public API and behaviour spec live in [peripherals.mli].
+(* The contract is in [peripherals.mli].
 
-   Implementation note. The RISC5Top peripheral/MMIO cluster, extracted from the sim SoC
-   (lib/soc.ml) so the board SoC instantiates the same faithful block instead of keeping a
-   hand-copy (the copies drifted as diffs buried in copied text; the board's deltas are
-   now the explicit seams on [create]). The block consumes the *decoded* bus — each SoC
-   keeps its own address decode and passes the strobes + the MMIO window/word — and drives
-   the pad-side lines directly. The board-only concerns stay outside on purpose: [sd_cs]
-   derives from the exported [spi_ctrl], and the ce-domain IRQ stretch wraps the exported
-   [ms_tick] (this block itself is never ce-gated — a wait-stated CPU polls full-speed
-   peripherals, exactly as on real hardware). *)
+   Two things stay outside, with the board that needs them: the SD chip select, derived
+   from the exported [spi_ctrl], and the stretching of [ms_tick] across cycles in which a
+   clock-gated core is frozen. *)
 
 open! Base
 open Hardcaml
 open Signal
 
-(* The MMIO word map (RISC5Top's [iowadr] decode). One name per word, shared by the write
-   strobes, the writable registers and the read-mux slot below, so a word can't drift
-   between its decode site and its read slot. *)
+(* RISC5Top's MMIO words. One name each, used by the write strobe, the register and the
+   read mux alike. *)
 let w_ms_timer = 0 (* R: ms counter *)
 let w_switches_leds = 1 (* R: {btn, sw}; W: the LED latch *)
 let w_uart_data = 2 (* R: dataRx (pulses doneRx); W: start a transmit *)
@@ -80,10 +73,9 @@ let create
   if clocks_per_ms < 1 || clocks_per_ms > 1 lsl 16
   then failwith "Peripherals: clocks_per_ms must fit the 16-bit cnt0 prescaler (1..65536)";
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* ── Millisecond timer ── free-running (no reset), like RISC5Top's. A [clocks_per_ms]
-     prescaler [cnt0] raises [limit] once per ms; [limit] ticks the ms counter [cnt1]
-     (read at [w_ms_timer]) and leaves as [ms_tick] — the sim SoC wires it straight to the
-     core's [irq]; the board stretches it across frozen (ce=0) cycles first. *)
+  (* ── Millisecond timer ── free-running, without reset, as RISC5Top's: the prescaler
+     [cnt0] raises [limit] once a millisecond, which steps the counter [cnt1] and leaves
+     as [ms_tick]. *)
   let cnt0 = Always.Variable.reg spec ~width:16 in
   let cnt1 = Always.Variable.reg spec ~width:32 in
   let limit = (cnt0.value ==:. clocks_per_ms - 1) -- "limit" in
@@ -93,10 +85,10 @@ let create
       ; cnt1 <-- cnt1.value +: uresize limit ~width:32
       ]);
   let cnt1_v = cnt1.value -- "cnt1" in
-  (* the per-word MMIO strobes, and the one writable-register shape (RISC5Top l.138-144):
-     loaded from [outbus]'s low bits on a store to [word]; reset (which beats a same-cycle
-     write) clears it unless [rst:false] — the faithful no-reset exception ([gpout]
-     below). *)
+  (* The write strobes, and the one shape of writable register (RISC5Top l.138-144):
+     loaded from [outbus] on a store to its word, and cleared by reset, which wins over a
+     store in the same cycle. [rst:false] is for the one register the RTL does not reset,
+     [gpout]. *)
   let io_wr word = i.wr &: i.ioenb &: (i.iowadr ==:. word) in
   let io_rd word = i.rd &: i.ioenb &: (i.iowadr ==:. word) in
   let io_reg ?(rst = true) ~word ~width () =
@@ -105,10 +97,9 @@ let create
     Always.(compile [ (r <-- if rst then mux2 ~:(i.rst_n) (zero width) load else load) ]);
     r.value
   in
-  (* ── SPI master ── (RISC5Top wiring): a store to [w_spi_data] pulses [start]
-     ([spiStart]); [w_spi_ctrl] is the 4-bit control register ([fast] = bit 2, reset to
-     0). [miso] is the already-ANDed SD/net line. [?slow_div_log2] is {!Spi}'s
-     divider-depth seam (the 60 MHz board passes 8). *)
+  (* ── SPI ── A store to the data word pulses [start]; the control word is a 4-bit
+     register whose bit 2 is [fast]. [miso] arrives already combined from the SD card and
+     the network port. *)
   let spi_ctrl = io_reg ~word:w_spi_ctrl ~width:4 () -- "spi_ctrl" in
   let spi =
     Spi.create
@@ -121,12 +112,9 @@ let create
       ; miso = i.miso
       }
   in
-  (* ── UART ── RS232R receiver + RS232T transmitter at [bitrate] baud. A [w_uart_data]
-     read returns the received byte [dataRx] and pulses [done_] (acks it, clearing rdyRx);
-     a write starts a transmit ([start], [data] = outbus[7:0]). [w_uart_status] reads
-     [{rdyTx, rdyRx}]; a write sets the 1-bit [bitrate] select (0 = 19200, 1 = 115200;
-     reset 0). [?baud_*] are the units' clock-scaling seams (both directions share the one
-     [bitrate] bit, so the pair travels together). *)
+  (* ── UART ── Reading the data word returns the received byte and acknowledges it;
+     writing it starts a transmission. The status word reads [{rdyTx, rdyRx}], and a write
+     to it sets the rate bit (0 = slow). *)
   let bitrate = io_reg ~word:w_uart_status ~width:1 () in
   let uart_rx =
     Uart_rx.create
@@ -150,11 +138,9 @@ let create
       ; data = select i.outbus ~high:7 ~low:0
       }
   in
-  (* ── PS/2 keyboard ({!Ps2}) + mouse ({!Mouse}) ── a [w_mouse_kbd] read carries the
-     mouse state [dataMs] in bits [27:0] and the keyboard-ready bit [rdyKbd] at bit 28; a
-     [w_kbd_data] read returns the keyboard byte [dataKbd] and pulses [doneKbd] (pops the
-     keyboard FIFO). The mouse's open-drain [msclk]/[msdat] split into resolved-line
-     inputs and drive-low [*_oe] outputs (the pad / a testbench does the wired-AND). *)
+  (* ── PS/2 keyboard and mouse ── The mouse word carries the mouse state in bits 27..0
+     and the keyboard-ready flag in bit 28; reading the keyboard word returns a byte and
+     pops the FIFO. *)
   let kbd =
     Ps2.create
       { Ps2.I.clock = i.clock
@@ -169,24 +155,18 @@ let create
       { Mouse.I.clock = i.clock; rst_n = i.rst_n; msclk = i.msclk; msdat = i.msdat }
   in
   let mouse_out = mouse.out -- "mouse_out" in
-  (* ── Switches/buttons ([w_switches_leds] read) ── [{btn, sw}] zero-extended to 32 bits.
-     RISC5Top reads [~nswi] — the OberonStation switches are active-low (board pullups);
-     we take the already-logical [sw] (Nexys switches are active-high) and leave that pad
-     inversion to the board shim. Default 0 = all-off = the oracle's [switches], so disk
-     boot is unaffected. *)
+  (* ── Switches and buttons ── RISC5Top reads [~nswi], its board's switches being active
+     low; here [sw] is already logical, and the pad inversion is the board's. All off, the
+     default, selects booting from disk. *)
   let switches = uresize (i.btn @: i.sw) ~width:32 in
-  (* ── LEDs ([w_switches_leds] write) ── [Lreg]: cleared by reset, else latched from
-     [outbus[7:0]]; driven out on [leds]. *)
+  (* ── LEDs ── a latch, written through the switches' word *)
   let lreg = io_reg ~word:w_switches_leds ~width:8 () in
-  (* ── GPIO ── [gpout] (drive value) and [gpoc] (direction), each 8-bit. [gpoc] is
-     reset-cleared; [gpout] is NOT (faithful — a pin powers up as input, drive value
-     undefined). The bidirectional pad is split mouse-style: [gpio_in] in, [gpio_out] =
-     [gpout] and [gpio_oe] = [gpoc] out; the board shim rebuilds the IOBUFs. *)
+  (* ── GPIO ── [gpout] is the drive value and [gpoc] the direction. [gpoc] is cleared by
+     reset; [gpout] is not, as in the RTL: a pin comes up as an input. The bidirectional
+     pad is split as the mouse's lines are. *)
   let gpout = io_reg ~rst:false ~word:w_gpio ~width:8 () in
   let gpoc = io_reg ~word:w_gpio_dir ~width:8 () in
-  (* ── MMIO read map ── muxed by [iowadr] (RISC5Top's [iowadr ==] chain); unmapped words
-     read 0, like the RTL's [: 0]. [extra_read_slots] fills SoC-specific words (the
-     board's Halftone status at 10) — collisions with the faithful map fail loudly. *)
+  (* ── Read mux ── Unmapped words read 0. *)
   let base_read_map =
     [ w_ms_timer, cnt1_v
     ; w_switches_leds, switches
@@ -232,12 +212,10 @@ let create
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   block's behaviour under a real program is covered where it always was — the two SoCs'
-   co-located integration tests plus the boot/golden gates run every word of the map
-   through this one instance. Here: direct-bus pokes for what only this layer owns — the
-   writable-register shape (write, readback, reset-clear, gpout's no-reset), the
-   extra-slot seam, and its elaboration guards. *)
+(* ── Tests ── The cluster is exercised by real programs in both SoCs' tests and in the
+   boot gates. Here, what only this layer has: the writable-register shape (write, read
+   back, reset, and [gpout] surviving reset), the extra read slots, and the elaboration
+   guards. *)
 
 let%expect_test "peripherals — direct bus: LED latch, gpout no-reset, extra slot at 10" =
   let module Sim = Cyclesim.With_interface (I) (O) in

@@ -1,34 +1,19 @@
-(* Public API and behaviour spec live in [fp_divider.mli].
+(* A port of FPDivider.v; the contract is in [fp_divider.mli].
 
-   Implementation note. A *sequential* unit, so per AGENT.md §2 we mirror RISC5.v's
-   skeleton exactly: the registered signals (the 24-bit remainder [R], the 26-bit quotient
-   [Q] and the 5-bit state [S]) and the stall timing are the spec the oracle checks
-   cycle-by-cycle and synthesis preserves; the combinational FP wrapper is idiomatic
-   Hardcaml. The original RTL is [test/_po/verilog/src/FPDivider.v] (45 lines).
+   Restoring division. Each step doubles the remainder and subtracts the divisor on trial.
+   If the subtraction borrows, the divisor did not fit: the old remainder is kept and the
+   quotient bit is 0. Otherwise the difference is kept and the bit is 1. [Q] takes the bit
+   in at the bottom, so after the 26 steps [Q[25]] is the first bit — whether the quotient
+   reached 1 — and decides the normalisation.
 
-   Restoring division — the dual of the integer/FP multiplier's shift-and-add. Each step
-   doubles the remainder ([{R, 1'b0}], a left shift) and trial-subtracts the divisor
-   ([d = r0 - 1.y]). The borrow [d[24]] decides: if the divisor didn't fit the subtraction
-   goes negative, so we *restore* the old remainder ([r1 = d[24] ? r0 : d]) and the
-   quotient bit is 0; otherwise we keep the difference and the bit is 1. [Q] shifts that
-   bit ([~d[24]]) in from the LSB each cycle, MSB-first, so after the 26 steps [Q[25]] is
-   the first bit (whether the quotient >= 1) and drives normalization. [S=0] loads [x]'s
-   mantissa as the initial remainder; [run] gates [S] (run=0 -> S:=0), so there is no
-   reset.
+   [R]'s next value and [Q]'s next bit come from the same trial subtraction, which is a
+   function of the current [R]. So both are declared as wires, the step is built from
+   them, and each is closed through a register.
 
-   The wrinkle vs the multiplier (whose [P] feedback was a self-contained reg_fb): [R]'s
-   next value and [Q]'s next bit both come from the *same* trial subtraction [d], and [d]
-   is a function of the current [R]. So we forward-declare [R] and [Q] as wires, build the
-   combinational step off them, and close the loop by assigning each through a [reg] — the
-   register breaks the apparent cycle. (Equivalently one combined 50-bit register: the
-   same flip-flops as the RTL's two.)
-
-   The FP wrapper is combinational off [Q] and the held inputs, structurally a copy of the
-   multiplier's: [sign] is the XOR of the operand signs; [e1 = xe - ye + 126 + Q[25]]
-   subtracts the exponents (cancelling the bias), re-adds it, and folds in the normalize
-   shift; [z0] normalizes on [Q[25]] and [z1] rounds; and [z] repacks, mapping a zero
-   dividend (-> 0), a zero divisor (-> signed inf), exponent overflow (-> inf) and
-   underflow (-> 0). *)
+   Around the divider, combinationally and much as in the multiplier: the sign, the
+   exponent [xe - ye + 126 + Q[25]], normalising on [Q[25]], rounding, and the special
+   cases — a zero dividend gives 0, a zero divisor a signed infinity, overflow infinity,
+   underflow 0. *)
 
 open! Base
 open Hardcaml
@@ -54,28 +39,20 @@ end
 
 let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* Phase 7: ce-gate every register — the S counter [reg_fb] and the [R]/[Q] regs [reg] —
-     so the unit freezes with the ce-gated core during a multi-cycle PSRAM wait (else S
-     overruns the fetch-wait and the op restarts — see [Divider]). [ce = vdd] (the
-     default) ⇒ byte-identical. *)
+  (* the state freezes with the core under [ce]; see [Divider] *)
   let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
   let reg spec d = Signal.reg spec ~enable:ce d in
-  (* S : 5-bit state counter; [run] is both enable and synchronous clear (no reset). *)
-  (* Registers named to match the RTL ([S]/[R]/[Q]) so the Phase-8 formal harness can pair
-     the flip-flops with FPDivider.v's (yosys [equiv_make] matches FFs by name —
-     test/formal). [R]/[Q] are named on the [reg] output (below), not the forward-declared
-     wire, so the *flip-flop* carries the name. *)
+  (* [run] is the enable and the synchronous clear. The registers carry the RTL's names,
+     [S], [R] and [Q] — put on the register outputs, not on the wires, so that it is the
+     flip-flops that are named: the equivalence proof pairs registers by name. *)
   let s = reg_fb spec ~width:5 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 5)) -- "S" in
   (* a 24-bit mantissa (restored hidden bit + frac) in a 25-bit field, top bit 0 (room for
      the trial-subtraction borrow) *)
   let mant25 v = gnd @: vdd @: select v ~high:22 ~low:0 in
-  (* R (24-bit remainder) and Q (26-bit quotient): forward-declared, assigned through reg
-     below so the restoring step can read the current values. *)
   let r = wire 24 in
   let q = wire 26 in
-  (* ---- restoring-division step (combinational, off the current R) ---- *)
-  (* double the remainder (shift left one), then trial-subtract the divisor; d's top bit
-     is the borrow *)
+  (* double the remainder, then subtract the divisor on trial; the top bit of [d] is the
+     borrow *)
   let r0 = mux2 (s ==:. 0) (mant25 i.x) (r @: gnd) in
   let d = r0 -: mant25 i.y in
   (* on borrow the divisor didn't fit: restore the old remainder, quotient bit 0 *)
@@ -114,14 +91,9 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = i.run &: ~:(s ==:. 26); z }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Value-correctness is the verilator RTL co-sim's job (test/cosim/, the §6 fidelity
-   oracle): it proves bit-exactness to FPDivider.v over the frozen fp_vectors D-lines +
-   fuzz. What we pin here is the cycle timing plus one oracle-free sanity value: the 5-bit
-   state walks 0->26, stall holds for States 0..25 then drops at S==26, and a plain FDV
-   6.0 / 2.0 = 3.0 (0x40400000). Like {!Fp_multiplier}, the 26-cycle run is too long for
-   one window, so two tight windows — the head (run -> stall asserts) and the tail (stall
-   drops, run releases) — bracket the uniform stall=1 middle. *)
+(* ── Tests ── The values are checked against FPDivider.v by the co-simulation, and
+   against the frozen vectors in test/. Here: the timing ([S] walks from 0 to 26 and
+   [stall] drops at 26) and one value, 6.0 / 2.0. *)
 
 let%expect_test "FPDivider timing — stall envelope (S 0->26) + FDV 6.0 / 2.0 = 3.0" =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -132,9 +104,8 @@ let%expect_test "FPDivider timing — stall envelope (S 0->26) + FDV 6.0 / 2.0 =
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* one idle cycle so the run/stall rising edges show, then a FDV run with operands held
-     stable across the run (as the core guarantees); z is read when stall drops (S==26),
-     then run releases the next cycle, exactly as the core sequences it. *)
+  (* one idle cycle, then FDV with the operands held; [z] is read when [stall] drops, and
+     [run] is released on the next cycle, as the core does *)
   set inp.x 0x40C0_0000 32;
   set inp.y 0x4000_0000 32;
   set inp.run 0 1;

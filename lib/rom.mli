@@ -1,20 +1,16 @@
-(** The RISC5 boot ROM — the 512×32 ROM {e circuit} (a port of [PROM.v]) together with the
-    boot {e image} it ships ([bootloader]), making [risc5] a self-contained port of the
-    machine.
+(** The boot ROM: the 512-word ROM circuit (a port of [PROM.v]) and the boot image it
+    holds.
 
-    [PROM.v] registers its read on the (inverted) clock; we model the pragmatic,
-    correct-by-fetch ROM as an {b asynchronous} (combinational) read. That negedge
-    register only hands on-chip block RAM half a cycle so [codebus] is ready before the
-    CPU's rising edge latches it into [ir] — and [ir] (a posedge register) is [codebus]'s
-    sole consumer, so a combinational read presents the identical word at every clock edge
-    (AGENT.md §2). This is a modelling choice resting on that argument: the circuit has no
-    co-sim or equivalence row against [PROM.v].
+    [PROM.v] registers its read on the falling clock edge, to give block RAM half a cycle
+    before the core's rising edge latches [codebus] into [IR]. Here the read is
+    combinational. [IR] is the only consumer of [codebus], so it sees the same word at
+    every rising edge either way. That argument is all there is behind the choice: the
+    circuit has no co-simulation or equivalence check against [PROM.v].
 
-    The circuit's image is a {b parameter} ([~contents]), not baked in — the SoC/emit
-    chooses: tests feed hand-assembled programs, the real machine feeds [bootloader].
-    [Emu.Boot_rom] holds the oracle's own transcription (from the C [risc-boot.inc]) for
-    the emulator's internal boot; a guard test (test/test_rom.ml) pins it equal to
-    [bootloader], so hardware and oracle can never boot different ROMs. *)
+    The image is a parameter. Tests pass hand-assembled programs; the machine passes
+    {!bootloader}. The emulator has its own copy of the boot image, and a test
+    (test/test_rom.ml) holds the two equal, so the design and its oracle cannot boot
+    different ROMs. *)
 
 open Hardcaml
 
@@ -27,9 +23,8 @@ module O : sig
   type 'a t = { data : 'a (** the 32-bit ROM word at [adr] *) } [@@deriving hardcaml]
 end
 
-(** [create ~contents i] builds the ROM: [data] = [contents].([i.adr]), an asynchronous
-    read. [contents] holds the word image (each value in u32 range); it is zero-padded up
-    to the 512-word depth, and a longer array raises [Failure]. *)
+(** [create ~contents i] is the ROM holding [contents], zero-padded to 512 words; a longer
+    array raises [Failure]. *)
 val create : contents:int array -> Signal.t I.t -> Signal.t O.t
 
 (** The 512-word boot loader: the 383-word image the Oberon emulators boot (the C

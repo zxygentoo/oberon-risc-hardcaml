@@ -1,31 +1,20 @@
-(* Public API and behaviour spec live in [spi.mli].
+(* A port of SPI.v; the contract is in [spi.mli].
 
-   Port of [SPI.v] (1267 B). The hardware idea: one 32-bit shift register [shreg], driven
-   by a clock divider [tick] and a 5-bit [bitcnt], serves two SD-card rates from one
-   datapath. SLOW (init): [endtick] at tick==2^slow_div_log2-1 (clk÷2^slow_div_log2),
-   [endbit] at bitcnt==7, [sclk] = tick[slow_div_log2-1] — a clean 50%-duty divided clock.
-   FAST (bulk): [endtick] at tick==2 (clk÷3), [endbit] at bitcnt==31, [sclk] = the
-   [endtick] pulse. A bit advances on [endtick]; the transfer ends — and [rdy] re-raises —
-   on [endtick & endbit].
+   One shift register [shreg], a clock divider [tick] and a bit counter [bitcnt] serve
+   both rates. Slow: [endtick] at the divider's maximum, [endbit] at bit 7, and [sclk] is
+   the divider's top bit, a clean 50% clock. Fast: [endtick] at 2 (clk/3), [endbit] at bit
+   31, and [sclk] is the [endtick] pulse. A bit advances on [endtick]; the transfer ends,
+   and [rdy] returns, on [endtick & endbit].
 
-   [slow_div_log2] (default 6) sets the slow-divider depth. 6 = clk÷64 = [SPI.v] exactly —
-   the value the @formal proof and the cosim pin, and 390.6 kHz at 25 MHz (just under the
-   SD 400 kHz init ceiling). The 60 MHz board overrides to 8 (clk÷256 = 234 kHz; ÷128
-   would be 469 kHz, over the ceiling — see emit_verilog.ml). FAST is untouched: clk÷3 =
-   20 MHz at 60 MHz, under the 25 MHz SD SPI ceiling. Only the slow path needs retuning
-   per clock.
+   [mosi] is bit 7 of [shreg], and [miso] is shifted in on [endtick]. The shift is not a
+   plain [shreg << 1]: four byte lanes shift in parallel and are chained, each lane's top
+   bit feeding the next lane's bottom bit, so that a 32-bit word leaves least significant
+   byte first while every byte leaves most significant bit first — the order the SD
+   protocol wants. That permutation shows in [data_rx]'s bit order, so it is copied from
+   the RTL bit for bit.
 
-   [mosi] taps [shreg] bit 7 (bytes leave MSbit first); [miso] is sampled into the
-   register on [endtick]. The shift is NOT a plain [shreg<<1]: it is four byte-lanes
-   shifted in parallel and chained (each lane's MSB feeds the next lane's LSB), so a fast
-   32-bit word serialises LSByte-first while every byte stays MSbit-first — the exact
-   ordering the SD protocol expects. That permutation is observable (it sets [data_rx]'s
-   bit order), so it is transcribed bit-for-bit from the RTL, not re-idiomatised (AGENT.md
-   §2).
-
-   [rst] is active-low and synchronous — woven into each register's next-state as in the
-   RTL, so a plain clock-only [Reg_spec] with no separate reset port (matches [Cpu]'s
-   reset style). *)
+   Reset is synchronous and active low, part of each register's next-state logic as in the
+   RTL. *)
 
 open! Base
 open Hardcaml
@@ -54,10 +43,8 @@ module O = struct
 end
 
 let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
-  (* tick must hold the slow terminal 2^slow_div_log2-1 and the fast terminal 2, so the
-     counter is [slow_div_log2] bits wide (>= 3 in practice; 6 = SPI.v, 8 = clk÷256 = the
-     60 MHz board). Below 2 the fast terminal no longer fits and the divider is silently
-     wrong — fail at elaboration instead. *)
+  (* [tick] must hold both the slow terminal 2^n - 1 and the fast terminal 2; below n = 2
+     the fast one no longer fits *)
   if slow_div_log2 < 2
   then failwith "Spi: slow_div_log2 < 2 cannot hold the fast terminal (tick == 2)";
   let spec = Reg_spec.create () ~clock:i.clock in
@@ -69,9 +56,8 @@ let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
   let tick_v = tick.value -- "tick" in
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let rdy_v = rdy.value -- "rdy" in
-  (* Qualified name: once composed into the SoC the UART (and later PS/2) shift registers
-     are also "shreg", and the boot checkpoint looks this one up by name — so keep it
-     unambiguous. *)
+  (* a qualified name: the UART's and the keyboard's shift registers are [shreg] too, and
+     the boot harness looks this one up by name *)
   let shreg_v = shreg.value -- "spi_shreg" in
   let bit n = select shreg_v ~high:n ~low:n in
   (* combinational: end-of-bit / end-of-word, line drivers, received data *)
@@ -115,11 +101,9 @@ let create ?(slow_div_log2 = 6) (i : _ I.t) : _ O.t =
   { O.data_rx; rdy = rdy_v; mosi; sclk }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   exhaustive fidelity check against [SPI.v] is the Verilator co-sim (layer 3, deferred).
-   Here: self-consistent functional checks — a loopback (drive [miso] from [mosi])
-   round-trips the data and exercises the full shift + [rdy] handshake + cycle-accurate
-   timing — plus a short structural waveform of a fast transfer's first bits. *)
+(* ── Tests ── A loopback ([miso] driven from [mosi]) takes data through the whole shift
+   and handshake in both modes, and a waveform shows the first bits of a fast transfer.
+   Fidelity to SPI.v is the co-simulation's and the proof's job. *)
 
 let lo = Bits.gnd
 let hi = Bits.vdd
@@ -166,9 +150,8 @@ let%expect_test "spi — slow byte loopback: data round-trips, clk÷64 × 8 bits
 let%expect_test "spi — slow byte loopback at clk÷128 (a deeper divider): 8 bits, 2× the \
                  cycles"
   =
-  (* slow_div_log2:7 pins the divider-depth parameterisation itself (the 50 MHz-era board
-     value; the 60 MHz board passes 8). Same data, same handshake, just 128 (not 64)
-     clocks per bit -> 1024 cycles for 8 bits. *)
+  (* a divider depth other than the default: the same data and handshake at 128 clocks to
+     the bit instead of 64 *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~slow_div_log2:7) in
   let inp = Cyclesim.inputs sim in

@@ -1,18 +1,11 @@
-(** Oberon RISC5 — Hardcaml design library.
+(** The Oberon RISC5 machine as a Hardcaml library: the modules that consumers outside it
+    reach — the test harnesses and the board layer.
 
-    Curated index of the machine's public modules — what the out-of-library consumers (the
-    formal / co-sim / lockstep / boot-gate harnesses in test/, and the board layer)
-    actually reach; internal-only blocks (the inline {b Alu}, the sim {b Ram}) stay
-    unexported on purpose. Two kinds of module live here:
-
-    - {b faithful unit ports} — each mirrors one reference Verilog file (named in its .ml
-      header) and holds its green row in the AGENT.md §6 pyramid (formal equivalence, RTL
-      co-sim, oracle lockstep): the shifters, MUL/DIV, the FP units, the register file,
-      the CPU core, and the peripheral units;
-    - {b own-design compositions} — {!Peripherals} (the RISC5Top MMIO cluster both SoCs
-      share) and {!Soc} (the sim SoC over flat single-cycle RAM — the §6 verification
-      vehicle), judged by the boot-level gates against the oracle, not against any single
-      .v. *)
+    Most of them port one reference Verilog file each, named in the header of the .ml: the
+    shifters, the multiplier and divider, the FP units, the register file, the core, and
+    the peripherals. Two are compositions of this project's own: {!Peripherals}, the MMIO
+    cluster both SoCs share, and {!Soc}, the simulation SoC over flat single-cycle RAM.
+    The inline ALU and the simulation RAM are internal and are not exported. *)
 
 module Left_shifter = Left_shifter
 module Right_shifter = Right_shifter
@@ -33,6 +26,5 @@ module Rom = Rom
 module Peripherals = Peripherals
 module Soc = Soc
 
-(** test scaffolding (QCheck seed + corner-reaching generators), shared with the board
-    layer's and [test/]'s property tests *)
+(** test scaffolding: the QCheck seed and corner-reaching generators *)
 module Test_gen = Test_gen

@@ -1,11 +1,7 @@
-(** [Right_shifter] — combinational right shift: ASR (arithmetic) and ROR (rotate); the
-    RISC5 [ASR]/[ROR] datapath unit.
-
-    Mirrors Oberon's [RightShifter.v]: a barrel right-shift by [sc] (a 5-bit count, 0..31)
-    whose vacated top bits are filled by [md] — the sign bit for ASR ([md] = 0), the
-    outgoing low bits for ROR ([md] = 1). In the core it is fed operand [B], [C1[4:0]],
-    and [md = IR[16]] (= op[0], "is ROR"); see [RISC5.v:59]. RISC5 has no logical shift
-    right — ASR and ROR are the only right shifts. *)
+(** Right shift, the ASR and ROR unit ([RightShifter.v]): a shift by [sc] (0..31) whose
+    vacated top bits take the sign ([md] = 0, ASR) or the bits shifted out ([md] = 1,
+    ROR). The core feeds it operand B, the low five bits of operand 2, and [md = IR[16]].
+    RISC5 has no logical shift right. *)
 
 open Hardcaml
 
@@ -22,6 +18,4 @@ module O : sig
   type 'a t = { y : 'a (** [x] shifted right, [md]-filled *) } [@@deriving hardcaml]
 end
 
-(** [create] is the [ASR]/[ROR] unit as a Hardcaml [I]-to-[O] interface, for instantiation
-    and simulation. *)
 val create : Signal.t I.t -> Signal.t O.t

@@ -1,13 +1,8 @@
-(* Public API and behaviour spec live in [ram.mli].
+(* The contract is in [ram.mli].
 
-   Implementation note. The OberonStation main memory is external asynchronous SRAM, wired
-   in RISC5Top through tri-state IOBUFs with per-byte write-enables ([SRbe0]/[SRbe1],
-   derived from [ben] and [adr[1:0]]). We model it as four byte-lane memories (256 Ki x 8
-   each) sharing the word address [adr[19:2]]: lane k is written when [wr] and the lane is
-   enabled — a word store ([~ben]) enables all four, a byte store only lane [adr[1:0]].
-   This is the [SRbe] semantics directly, and avoids the read-modify-write a single 32-bit
-   array would need for sub-word writes. Reads are asynchronous (combinational); memory
-   starts zeroed. *)
+   Four byte-lane memories of 256 Ki bytes share the word address [adr[19:2]]. A word
+   store writes all four, a byte store only lane [adr[1:0]]: the SRAM's byte write-
+   enables, directly, with no read-modify-write. *)
 
 open! Base
 open Hardcaml
@@ -36,8 +31,6 @@ end
 let create (i : _ I.t) : _ O.t =
   let word_adr = select i.adr ~high:19 ~low:2 in
   let lane = select i.adr ~high:1 ~low:0 in
-  (* one 256 Ki x 8 memory per byte lane; lane k writes on a word store or a byte store to
-     k *)
   let byte_lane k =
     let write_enable = i.wr &: (~:(i.ben) |: (lane ==:. k)) in
     let write_port =
@@ -58,22 +51,15 @@ let create (i : _ I.t) : _ O.t =
   { O.rdata }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: random (wr, ben, adr, wdata) sequences against a plain-OCaml word-array
-   model — the array is its own spec, no oracle. Addresses are confined to a small window
-   so reads land on written cells (read-after-write coverage). Post-edge the read reflects
-   this cycle's write applied (async memory settles after the edge), so the model commits
-   the write, then compares. Behaviour: a frozen waveform of a word store, a byte store,
-   and the reads between them (data tracks adr, a write in cycle N reads back in N+1). *)
+(* ── Tests ── A property test of random store and load sequences against a plain word
+   array, the addresses confined to a small window so that reads land on written cells;
+   and a waveform of a word store, a byte store and the reads between them. *)
 
 let%expect_test "ram = word-array model, word + byte writes [qcheck, 500 sequences]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let win = 16 in
-  (* words; addresses span 0..win*4-1 bytes *)
-  (* One sim, reused across all sequences. [Sim.create] of the 1 MiB memory (4 × 256 Ki
-     byte lanes) is the expensive part, so build it once and zero the small test window at
-     the start of each sequence rather than rebuilding it 500× (which made this qcheck ~50
-     s). *)
+  (* One sim for all the sequences: elaborating 1 MiB of memory is the expensive part.
+     Each sequence starts by zeroing the small window it uses. *)
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in

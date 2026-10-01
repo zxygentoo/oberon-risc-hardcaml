@@ -1,25 +1,22 @@
-(** [Divider] — iterative restoring division; the RISC5 [DIV]/[DIV'] unit.
+(** Restoring division, the DIV unit: a port of [Divider.v]. It takes 33 cycles, with the
+    same counter and stall as {!Multiplier}: [stall = run & ~(S == 33)], and [run] low
+    clears [S].
 
-    A faithful port of Oberon's [Divider.v]: a restoring sequential divider that computes
-    the quotient and remainder of [x]/[y] over 33 cycles, sharing the Multiplier's exact
-    state/stall skeleton — 6-bit counter [S], [stall = run & ~(S=33)], [run]-gated with no
-    reset (see {!Multiplier}).
+    {1 The divisor must be positive}
 
-    {1 Precondition: [y > 0]}
+    [y] must lie in 1 .. 2^31 - 1 (the RTL says [// y > 0]). The restoring step reads the
+    top bit of a 32-bit trial difference as "the remainder is smaller than the divisor",
+    which holds only while the partial remainder stays below 2^31. Nothing in the hardware
+    enforces it: the Oberon compiler emits a trap for a divisor that is not positive.
 
-    The divisor must lie in [1 .. 2^31-1] (i.e. [i32 y > 0], top bit clear) — Wirth's
-    [// y > 0]. The restoring step uses the 32-bit trial difference's MSB as the
-    "remainder < divisor" test, which only holds while the partial remainder stays below
-    [2^31]; a divisor of 0 or with bit 31 set breaks it. The core and oracle uphold this
-    (the oracle takes a separate path for [i32 y <= 0]).
+    {1 Signedness: floored division}
 
-    {1 Signedness — floored division}
-
-    [u] is the {e signed} flag — the core drives it [~u], so ISA [DIV] → [u=1] (signed),
-    [DIV'] → [u=0] (unsigned). Signed mode divides [|x|]/[y] then sign-corrects
-    to **floored** division (toward −∞) with a {e non-negative} remainder: for [x<0],
-    [quot = -(|x|/y)] when it divides evenly else [-(|x|/y) - 1], with [rem = 0] or
-    [y - (|x| mod y)] to match. [quot] → result [R.a], [rem] → [H]. *)
+    [u] here means {e signed}: the core passes the inverse of the instruction's u bit.
+    Signed division divides [|x|] by [y] and then corrects to floored division, rounding
+    toward minus infinity, with a remainder that is never negative: for [x < 0] the
+    quotient is [-(|x|/y)] when the division is exact and [-(|x|/y) - 1] otherwise, and
+    the remainder 0 or [y - (|x| mod y)] to match. The quotient is the instruction's
+    result; the remainder goes to [H]. *)
 
 open Hardcaml
 
@@ -43,9 +40,7 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create] is the [DIV] unit as a Hardcaml [I]-to-[O] interface, for instantiation and
-    simulation. [?ce] is the board clock-enable (default [vdd]): driven low it freezes the
-    unit's state in lockstep with the ce-gated core through a multi-cycle PSRAM wait, so
-    the 33-cycle counter can't overrun the fetch-wait and restart the divide. The default
-    leaves the unit byte-identical to the bare RTL port (Phase 7; AGENT.md §3). *)
+(** [?ce] (default [vdd]) is the clock enable the core passes on. Held low it freezes the
+    unit's state together with the core's, so that the counter cannot run past its end
+    during a memory wait and start the division again. *)
 val create : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t

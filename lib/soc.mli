@@ -1,59 +1,46 @@
-(** SoC top — the RISC5 core wired to the boot ROM ([Rom]), main memory ([Ram]) and the
-    peripherals, reproducing RISC5Top's address decode and MMIO map. This is the Phase-6b
-    integration target, and the design the boot-handoff checkpoint (AGENT.md §6) runs on
-    the plain Cyclesim interpreter, where [lookup_reg]/[lookup_mem] reach this state
-    directly.
+(** The simulation SoC: the core with the boot ROM ({!Rom}), 1 MiB of single-cycle RAM and
+    the peripherals, under RISC5Top's address decode and MMIO map. It is what the boot
+    gates run on the Cyclesim interpreter.
 
     {1 Address decode}
 
-    Three regions, exactly as RISC5Top splits them:
+    Three regions, as RISC5Top has them:
+    - fetch: [codebus] comes from the ROM when [adr[23:14] = 0x3FF], the top 16 KiB, and
+      from RAM otherwise;
+    - load: [inbus] comes from the peripherals when [adr[23:6] = 0x3FFFF], the top 64
+      bytes, and from RAM otherwise;
+    - store: the RAM takes the core's write directly. The original's SRAM has no MMIO
+      gate, so a store to a peripheral or to the ROM region also lands in the aliased RAM
+      word, harmlessly.
 
-    - {b fetch}: [codebus = adr[23:14] = 0x3FF ? rom : ram] — the top 16 KiB decodes to
-      the boot ROM, the rest to RAM.
-    - {b load}: [inbus = adr[23:6] = 0x3FFFF ? io : ram] — the top 64 B is the MMIO
-      window.
-    - {b store}: [Ram] takes the core's write port directly. The SRAM has no [ioenb] gate,
-      so it aliases MMIO/ROM-region stores harmlessly (the lockstep filters those by
-      address).
+    {1 Video, timer, interrupt}
 
-    {1 Video, timer, interrupts}
+    The video controller ({!Video}) drives the core's [stall_x]: every 32 pixels its DMA
+    request steals one cycle of the RAM port to read a framebuffer word.
 
-    The video controller ({!Video}) drives the core's [stall_x]: a DMA request steals one
-    SRAM cycle every 32 px ([sram_adr = vidreq ? vidadr : adr]) to read the framebuffer,
-    which scans out on [hsync]/[vsync]/[rgb] off the pixel clock [pclk].
-
-    [irq] and the millisecond counter come from a free-running timer: a
-    [clocks_per_ms]-cycle prescaler raises [limit] (the IRQ source), which ticks [cnt1],
-    read at MMIO word 0.
+    The interrupt and the millisecond counter come from one free-running timer.
 
     {1 MMIO map}
 
-    Within the load window above (RISC5Top words 0–15):
-
-    - {b 0} — millisecond counter ([cnt1]).
-    - {b 1} — read [{btn, sw}] (buttons/switches, logical/active-high; default 0 = all-off
-      = disk boot); a store latches the LEDs ([leds]).
-    - {b 2/3} — UART ({!Uart_rx}/{!Uart_tx}): word 2 reads / transmits a byte on
-      [rxd]/[txd]; word 3 carries the [{rdyTx, rdyRx}] status and the 1-bit [bitrate]
-      select.
-    - {b 4/5} — {!Spi} master (the one peripheral boot needs): word 4 = data (read =
-      received, write = start a transfer), word 5 = control (write [fast]/slave-select,
-      read = [rdy]). [miso] is an input and [mosi]/[sclk] are outputs (the SD card is
-      driven test-side).
-    - {b 6/7} — PS/2 keyboard + mouse ({!Ps2}/{!Mouse}): word 6 =
-      [{keyboard-ready, mouse state}], word 7 = the keyboard byte (a read pops the FIFO).
-      The mouse's open-drain [msclk]/[msdat] split into resolved-line inputs and drive-low
-      [msclk_oe]/[msdat_oe] outputs.
-    - {b 8/9} — GPIO: [gpio_out]/[gpio_oe] drive the split bidirectional pads
-      ([gpout]/[gpoc]) and [gpio_in] reads them back.
-    - {b 10–15} — unmapped (read 0).
+    The sixteen words of the load window:
+    - {b 0}: the millisecond counter.
+    - {b 1}: reads [{btn, sw}] (all off, the default, boots from disk); a store latches
+      the LEDs.
+    - {b 2, 3}: the UART ({!Uart_rx}, {!Uart_tx}). Word 2 receives and transmits a byte;
+      word 3 reads the status [{rdyTx, rdyRx}] and writes the rate bit.
+    - {b 4, 5}: the {!Spi} master, the one peripheral booting needs. Word 4 is the data (a
+      write starts a transfer); word 5 writes the control register and reads [rdy]. The SD
+      card is outside the design: [miso] is an input, [mosi] and [sclk] outputs.
+    - {b 6, 7}: the PS/2 keyboard and mouse ({!Ps2}, {!Mouse}). Word 6 reads
+      [{keyboard ready, mouse state}]; word 7 reads a keyboard byte and pops its FIFO.
+    - {b 8, 9}: GPIO: the drive value and the direction; reading word 8 returns the pins.
+    - {b 10..15}: unmapped; they read 0.
 
     {1 Parameters}
 
-    [~contents] is the boot ROM image (keeping the design library free of [prom.mem]);
-    [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz; [?spi_slow_div_log2] is {!Spi}'s
-    slow-clock divider depth (default 6 = [SPI.v]'s clk÷64; the boot gates' fast mode
-    passes 2). *)
+    [~contents] is the boot ROM image. [~clocks_per_ms] defaults to 25000, 1 ms at 25 MHz.
+    [?spi_slow_div_log2] is {!Spi}'s slow divider depth, 6 by default; the boot gates'
+    fast mode passes 2. *)
 
 open Hardcaml
 
@@ -66,7 +53,7 @@ module I : sig
     ; btn : 'a (** buttons (RISC5Top [btn]); read-only via MMIO word 1 *)
     ; sw : 'a (** switches, logical/active-high (RISC5Top's [~nswi], de-inverted) *)
     ; gpio_in : 'a (** resolved GPIO pad inputs (RISC5Top [gpin]) *)
-    ; pclk : 'a (** 65 MHz pixel clock for {!Video} (DCM/MMCM; a Phase-7 board input) *)
+    ; pclk : 'a (** 65 MHz pixel clock for {!Video}, generated by the board *)
     ; ps2c : 'a (** PS/2 keyboard clock *)
     ; ps2d : 'a (** PS/2 keyboard data *)
     ; msclk : 'a (** PS/2 mouse clock — resolved open-drain line in *)

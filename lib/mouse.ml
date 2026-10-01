@@ -1,25 +1,15 @@
-(* Public API and behaviour spec live in [mouse.mli].
+(* A port of MousePM.v (module [MouseP]); the contract is in [mouse.mli].
 
-   Port of [MousePM.v] (module [MouseP]). The mouse is bidirectional: [msclk]/[msdat] are
-   open-drain inout in the RTL ([line = drive ? 0 : z]). Hardcaml has no inout, so each
-   splits into a drive-low output ([*_oe]) + the resolved wire-value input; the open-drain
-   wired-AND lives in the pad/testbench.
+   Initialisation: [cmd] holds the seven commands. For each, [req] pulls [msclk] low until
+   [endcount] (about 1.1 ms at 25 MHz), then the 9-bit command leaves [tx] on [msdat],
+   driven by [~tx[0]], on the device's clock. Reports: [rx] assembles each packet with a
+   walking start bit — preloaded with ones, [endbit] when the marker reaches rx[0] for a
+   report or rx[10] for a command — and [x], [y] and [btns] update on [done].
 
-   Two phases, sequenced by [sent] (0..7) with [run = sent==7]:
-   - INIT: send 7 commands ([cmd] — the IntelliMouse set-sample-rate 200/100/80 + enable
-     scroll-button magic). Each needs a request-to-send: [req] pulls [msclk] low for ~1.1
-     ms ([endcount] = [count] reaching count[14:12]==7 @25 MHz), then releases and clocks
-     the 9-bit command out of [tx] on [msdat] (driven by [~tx[0]]) while the device
-     clocks.
-   - REPORT: the device streams 33-bit packets; [rx] assembles each (walking start bit,
-     like [PS2.v]: preloaded all-1s, [endbit] when the marker reaches rx[0] for reports /
-     rx[10] for commands), then [x]+=dx, [y]+=dy and [btns] latch on [done].
-
-   [shift] is the bit strobe: a debounced [msclk] falling edge ([filter] = a 10-tap shift
-   of [msclk], [shift] = ~req & filter==1). [done] = endbit & endcount & ~req completes a
-   frame. [filter] has no reset (it just tracks [msclk]); [rst] (active-low) is woven into
-   the other next-states, and [x]/[y]/[btns] clear on [~run]. Clock-only [Reg_spec], like
-   the peers. *)
+   [shift] is the bit strobe, a debounced falling edge of [msclk]: [filter] is a 10-tap
+   shift register of [msclk]. [done = endbit & endcount & ~req] completes a frame.
+   [filter] has no reset; the other registers take the active-low reset in their next-
+   state logic, and [x]/[y]/[btns] are cleared while [run] is low. *)
 
 open Hardcaml
 open Signal
@@ -90,9 +80,8 @@ let create (i : _ I.t) : _ O.t =
       ; mux2 (bit rx_v ~pos:8) (zero 8) (select rx_v ~high:30 ~low:23)
       ]
   in
-  (* request-to-send toggle: [req] flips each [endcount] while idle. Bound here (not
-     inline) because [<--] shares precedence/associativity with [&:], so a bare op-chain
-     RHS would mis-parse as [(req <-- …) &: …]. *)
+  (* bound by name first: [<--] has the same precedence as [&:], so the chain written
+     inline would parse as [(req <-- …) &: …] *)
   let req_next = i.rst_n &: ~:run &: req_v ^: endcount in
   (* ── next-state ───────────────────────────────────────────────────────────── *)
   Always.(
@@ -133,12 +122,9 @@ let create (i : _ I.t) : _ O.t =
   { O.msclk_oe = req_v; msdat_oe = ~:(lsb tx_v); out }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────────── A
-   basic sanity smoke (elaborates + the request-to-send oscillator runs while idle), then
-   an interactive device-model test: a plain-Cyclesim loop plays a PS/2 mouse — through
-   the bidirectional init handshake to [run], then streaming movement reports — and checks
-   the accumulated [x]/[y]/[btns]. The exhaustive bit-for-bit fidelity check vs
-   [MousePM.v] is the Verilator co-sim. *)
+(* ── Tests ── The request-to-send oscillator runs with no device attached; then a device
+   model takes the port through the initialisation handshake to [run] and sends movement
+   reports. Fidelity to MousePM.v is the co-simulation's and the proof's job. *)
 
 let%expect_test "mouse — smoke: elaborates; req (msclk_oe) oscillates while idle" =
   let module Sim = Cyclesim.With_interface (I) (O) in

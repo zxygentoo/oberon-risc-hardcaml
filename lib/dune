@@ -1,8 +1,7 @@
-; The Oberon RISC5 hardware design, in Hardcaml. Modules (shifters, ALU, MUL/DIV,
-; FPU, register file, CPU core, SoC) land here from Phase 1 on, each with its
-; ppx_expect tests co-located in the same .ml (AGENT.md §6). Co-located tests share
-; this library's compile scope, so their tooling (hardcaml_waveterm, qcheck-core) sits
-; in (libraries); the emulator oracle stays out — oracle-coupled lockstep lives in test/.
+; The Oberon RISC5 machine, in Hardcaml: library risc5. Each module's tests are
+; co-located in its .ml and share this library's compile scope, so their tooling
+; (hardcaml_waveterm, qcheck-core) sits in (libraries). The emulator stays out: tests
+; that need the oracle live in test/.
 
 (library
  (name risc5)

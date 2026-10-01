@@ -1,12 +1,5 @@
-(* Public API and behaviour spec live in [alu.mli].
-
-   Implementation note. This groups the register-op results that RISC5.v computes *inline*
-   in its [aluRes] assign (lines 106..125) — MOV, the logic ops, and ADD/SUB — into one
-   testable module. They are exactly the ops Wirth left inline, each a native operator (&
-   | ^ + -) or a mux. The other register ops are separate peer units: the shifts (1..3) in
-   {!Left_shifter}/{!Right_shifter}, and MUL/DIV/FP (10..15) as multi-cycle units. Their
-   results are selected alongside this unit's by the result mux at the core (Phase 4), so
-   those op slots read as 0 here. *)
+(* The inline part of RISC5.v's [aluRes] (lines 106..125), as a unit; the contract is in
+   [alu.mli]. *)
 
 open Hardcaml
 open Signal
@@ -42,22 +35,18 @@ end
 let create (i : _ I.t) : _ O.t =
   let cin = i.u &: i.c_in in
   let flags_word =
-    (* MOV' flags-read: the four flags in the top nibble over the 0x53 id byte (AGENT.md
-       §8 — the hardware id byte, not the C reference's 0xD0) *)
+    (* the flags in the top nibble over the identification byte 0x53, as RISC5.v has it
+       (the C emulator returns 0xD0 there) *)
     concat_msb [ i.n_in; i.z_in; i.c_in; i.ov_in; zero 20; of_unsigned_int ~width:8 0x53 ]
   in
   let mov =
-    (* MOV's four forms as a mux2 tree on u/q/v; see the MOV-forms waveform. Read each
-       mux2 as a hardware if: u ? (q ? imm<<16 : v ? flags_word : H) : C1. So u=0 -> C1
-       (normal move; C1 already encodes the q imm/R.c choice); u=1,q=1 -> imm<<16;
-       u=1,q=0,v=1 -> flags word (N,Z,C,OV); u=1,q=0,v=0 -> H (MUL high word / DIV
-       remainder). *)
+    (* MOV has four forms. With u = 0 it moves operand 2. With u = 1: q = 1 gives imm <<
+       16; q = 0 gives the flags word (v = 1) or H (v = 0). *)
     mux2 i.u (mux2 i.q (i.imm @: zero 16) (mux2 i.v flags_word i.h)) i.c1
   in
-  (* ADD and SUB, each one bit wider, via [addsub op] (op is +: or -:). The unsigned widen
-     gives the result (low 32) and carry/borrow (top bit); the signed widen gives overflow
-     (its top two bits disagree — the exact signed sum needed a 33rd bit). Carry-in cin =
-     u & C feeds the ADD'/SUB' variants. *)
+  (* ADD and SUB, each computed one bit wider, twice: zero-extended, the top bit is the
+     carry or borrow; sign-extended, the top two bits disagree exactly on overflow. The
+     carry-in u & C makes ADD' and SUB'. *)
   let cin33 = uresize cin ~width:33 in
   let addsub f =
     let u = f (f (ue i.b) (ue i.c1)) cin33 in
@@ -88,17 +77,11 @@ let create (i : _ I.t) : _ O.t =
       ; zero 32 (* 15 FDV *)
       ]
   in
-  (* C/OV come from the active arithmetic op; every other op leaves the current C/OV
-     unchanged. N/Z are not here — they derive from the final write value (regmux), at the
-     core. *)
-  (* ADD/SUB set C/OV; every other instruction holds them. The [~p] qualifier is
-     load-bearing and matches [RISC5.v]'s [ADD = ~p & (op==8)] / [SUB = ~p & (op==9)]: a
-     branch or memory instruction ([p=1]) whose [op] field happens to be 8/9 must NOT
-     touch the flags. Without it, e.g. [BLR] [0xDA08281C] (op-field 8) spuriously
-     recomputes a carry and clobbers C — latent until a *stalled* conditional branch
-     re-evaluates the corrupted flag on its stall cycle (the phase-6b boot trap). The
-     result mux above stays op-only, like [aluRes]: its value for a branch is simply never
-     selected by the core's [regmux]. *)
+  (* Only a register ADD or SUB changes C and OV. The [~p] matters: a branch or memory
+     instruction whose [op] field happens to be 8 or 9 must leave the flags alone. Without
+     it such a branch recomputed a carry, and a stalled conditional branch then evaluated
+     the corrupted flag — a bug that showed only while booting. The result mux needs no
+     such guard: the core never selects it for those instructions. *)
   let is_add = ~:(i.p) &: (i.op ==:. 8) in
   let is_sub = ~:(i.p) &: (i.op ==:. 9) in
   let c = mux2 is_add add_c (mux2 is_sub sub_c i.c_in) in
@@ -106,12 +89,9 @@ let create (i : _ I.t) : _ O.t =
   { O.res; c; ov }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: qcheck this unit's ops 0 and 4..9 — MOV, logic, ADD/SUB plus the C/OV
-   flags — against a plain-OCaml reference (combinational, so no oracle). Shifts (1..3)
-   and MUL/DIV/FP (10..15) are peer units tested in their own modules and muxed at the
-   core, out of scope here. Behaviour: curated waveforms for the subtle bits — the
-   ADD'/SUB' carry-in, the MOV forms, and carry-vs-overflow. *)
+(* ── Tests ── A property test of operations 0 and 4..9, with C and OV, against a plain-
+   OCaml reference; and waveforms of the subtle parts: the carry-in, the MOV forms, carry
+   against overflow. *)
 
 let set r v w = r := Bits.of_unsigned_int ~width:w v
 
@@ -160,9 +140,8 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
       | 9 -> (b - c1 - cin) land mask (* SUB *)
       | _ -> 0
     in
-    (* C/OV: ADD carry-out / SUB borrow + signed overflow — but ONLY for register ADD/SUB
-       ([p=0]). Any other instruction (including a [p=1] branch/memory op whose [op] field
-       is 8/9) passes (c, ov) through, mirroring [RISC5.v]'s [ADD = ~p & (op==8)]. *)
+    (* C and OV: ADD's carry, SUB's borrow and the signed overflow, for a register ADD or
+       SUB only; anything else passes them through *)
     let cf, vf =
       match op with
       | 8 when p = 0 ->
@@ -180,11 +159,9 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
     res, cf, vf
   in
   let ops = [| 0; 4; 5; 6; 7; 8; 9 |] in
-  (* [p] is generated alongside the op fields, not pinned to 0: with [p=1] (a
-     branch/memory instruction) ADD/SUB must NOT touch C/OV even when [op] is 8/9 — the
-     flag-leak bug that escaped this test while it only ever drove register ops. The
-     result mux is op-only (p-independent), so only the C/OV check distinguishes the two
-     values of [p]. *)
+  (* [p] is generated too, not pinned to 0: the flag bug described above escaped this test
+     while it drove only register instructions. Only the C/OV check can tell the two
+     values of [p] apart. *)
   Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000

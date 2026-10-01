@@ -1,14 +1,14 @@
-(** Video controller — a faithful port of [VID60.v] (1024x768 @ 60 Hz, 1 bpp mono).
+(** Video controller, a port of [VID60.v]: 1024 x 768 at 60 Hz, one bit per pixel.
 
-    Two jobs on two clocks: a VGA timing generator (hsync/vsync/blank + a pixel shift-out)
-    on the 65 MHz pixel clock [pclk], and a framebuffer DMA that reads one 32-bit word (=
-    32 pixels) from main memory every 32 pixels on the 25 MHz system clock [clk]. The DMA
-    request [req] is the core's video stall ([stallX]); [vidadr] is the framebuffer word
-    address; [viddata] is the word read back, shifted out one pixel per [pclk].
+    Two jobs on two clocks. On the 65 MHz pixel clock [pclk], a raster generator: sync,
+    blanking, and a shift register that sends one pixel per tick. On the system clock
+    [clk], a framebuffer DMA that reads one 32-bit word, 32 pixels, from main memory for
+    every 32 pixels shown. [req] is the DMA request (the core's [stallX] in the original
+    SoC), [vidadr] the word address and [viddata] the word read.
 
-    [VID60.v] generates [pclk] internally with a Xilinx [DCM] (x13/5 of [clk]); that
-    primitive is the Phase-7 board shim (the Nexys MMCM), so here [pclk] is an input.
-    There is no reset — the raster counters free-run from their power-on (zero) state. *)
+    [VID60.v] generates [pclk] itself with a Xilinx DCM. Clock generation belongs to the
+    board, so here [pclk] is an input. There is no reset: the raster counters run from
+    their power-on state. *)
 
 open Hardcaml
 
@@ -36,28 +36,24 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** Framebuffer base [Org] (a word address; byte 0xDFF00, = [DFF00H >> 2]). The DMA's
-    [vidadr] is [org + {~vcnt(10), col(5)}], so every fetch lands in the 32768-word span
-    [[org, org + 0x8000)] (rows 0..255 of it sit off-screen above the visible 768).
-    Exported so a board layer shadowing the framebuffer (Phase 10c) covers exactly the
-    span this module can address, with no second copy of the constant. *)
+(** The framebuffer base as a word address (byte 0xDFF00). [vidadr] is
+    [org + {~vcnt, col}], so every fetch falls in the 32768 words from [org]; the first
+    256 rows of that span are off screen. Exported so that a board that shadows the
+    framebuffer covers exactly this span. *)
 val org : int
 
-(** The [vidadr] packing's field widths: [cols_log2] column bits (words per row) under
-    [span_log2 - cols_log2] row bits — the whole DMA span is [2^span_log2] words above
-    {!org}. Exported for the same reason as [org]: the board shadows size and decode their
-    windows against this packing (which the [vid_addr] formal check pins) instead of
-    keeping second copies. *)
+(** The field widths of that packing: [cols_log2] column bits under
+    [span_log2 - cols_log2] row bits, [2^span_log2] words in all. *)
 val cols_log2 : int
 
 val span_log2 : int
 
-(** [pulse_sync ~src_spec ~dst_spec ~pulse] crosses a 1-cycle [pulse] in the [src_spec]
-    clock domain into the [dst_spec] domain as a 1-cycle pulse, metastability-safe: a
-    toggle flop in the source domain turns the pulse into a level, a 3-FF [dst_spec]
-    synchroniser settles it, and an edge-detect regenerates one [dst_spec] pulse. The CDC
-    primitive [vid] uses for the framebuffer fetch (the substitute for [VID60.v]'s
-    async-set [req1]); proven no-loss/no-spurious for all clk/pclk phases in test/formal. *)
+(** [pulse_sync ~src_spec ~dst_spec ~pulse] carries a one-cycle pulse from one clock
+    domain into another: a flop toggled by the pulse turns it into a level, three flops in
+    the destination domain synchronise the level, and an edge detector makes one pulse of
+    it again. It replaces [VID60.v]'s asynchronously set flop [req1]. A property proof
+    (test/formal) shows that no pulse is lost or invented, whatever the phase of the two
+    clocks. *)
 val pulse_sync
   :  src_spec:Signal.Reg_spec.t
   -> dst_spec:Signal.Reg_spec.t
@@ -76,42 +72,34 @@ module Lookahead : sig
     }
 end
 
-(** [lookahead ~hcnt ~vcnt] is the prefetch's combinational look-ahead addressing: from
-    the raster counters it computes the NEXT consumed group's column/row, its packed word
-    address, and the ping-pong bank its fetch lands in. The one address departure from
-    [VID60.v] (whose address is the CURRENT group). Shared by {!create} and the [vid_addr]
-    formal check, which proves it ≡ an independent geometry spec over all (hcnt, vcnt) —
-    the addressing half of the prefetch-delivery decomposition (test/formal/README). *)
+(** [lookahead ~hcnt ~vcnt] gives, from the raster counters, the column and row of the
+    group shown {e next}, its word address, and the buffer its fetch lands in. [VID60.v]
+    addresses the current group; this is the one departure in addressing. The formal check
+    [vid_addr] proves it equal to an independent statement of the geometry for every
+    raster position. *)
 val lookahead : hcnt:Signal.t -> vcnt:Signal.t -> Signal.t Lookahead.t
 
-(** [create i] builds the controller, cycle-faithful to [VID60.v] on the pixel/sync
-    datapath, with two deliberate departures from the RTL:
+(** [create i] is the controller: [VID60.v]'s pixel and sync path cycle for cycle, with
+    two deliberate departures.
+    - {b The clock-domain crossing.} The RTL catches each fetch request in a flop set
+      asynchronously from the pixel domain ([always @(posedge req0, posedge clk)]), which
+      a cycle simulator cannot represent. Here the request crosses through {!pulse_sync}:
+      one [clk] pulse per request, and safe on silicon, where the first two synchroniser
+      flops want an ASYNC_REG or equivalent constraint.
+    - {b Fetching one group ahead.} [VID60.v] requests a group's word when the group
+      begins and consumes it 31 pixels later, about 480 ns. With slow, contended memory
+      that deadline is missed and the picture tears horizontally. Here the request is made
+      one group early, into two buffers used alternately ([buf0]/[buf1], by column
+      parity), which gives each fetch about two group times. The pixels shown are the
+      same; only when and where the word is fetched differs.
 
-    - {b Framebuffer-fetch CDC.} The RTL's async-set capture flop [req1] (RTL
-      [always @(posedge req0, posedge clk)]) is unrepresentable in Cyclesim, so [req0]
-      crosses [pclk]→[clk] through a TOGGLE PULSE SYNCHRONISER ([req_toggle] →
-      [sync0]/[sync1]/[sync2] → edge-detect [req]) — the textbook metastability-safe
-      crossing. It emits exactly one [clk] [req] per [req0] and is robust on real silicon
-      (the [sync0]/[sync1] flops want an ASYNC_REG / CDC constraint in the board [.xdc]).
+    [?viddata_valid] says when [viddata] holds the requested word. It defaults to [req]:
+    memory that answers in the same cycle. A slower memory passes its own acknowledge.
 
-    - {b Two-group prefetch.} [VID60.v] requests the word for a 32-px group at the group's
-      start and consumes it 31 px later (~480 ns) into a single [vidbuf] — too tight
-      against PSRAM contention on the board (horizontal flicker). Here the request is
-      issued ONE GROUP EARLY ([vidadr] targets the next consumed group, wrapping at column
-      31 / row 767) into a PING-PONG double-buffer ([buf0]/[buf1], selected by column
-      parity), so each fetch has ~2 group-times (~970 ns) to land. The displayed pixel
-      stream is identical; only the fetch timing/structure differs. The Verilator co-sim
-      against [VID60.v] no longer matches on [vidadr]/the fetch path by design.
-
-    [?viddata_valid] is the board memory seam (default = [req]): single-cycle memory (the
-    sim [Soc] cycle-steal) has [viddata] valid the cycle [req] fires, but the board's
-    [Cellram] returns it some cycles later on its [vid_ack].
-
-    [?viddata_par] selects which ping-pong buffer captures [viddata] (default =
-    [lsb next_col], the live request parity, exact for the single-cycle path). The board's
-    [Cellram] passes the parity of the fetch it is COMPLETING ([Cellram.vidpar]) so a
-    slow, contended completion lands in the correct buffer regardless of the current
-    raster phase. *)
+    [?viddata_par] says which buffer the word goes to. It defaults to the parity of the
+    request being made, which is right when the answer comes in the same cycle. A slower
+    memory passes the parity of the fetch it is completing, so that a late word still
+    lands in its own buffer. *)
 val create
   :  ?viddata_valid:Signal.t
   -> ?viddata_par:Signal.t

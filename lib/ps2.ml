@@ -1,25 +1,18 @@
-(* Public API and behaviour spec live in [ps2.mli].
+(* A port of PS2.v; the contract is in [ps2.mli].
 
-   Port of [PS2.v]. The keyboard provides its OWN clock, so unlike the UART there is no
-   baud divider — three ideas carry the design:
+   The keyboard supplies the clock, so there is no divider:
+   - Clock recovery. [Q0]/[Q1] synchronise [ps2c]; [shift = Q1 & ~Q0] pulses for one cycle
+     on each falling edge and samples [ps2d].
+   - A walking start bit. [shreg] is 11 bits, reset to all ones, and each [shift] brings
+     [ps2d] in at the top. The start bit, a 0 and the first bit in, reaches bit 0 after
+     exactly eleven shifts: [endbit = ~shreg[0]]. There is no bit counter; the start bit
+     is the counter, and the byte is then in [shreg[8:1]].
+   - A 16-byte FIFO. [endbit] pushes the byte at [inptr]; [rdy] is [inptr <> outptr];
+     [data] is the entry at [outptr]; [done_] pops. It is a [multiport_memory] with a
+     synchronous write and an asynchronous read, like the register file.
 
-   - CLOCK RECOVERY. A 2-FF chain [Q0]/[Q1] synchronizes the asynchronous [ps2c]; [shift]
-     = [Q1 & ~Q0] is a one-cycle pulse on each ps2c falling edge — the bit strobe that
-     samples [ps2d]. The device's clock is the timing.
-   - WALKING START BIT. [shreg] is 11 bits, reset to all-1s; each [shift] brings [ps2d] in
-     at the top ([{ps2d, shreg[10:1]}], a right-shift). [endbit = ~shreg[0]]: the start
-     bit (0, the first bit in) is always the lowest frame bit, so bit 0 stays 1 until it
-     walks down — after exactly the 11 frame bits (start, 8 data, parity, stop). No bit
-     counter; the start bit IS the counter, and the byte then sits in [shreg[8:1]].
-   - 16-BYTE FIFO. On [endbit] the byte is pushed at [inptr] (inptr++); [rdy] =
-     inptr<>outptr (non-empty), [data] = fifo[outptr], and a read pulse [done_] pops
-     (outptr++). It buffers keystrokes, decoupling the keyboard from the CPU. Modeled as a
-     [multiport_memory] — one synchronous write, one asynchronous read — exactly like the
-     register file ([registers.ml]).
-
-   [rst] is active-low and synchronous; per the RTL it resets [shreg] (to all-1s), [inptr]
-   and [outptr], so those carry a reset term while [Q0]/[Q1] just track [ps2c]. Clock-only
-   [Reg_spec], like the rest of the peripherals. *)
+   Reset is synchronous and active low and, as in the RTL, covers [shreg] and the two
+   pointers. *)
 
 open! Base
 open Hardcaml
@@ -61,8 +54,7 @@ let create (i : _ I.t) : _ O.t =
   let endbit = ~:(lsb shreg_v) -- "endbit" in
   let shift = q1_v &: ~:q0_v in
   let rdy = ~:(inptr_v ==: outptr_v) in
-  (* 16x8 FIFO: synchronous write of shreg[8:1] at inptr on endbit, asynchronous read at
-     outptr (same shape as the register file — let synthesis infer distributed RAM) *)
+  (* written at [inptr] on [endbit], read asynchronously at [outptr] *)
   let write_port =
     { Write_port.write_clock = i.clock
     ; write_address = inptr_v
@@ -109,12 +101,10 @@ module For_tests = struct
   ;;
 end
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   testbench plays the keyboard: clock 11-bit frames on ps2c/ps2d and read the recovered
-   bytes back through the FIFO. Functional decode + a multi-byte FIFO order check + a
-   qcheck round-trip, plus a waveform of the clock-recovery front end (ps2c edge → shift →
-   shreg walking). The exhaustive bit-for-bit fidelity check vs [PS2.v] is the Verilator
-   co-sim. *)
+(* ── Tests ── The testbench plays the keyboard: it clocks frames in and reads the bytes
+   back through the FIFO, checking single bytes, the order of several, and a round trip; a
+   waveform shows the clock recovery. Fidelity to PS2.v is the co-simulation's and the
+   proof's job. *)
 
 let lo = Bits.gnd
 let hi = Bits.vdd
