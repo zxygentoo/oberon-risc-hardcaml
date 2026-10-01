@@ -835,8 +835,13 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let { store; fetch; pulse; latch } = harness sim inp outp in
-  let st = Stdlib.Random.State.make [| 47 |] in
-  let rnd n = Stdlib.Random.State.int st n in
+  (* table and pixel contents come from a seeded stream: a fixed one for the scripted
+     phases, one per case — its seed drawn by QCheck — for the property *)
+  let stream seed =
+    let st = Stdlib.Random.State.make [| seed |] in
+    fun n -> Stdlib.Random.State.int st n
+  in
+  let rnd = stream 47 in
   let pixels = Array.create ~len:65536 0 in
   let lut = Array.create ~len:256 0 in
   let thr = Array.create ~len:4096 0 in
@@ -855,7 +860,7 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
       store ~adr:(base + (4 * w)) ~ben:0 ~wdata:v
     done
   in
-  let upload_lut () =
+  let upload_lut rnd =
     for k = 0 to 255 do
       lut.(k) <- rnd 256
     done;
@@ -942,7 +947,7 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
   in
   (* ── phase A: the DOOM configuration through uploaded tables ── *)
   write_pixels ();
-  upload_lut ();
+  upload_lut rnd;
   upload_thr (fun k -> bn64.(k));
   for y = 0 to 767 do
     let sy, thr_row = row_map.(y) in
@@ -957,35 +962,69 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
     let row_base, thr_row = rowmap.(y) in
     check_row ~y ~row_base ~thr_row ~x_w0:0 ~n_words:32 ~xn:16 ~xd:5 ~xo:0
   done;
-  (* ── phase B: random geometry rounds ── *)
+  (* ── phase B: random geometries, each with its own tables and row map [qcheck] ── The
+     rect (in words and rows), the scale xn/xd >= 1 and the source offset; every range
+     lands on its ends as often as inside, so the full-width, full-height, top-row and 1:1
+     cases all occur. Per case: the rect's first and last rows and four more are fetched
+     whole and compared with the model, and the four requests just outside it must go
+     unclaimed. *)
   let last = ref (0, 0, 0, 0, 0, 0, 0) in
-  for _round = 1 to 3 do
-    upload_lut ();
+  let geometry =
+    let open QCheck.Gen in
+    let ends lo hi = oneof_weighted [ 1, return lo; 1, return hi; 3, int_range lo hi ] in
+    QCheck.make
+      ~print:(fun (x_w0, n_w, wy, wh, xn, xd, xo, seed) ->
+        Stdlib.Printf.sprintf
+          "words %d+%d, rows %d+%d, scale %d/%d, offset %d, tables from seed %d"
+          x_w0
+          n_w
+          wy
+          wh
+          xn
+          xd
+          xo
+          seed)
+      (ends 0 19
+       >>= fun x_w0 ->
+       ends 1 (32 - x_w0)
+       >>= fun n_w ->
+       ends 0 699
+       >>= fun wy ->
+       ends 2 (768 - wy)
+       >>= fun wh ->
+       ends 1 32
+       >>= fun xd ->
+       ends xd (xd + 63)
+       >>= fun xn ->
+       ends 0 511
+       >>= fun xo ->
+       int_bound 0x3FFF_FFFF >|= fun seed -> x_w0, n_w, wy, wh, xn, xd, xo, seed)
+  in
+  let matches_model (x_w0, n_w, wy, wh, xn, xd, xo, seed) =
+    let rnd = stream seed in
+    let mism_before = !mism in
+    upload_lut rnd;
     upload_thr (fun _ -> rnd 256);
     for y = 0 to 767 do
       rowmap.(y) <- rnd 60000, rnd 64
     done;
     upload_rowmap ();
-    let x_w0 = rnd 20 in
-    let n_w = 1 + rnd (32 - x_w0) in
-    let wy = rnd 700 in
-    let wh = 2 + rnd (768 - wy - 2) in
-    let xd = 1 + rnd 32 in
-    let xn = xd + rnd 64 in
-    let xo = rnd 512 in
     last := x_w0, n_w, wy, wh, xn, xd, xo;
     set_geo ~x:(32 * x_w0) ~y:wy ~w:(32 * n_w) ~h:wh ~xn ~xd ~xo;
     latch ();
-    for _ = 1 to 6 do
-      let ry = rnd wh in
-      let row_base, thr_row = rowmap.(ry) in
-      check_row ~y:(wy + ry) ~row_base ~thr_row ~x_w0 ~n_words:n_w ~xn ~xd ~xo
-    done;
+    List.iter
+      (0 :: (wh - 1) :: List.init 4 ~f:(fun _ -> rnd wh))
+      ~f:(fun ry ->
+        let row_base, thr_row = rowmap.(ry) in
+        check_row ~y:(wy + ry) ~row_base ~thr_row ~x_w0 ~n_words:n_w ~xn ~xd ~xo);
     if wy > 0 then probe_unclaimed ~y:(wy - 1) ~col:x_w0;
     if wy + wh < 768 then probe_unclaimed ~y:(wy + wh) ~col:x_w0;
     if x_w0 > 0 then probe_unclaimed ~y:wy ~col:(x_w0 - 1);
-    if x_w0 + n_w < 32 then probe_unclaimed ~y:wy ~col:(x_w0 + n_w)
-  done;
+    if x_w0 + n_w < 32 then probe_unclaimed ~y:wy ~col:(x_w0 + n_w);
+    !mism = mism_before
+  in
+  Risc5.Test_gen.check_exn
+    (QCheck.Test.make ~count:12 ~name:"halftone-geometry" geometry matches_model);
   (* ── phase C: shadow-latch semantics — a mid-frame geometry write is inert until a
      vblank entry ── *)
   let x_w0, n_w, wy, wh, xn, xd, xo = !last in
@@ -1018,7 +1057,7 @@ let%expect_test "halftone — hardware ≡ model differential (geometry-swept)" 
   [%expect
     {|
     vblank visible/blanking: 0/1, frame-ctr delta: 1
-    538 cases, 0 mismatches
+    1443 cases, 0 mismatches
     |}]
 ;;
 

@@ -45,3 +45,35 @@ end
     [filter] + [shift] strobe, the walking-start-bit [rx]/[tx] frames, and the
     [x]/[y]/[btns] accumulation. The Verilator co-sim proves it bit-exact to [MousePM.v]. *)
 val create : Signal.t I.t -> Signal.t O.t
+
+(** Test scaffolding, not hardware (the {!Ps2.For_tests} precedent): the PS/2 mouse on the
+    other end of the wire, shared by this module's device test and the RTL co-sim dumper
+    so the two cannot drift apart. *)
+module For_tests : sig
+  module Device : sig
+    type t
+
+    (** [attach ?on_cycle sim] releases reset and takes over [sim]'s [msclk]/[msdat]
+        inputs, resolving the open-drain lines before every clock. [on_cycle] runs after
+        each clock with the device's own pull-lows — the co-sim dumper records its trace
+        there. *)
+    val attach
+      :  ?on_cycle:(msclk_low:bool -> msdat_low:bool -> unit)
+      -> (Bits.t ref I.t, Bits.t ref O.t) Cyclesim.t
+      -> t
+
+    (** clock the host's init commands through the request-to-send handshake until the
+        port reports [run] *)
+    val init : t -> unit
+
+    (** stream one 3-byte movement packet and wait for the port to accumulate it *)
+    val send_report : t -> status:int -> mx:int -> my:int -> unit
+
+    (** the port's state word, by field *)
+    val run : t -> bool
+
+    val x : t -> int
+    val y : t -> int
+    val btns : t -> int
+  end
+end

@@ -460,6 +460,116 @@ end
 (* 1-bit input literal — the one shape every driver below uses *)
 let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0)
 
+(* The bench the tests below start from: one sim, its handles, and the few moves they are
+   built from. Every input starts at zero (Cyclesim's initial value), which is the idle
+   level of every line — a fresh bench has no request pending and no video. [clock_edge]
+   picks the side the outputs are sampled on: the write buffer's accept [ce] is driven
+   straight from the inputs, so the write-buffer tests sample [Before] the edge (the
+   Phase-10d harness lesson). *)
+module Bench = struct
+  module Sim = Cyclesim.With_interface (Tb.I) (Tb.O)
+
+  type t =
+    { sim : Sim.t
+    ; inp : Bits.t ref Tb.I.t
+    ; outp : Bits.t ref Tb.O.t
+    }
+
+  let create
+    ?clock_edge
+    ?read_cycles
+    ?write_cycles
+    ?write_buffer
+    ?wbuf_depth
+    ?addr_bits
+    ?model_read_access
+    ?model_write_access
+    ?model_write_pulse
+    ()
+    =
+    let sim =
+      Sim.create
+        (Tb.create
+           ?read_cycles
+           ?write_cycles
+           ?write_buffer
+           ?wbuf_depth
+           ?addr_bits
+           ?model_read_access
+           ?model_write_access
+           ?model_write_pulse)
+    in
+    { sim; inp = Cyclesim.inputs sim; outp = Cyclesim.outputs ?clock_edge sim }
+  ;;
+
+  let cycle t = Cyclesim.cycle t.sim
+
+  let idle t n =
+    for _ = 1 to n do
+      cycle t
+    done
+  ;;
+
+  let ce t = Bits.to_int_trunc !(t.outp.ce) = 1
+  let vid_ack t = Bits.to_int_trunc !(t.outp.vid_ack) = 1
+  let rdata t = Bits.to_unsigned_int !(t.outp.rdata)
+  let viddata t = Bits.to_unsigned_int !(t.outp.viddata)
+
+  (* put a CPU request on the pins and leave it pending *)
+  let request ?(ben = false) ?(wdata = 0) t ~adr ~wr =
+    t.inp.mem_pend := b1 true;
+    t.inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    t.inp.wr := b1 wr;
+    t.inp.ben := b1 ben;
+    t.inp.wdata := Bits.of_unsigned_int ~width:32 wdata
+  ;;
+
+  let release t = t.inp.mem_pend := b1 false
+
+  (* Drive one CPU access the way the core would: hold the request until [ce] rises (the
+     access retires), then a clean idle cycle. Returns the read word seen at retirement. *)
+  let access ?ben ?wdata t ~adr ~wr =
+    t.inp.cpu_internal := b1 false;
+    request ?ben ?wdata t ~adr ~wr;
+    let r = ref (-1) in
+    let k = ref 0 in
+    while !r < 0 && !k < 60 do
+      cycle t;
+      if ce t then r := rdata t;
+      Int.incr k
+    done;
+    if !r < 0 then failwith "cellram: ce never asserted (CPU access hung)";
+    release t;
+    cycle t;
+    !r
+  ;;
+
+  let store ?ben t ~adr ~wdata = ignore (access ?ben t ~adr ~wr:true ~wdata : int)
+  let load t ~adr = access t ~adr ~wr:false
+
+  (* a store left pending behind it: the cycles from presenting it to its retiring [ce]
+     (inclusive) — the write buffer's retire cost *)
+  let store_cost ?ben t ~adr ~wdata =
+    request ?ben t ~adr ~wr:true ~wdata;
+    let k = ref 0
+    and retired = ref false in
+    while (not !retired) && !k < 60 do
+      cycle t;
+      Int.incr k;
+      if ce t then retired := true
+    done;
+    !k
+  ;;
+
+  (* a one-cycle video request for framebuffer word [word] *)
+  let video_request t ~word =
+    t.inp.vidadr := Bits.of_unsigned_int ~width:18 word;
+    t.inp.vidreq := b1 true;
+    cycle t;
+    t.inp.vidreq := b1 false
+  ;;
+end
+
 let%expect_test "cellram — word store then load, two halfword phases + ce pulse \
                  [waveform]"
   =
@@ -518,53 +628,19 @@ let%expect_test "cellram — word store then load, two halfword phases + ce puls
     |}]
 ;;
 
-(* Drive one CPU access the way the core would: hold the request until [ce] rises (the
-   access retires), then a clean idle cycle. Returns the read word seen at retirement. *)
-let cpu_access sim (inp : _ Tb.I.t) (outp : _ Tb.O.t) ~internal ~adr ~wr ~ben ~wdata =
-  inp.mem_pend := b1 true;
-  inp.cpu_internal := b1 internal;
-  inp.adr := Bits.of_unsigned_int ~width:24 adr;
-  inp.wr := b1 wr;
-  inp.ben := b1 ben;
-  inp.wdata := Bits.of_unsigned_int ~width:32 wdata;
-  let r = ref (-1) in
-  let k = ref 0 in
-  while !r < 0 && !k < 60 do
-    Cyclesim.cycle sim;
-    if Bits.to_int_trunc !(outp.ce) = 1 then r := Bits.to_unsigned_int !(outp.rdata);
-    Int.incr k
-  done;
-  if !r < 0 then failwith "cellram: ce never asserted (CPU access hung)";
-  inp.mem_pend := b1 false;
-  Cyclesim.cycle sim;
-  !r
-;;
-
-(* The word/byte-store round-trip property shared by the four [qcheck] tests (plain,
+(* The word/byte-store round-trip property shared by the [qcheck] tests (plain,
    asymmetric, write-buffer, depth-2): zero a [win]-word window (addresses confined to
    0..win*4-1 bytes), then replay a random store list against a plain-array model, loading
-   back after every store. [clock_edge] picks the output sampling side — the write-buffer
-   accept [ce] is input-driven, so those sims pass [Before] (the Phase-10d harness
-   lesson). *)
-let roundtrip_qcheck ?(count = 250) ?clock_edge ~name sim =
-  let inp : _ Tb.I.t = Cyclesim.inputs sim in
-  let outp : _ Tb.O.t = Cyclesim.outputs ?clock_edge sim in
-  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+   back after every store. *)
+let roundtrip_qcheck ?(count = 250) ~name (tb : Bench.t) =
   let win = 16 in
-  let store ~adr ~ben ~wdata =
-    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben ~wdata : int)
-  in
-  let load_word w =
-    cpu_access sim inp outp ~internal:false ~adr:(w * 4) ~wr:false ~ben:false ~wdata:0
-  in
   let check_seq ops =
     for w = 0 to win - 1 do
-      store ~adr:(w * 4) ~ben:false ~wdata:0
+      Bench.store tb ~adr:(w * 4) ~wdata:0
     done;
     let model = Array.create ~len:win 0 in
     List.for_all ops ~f:(fun (ben, adr, wdata) ->
-      store ~adr ~ben ~wdata;
+      Bench.store ~ben tb ~adr ~wdata;
       let w = adr lsr 2 in
       let l = adr land 3 in
       if ben
@@ -572,7 +648,7 @@ let roundtrip_qcheck ?(count = 250) ?clock_edge ~name sim =
         let byte = (wdata lsr (8 * l)) land 0xFF in
         model.(w) <- model.(w) land lnot (0xFF lsl (8 * l)) lor (byte lsl (8 * l)))
       else model.(w) <- wdata;
-      load_word w = model.(w))
+      Bench.load tb ~adr:(w * 4) = model.(w))
   in
   Risc5.Test_gen.check_exn
     (QCheck.Test.make
@@ -586,31 +662,22 @@ let roundtrip_qcheck ?(count = 250) ?clock_edge ~name sim =
 ;;
 
 let%expect_test "cellram — 32-bit round-trip through PSRAM: word + byte stores [qcheck]" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
-  roundtrip_qcheck ~name:"cellram-roundtrip" sim;
+  roundtrip_qcheck
+    ~name:"cellram-roundtrip"
+    (Bench.create ~read_cycles:2 ~write_cycles:2 ());
   [%expect {| |}]
 ;;
 
 let%expect_test "cellram — on-chip fast path: a ROM/MMIO access retires in one ce cycle" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:4 ~write_cycles:4) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.ben := b1 false;
-  inp.wr := b1 false;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0;
+  let tb = Bench.create ~read_cycles:4 ~write_cycles:4 () in
   (* an internal access asserts ce immediately — count cycles to the first ce=1 *)
-  inp.mem_pend := b1 true;
-  inp.cpu_internal := b1 true;
-  inp.adr := Bits.of_unsigned_int ~width:24 0xFFE000 (* ROM region *);
+  tb.inp.cpu_internal := b1 true;
+  Bench.request tb ~adr:0xFFE000 (* ROM region *) ~wr:false;
   let k = ref 0 in
   let n = ref 0 in
   while !n = 0 && !k < 20 do
-    Cyclesim.cycle sim;
-    if Bits.to_int_trunc !(outp.ce) = 1 then n := !k + 1;
+    Bench.cycle tb;
+    if Bench.ce tb then n := !k + 1;
     Int.incr k
   done;
   Stdlib.Printf.printf
@@ -622,45 +689,23 @@ let%expect_test "cellram — on-chip fast path: a ROM/MMIO access retires in one
 let%expect_test "cellram — video DMA read returns the framebuffer word, ce frozen \
                  meanwhile"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
+  let tb = Bench.create ~read_cycles:2 ~write_cycles:2 () in
   (* seed framebuffer word at word address 0x40 (byte 0x100) with 0x12345678 *)
-  ignore
-    (cpu_access
-       sim
-       inp
-       outp
-       ~internal:false
-       ~adr:0x100
-       ~wr:true
-       ~ben:false
-       ~wdata:0x1234_5678
-     : int);
+  Bench.store tb ~adr:0x100 ~wdata:0x1234_5678;
   (* latch a pending video request for word 0x40 (the 1-cycle [vid_pending] register),
      then have the CPU also want the bus: video has priority, so [ce] must stay low until
      [vid_ack] *)
-  inp.mem_pend := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0x40;
-  inp.vidreq := b1 true;
-  Cyclesim.cycle sim;
-  inp.vidreq := b1 false;
-  inp.mem_pend := b1 true (* CPU now wants a RAM read elsewhere *);
-  inp.wr := b1 false;
-  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+  Bench.video_request tb ~word:0x40;
+  Bench.request tb ~adr:0x200 ~wr:false (* CPU now wants a RAM read elsewhere *);
   (* run until vid_ack; check viddata and that ce stayed low while video held the bus *)
   let viddata = ref (-1) in
   let ce_high_during_video = ref false in
   let k = ref 0 in
   while !viddata < 0 && !k < 40 do
-    Cyclesim.cycle sim;
-    if Bits.to_int_trunc !(outp.vid_ack) = 1
-    then viddata := Bits.to_unsigned_int !(outp.viddata)
-    else if Bits.to_int_trunc !(outp.ce) = 1
+    Bench.cycle tb;
+    if Bench.vid_ack tb
+    then viddata := Bench.viddata tb
+    else if Bench.ce tb
     then ce_high_during_video := true;
     Int.incr k
   done;
@@ -673,58 +718,26 @@ let%expect_test "cellram — video DMA read returns the framebuffer word, ce fro
 ;;
 
 let%expect_test "cellram — a video request preempts an in-flight CPU read" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   (* read_cycles 4 so the CPU read spans several cycles — room to interject mid-flight *)
-  let sim = Sim.create (Tb.create ~read_cycles:4 ~write_cycles:4) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
+  let tb = Bench.create ~read_cycles:4 ~write_cycles:4 () in
   (* seed the video word (byte 0x100 = word 0x40) and the CPU-read word (byte 0x200) *)
-  ignore
-    (cpu_access
-       sim
-       inp
-       outp
-       ~internal:false
-       ~adr:0x100
-       ~wr:true
-       ~ben:false
-       ~wdata:0x1111_2222
-     : int);
-  ignore
-    (cpu_access
-       sim
-       inp
-       outp
-       ~internal:false
-       ~adr:0x200
-       ~wr:true
-       ~ben:false
-       ~wdata:0xAAAA_BBBB
-     : int);
+  Bench.store tb ~adr:0x100 ~wdata:0x1111_2222;
+  Bench.store tb ~adr:0x200 ~wdata:0xAAAA_BBBB;
   (* start a CPU read of byte 0x200 and let it reach mid-flight — do NOT complete it *)
-  inp.mem_pend := b1 true;
-  inp.wr := b1 false;
-  inp.ben := b1 false;
-  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
-  Cyclesim.cycle sim (* read starts: busy, low halfword phase *);
-  Cyclesim.cycle sim (* still mid low-half (read_cycles = 4) *);
+  Bench.request tb ~adr:0x200 ~wr:false;
+  Bench.cycle tb (* read starts: busy, low halfword phase *);
+  Bench.cycle tb (* still mid low-half (read_cycles = 4) *);
   (* a video request now arrives mid-read → it must preempt the read *)
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0x40;
-  inp.vidreq := b1 true;
-  Cyclesim.cycle sim;
-  inp.vidreq := b1 false;
+  Bench.video_request tb ~word:0x40;
   (* run to vid_ack; the CPU must NOT advance ([ce] low) while video holds the bus *)
   let vid_word = ref (-1)
   and ce_before_vid = ref false
   and k = ref 0 in
   while !vid_word < 0 && !k < 60 do
-    Cyclesim.cycle sim;
-    if Bits.to_int_trunc !(outp.vid_ack) = 1
-    then vid_word := Bits.to_unsigned_int !(outp.viddata)
-    else if Bits.to_int_trunc !(outp.ce) = 1
+    Bench.cycle tb;
+    if Bench.vid_ack tb
+    then vid_word := Bench.viddata tb
+    else if Bench.ce tb
     then ce_before_vid := true;
     Int.incr k
   done;
@@ -732,13 +745,12 @@ let%expect_test "cellram — a video request preempts an in-flight CPU read" =
   let cpu_word = ref (-1)
   and k2 = ref 0 in
   while !cpu_word < 0 && !k2 < 60 do
-    Cyclesim.cycle sim;
-    if Bits.to_int_trunc !(outp.ce) = 1
-    then cpu_word := Bits.to_unsigned_int !(outp.rdata);
+    Bench.cycle tb;
+    if Bench.ce tb then cpu_word := Bench.rdata tb;
     Int.incr k2
   done;
-  inp.mem_pend := b1 false;
-  Cyclesim.cycle sim;
+  Bench.release tb;
+  Bench.cycle tb;
   Stdlib.Printf.printf
     "video word = 0x%X   CPU advanced before video done: %b   CPU read after = 0x%X\n"
     !vid_word
@@ -755,24 +767,14 @@ let%expect_test "cellram — a video request preempts an in-flight CPU read" =
    counts the clocks from a request to the [ce] that retires it. *)
 
 let measure_latency ?(read_cycles = 2) ?(write_cycles = 2) ~wr () =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles ~write_cycles) in
-  let inp = Cyclesim.inputs sim
-  and outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
-  inp.ben := b1 false;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0xDEAD_BEEF;
-  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
-  inp.wr := b1 wr;
-  inp.mem_pend := b1 true;
+  let tb = Bench.create ~read_cycles ~write_cycles () in
+  Bench.request tb ~adr:0x200 ~wr ~wdata:0xDEAD_BEEF;
   let k = ref 0
   and retired = ref (-1) in
   while !retired < 0 && !k < 200 do
-    Cyclesim.cycle sim;
+    Bench.cycle tb;
     Int.incr k;
-    if Bits.to_int_trunc !(outp.ce) = 1 then retired := !k
+    if Bench.ce tb then retired := !k
   done;
   if !retired < 0 then failwith "cellram: ce never asserted (access hung)";
   !retired
@@ -809,15 +811,13 @@ let%expect_test "cellram — wait-state latency scales with read/write cycles, \
 ;;
 
 let%expect_test "cellram — 32-bit round-trip with asymmetric read/write cycles [qcheck]" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   (* one sim per config (hoisted out of the property — rebuilding the model per case is
      the dominant cost), then the same word+byte-store round-trip the symmetric test runs. *)
   let run_config (rc, wc) =
-    let sim = Sim.create (Tb.create ~read_cycles:rc ~write_cycles:wc) in
     roundtrip_qcheck
       ~count:80
       ~name:(Stdlib.Printf.sprintf "cellram-roundtrip-%d-%d" rc wc)
-      sim
+      (Bench.create ~read_cycles:rc ~write_cycles:wc ())
   in
   List.iter ~f:run_config [ 4, 3; 5, 2 ];
   [%expect {| |}]
@@ -831,24 +831,18 @@ let%expect_test "cellram — 32-bit round-trip with asymmetric read/write cycles
 let%expect_test "cellram — what the pin timing provides: read access, write pulse, \
                  address-to-end-of-write"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let roundtrips ~rc ~wc ?ra ?wa ?wp () =
-    let sim =
-      Sim.create
-        (Tb.create
-           ~read_cycles:rc
-           ~write_cycles:wc
-           ?model_read_access:ra
-           ?model_write_access:wa
-           ?model_write_pulse:wp)
+    let tb =
+      Bench.create
+        ~read_cycles:rc
+        ~write_cycles:wc
+        ?model_read_access:ra
+        ?model_write_access:wa
+        ?model_write_pulse:wp
+        ()
     in
-    let inp = Cyclesim.inputs sim
-    and outp = Cyclesim.outputs sim in
-    inp.vidreq := b1 false;
-    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-    let access = cpu_access sim inp outp ~internal:false ~adr:0x40 ~ben:false in
-    ignore (access ~wr:true ~wdata:0xAABB_CCDD : int);
-    access ~wr:false ~wdata:0 = 0xAABB_CCDD
+    Bench.store tb ~adr:0x40 ~wdata:0xAABB_CCDD;
+    Bench.load tb ~adr:0x40 = 0xAABB_CCDD
   in
   (* the largest demand (1..12) the configuration still meets *)
   let limit meets =
@@ -879,54 +873,29 @@ let%expect_test "cellram — a video request does NOT preempt an in-flight CPU w
   (* The mirror of the preempt-read test: writes are never preempted (a half-written word
      would corrupt RAM, .mli / [cpu_read_inflight] excludes [op_wr]). A video request
      arriving mid-write must wait until the write retires, then go. *)
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:4 ~write_cycles:4) in
-  let inp = Cyclesim.inputs sim
-  and outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
+  let tb = Bench.create ~read_cycles:4 ~write_cycles:4 () in
   (* seed the video word (byte 0x100 = word 0x40) *)
-  ignore
-    (cpu_access
-       sim
-       inp
-       outp
-       ~internal:false
-       ~adr:0x100
-       ~wr:true
-       ~ben:false
-       ~wdata:0x1357_9BDF
-     : int);
+  Bench.store tb ~adr:0x100 ~wdata:0x1357_9BDF;
   (* start a CPU write of byte 0x200 and let it reach mid-flight — do NOT complete it *)
-  inp.mem_pend := b1 true;
-  inp.wr := b1 true;
-  inp.ben := b1 false;
-  inp.adr := Bits.of_unsigned_int ~width:24 0x200;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0xCAFE_F00D;
-  Cyclesim.cycle sim (* write starts: busy, low halfword phase *);
-  Cyclesim.cycle sim (* still mid-write (write_cycles = 4) *);
+  Bench.request tb ~adr:0x200 ~wr:true ~wdata:0xCAFE_F00D;
+  Bench.cycle tb (* write starts: busy, low halfword phase *);
+  Bench.cycle tb (* still mid-write (write_cycles = 4) *);
   (* a video request now arrives mid-write → it must NOT preempt *)
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0x40;
-  inp.vidreq := b1 true;
-  Cyclesim.cycle sim;
-  inp.vidreq := b1 false;
+  Bench.video_request tb ~word:0x40;
   (* record the order: the write's retiring [ce] vs [vid_ack] *)
   let write_ce = ref (-1)
   and vidack = ref (-1)
   and k = ref 0 in
   while (!write_ce < 0 || !vidack < 0) && !k < 80 do
-    Cyclesim.cycle sim;
+    Bench.cycle tb;
     Int.incr k;
-    if !write_ce < 0 && Bits.to_int_trunc !(outp.ce) = 1 then write_ce := !k;
-    if !vidack < 0 && Bits.to_int_trunc !(outp.vid_ack) = 1 then vidack := !k
+    if !write_ce < 0 && Bench.ce tb then write_ce := !k;
+    if !vidack < 0 && Bench.vid_ack tb then vidack := !k
   done;
-  inp.mem_pend := b1 false;
-  Cyclesim.cycle sim;
+  Bench.release tb;
+  Bench.cycle tb;
   (* read back byte 0x200: the write must have landed intact *)
-  let back =
-    cpu_access sim inp outp ~internal:false ~adr:0x200 ~wr:false ~ben:false ~wdata:0
-  in
+  let back = Bench.load tb ~adr:0x200 in
   Stdlib.Printf.printf
     "write retired at clk %d, vid_ack at clk %d (write first: %b)   read-back = 0x%X   \
      video word = 0x%X\n"
@@ -934,7 +903,7 @@ let%expect_test "cellram — a video request does NOT preempt an in-flight CPU w
     !vidack
     (!write_ce < !vidack)
     back
-    (Bits.to_unsigned_int !(outp.viddata));
+    (Bench.viddata tb);
   [%expect
     {| write retired at clk 5, vid_ack at clk 14 (write first: true)   read-back = 0xCAFEF00D   video word = 0x13579BDF |}]
 ;;
@@ -949,45 +918,26 @@ let%expect_test "cellram — preempt-guard boundary: a video request near a read
      makes its original deadline. The read returns the right data either way — an aborted
      read just restarts, reads being idempotent — so this is purely about the timing
      guard. *)
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let rc = 4
   and wc = 4 in
   let c = measure_latency ~read_cycles:rc ~write_cycles:wc ~wr:false () in
   let run ~vidreq_clk =
-    let sim = Sim.create (Tb.create ~read_cycles:rc ~write_cycles:wc) in
-    let inp = Cyclesim.inputs sim
-    and outp = Cyclesim.outputs sim in
-    inp.vidreq := b1 false;
-    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-    inp.cpu_internal := b1 false;
-    inp.ben := b1 false;
+    let tb = Bench.create ~read_cycles:rc ~write_cycles:wc () in
     (* seed the CPU-read word (byte 0x200) *)
-    ignore
-      (cpu_access
-         sim
-         inp
-         outp
-         ~internal:false
-         ~adr:0x200
-         ~wr:true
-         ~ben:false
-         ~wdata:0x5A5A_6B6B
-       : int);
+    Bench.store tb ~adr:0x200 ~wdata:0x5A5A_6B6B;
     (* start the read; hold [vidreq] high for exactly the clk numbered [vidreq_clk] *)
-    inp.mem_pend := b1 true;
-    inp.wr := b1 false;
-    inp.adr := Bits.of_unsigned_int ~width:24 0x200;
+    Bench.request tb ~adr:0x200 ~wr:false;
     let read_ce = ref (-1)
     and rdata = ref (-1)
     and k = ref 0 in
     while !read_ce < 0 && !k < 80 do
-      inp.vidreq := b1 (!k = vidreq_clk - 1);
-      Cyclesim.cycle sim;
+      tb.inp.vidreq := b1 (!k = vidreq_clk - 1);
+      Bench.cycle tb;
       Int.incr k;
-      if Bits.to_int_trunc !(outp.ce) = 1
+      if Bench.ce tb
       then (
         read_ce := !k;
-        rdata := Bits.to_unsigned_int !(outp.rdata))
+        rdata := Bench.rdata tb)
     done;
     !read_ce, !rdata
   in
@@ -1019,30 +969,20 @@ let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n
      model round-trip): a byte store to byte address b drives its write strobe in halfword
      phase b[1] (mem_adr[0]), enabling the LB lane when b[0]=0 and the UB lane when
      b[0]=1. The other phase enables neither (no spurious write). *)
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
-  let inp = Cyclesim.inputs sim
-  and outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0x6B6B_6B6B;
+  let tb = Bench.create ~read_cycles:2 ~write_cycles:2 () in
   (* probe one byte store: report which (phase, lane) carries the write strobe *)
   let probe ~adr =
-    inp.mem_pend := b1 true;
-    inp.wr := b1 true;
-    inp.ben := b1 true;
-    inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    Bench.request tb ~adr ~wr:true ~ben:true ~wdata:0x6B6B_6B6B;
     let result = ref "(no write strobe seen)"
     and k = ref 0
     and retired = ref false in
     while (not !retired) && !k < 40 do
-      Cyclesim.cycle sim;
+      Bench.cycle tb;
       Int.incr k;
-      let we_n = Bits.to_int_trunc !(outp.we_n) in
-      let ub_n = Bits.to_int_trunc !(outp.ub_n) in
-      let lb_n = Bits.to_int_trunc !(outp.lb_n) in
-      let half = Bits.to_unsigned_int !(outp.mem_adr) land 1 in
+      let we_n = Bits.to_int_trunc !(tb.outp.we_n) in
+      let ub_n = Bits.to_int_trunc !(tb.outp.ub_n) in
+      let lb_n = Bits.to_int_trunc !(tb.outp.lb_n) in
+      let half = Bits.to_unsigned_int !(tb.outp.mem_adr) land 1 in
       if we_n = 0 && (ub_n = 0 || lb_n = 0)
       then
         result
@@ -1050,10 +990,10 @@ let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n
              "phase %d, %s"
              half
              (if lb_n = 0 then "LB lane (byte[7:0])" else "UB lane (byte[15:8])");
-      if Bits.to_int_trunc !(outp.ce) = 1 then retired := true
+      if Bench.ce tb then retired := true
     done;
-    inp.mem_pend := b1 false;
-    Cyclesim.cycle sim;
+    Bench.release tb;
+    Bench.cycle tb;
     !result
   in
   List.iter [ 0; 1; 2; 3 ] ~f:(fun a ->
@@ -1070,10 +1010,10 @@ let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n
 (* ── Write-buffer tests (Phase-10d, [?write_buffer]) ────────────────────────── Same
    closed loop against {!Cellram_model}. The contract under test: a PSRAM store retires in
    ONE ce cycle (the accept), the write drains in the background, and every later read
-   still returns the drained data — the qcheck reuses [cpu_access] verbatim, and because
-   it issues loads right after stores it hammers the drain-before-read wait continuously.
-   The waveform freezes the shape: accept-ce with the port idle, the drain transaction
-   behind it, and a read waiting out the slot. *)
+   still returns the drained data — the qcheck reuses [Bench.store] / [Bench.load], and
+   because it issues loads right after stores it hammers the drain-before-read wait
+   continuously. The waveform freezes the shape: accept-ce with the port idle, the drain
+   transaction behind it, and a read waiting out the slot. *)
 
 let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write drains behind \
                  it; a read waits for the slot [waveform]"
@@ -1142,54 +1082,26 @@ let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write dra
 let%expect_test "cellram/wbuf — 32-bit round-trip through the write buffer: word + byte \
                  stores [qcheck]"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true) in
-  roundtrip_qcheck ~clock_edge:Before ~name:"cellram-wbuf-roundtrip" sim;
+  roundtrip_qcheck
+    ~name:"cellram-wbuf-roundtrip"
+    (Bench.create ~clock_edge:Before ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ());
   [%expect {| |}]
-;;
-
-(* cycles from presenting a store to its retiring ce (inclusive) — the write-buffer
-   retire-cost probe, shared by the depth-1 and depth-2 tests *)
-let store_cost ?(ben = false) sim (inp : _ Tb.I.t) (outp : _ Tb.O.t) ~adr ~wdata =
-  inp.mem_pend := b1 true;
-  inp.wr := b1 true;
-  inp.ben := b1 ben;
-  inp.adr := Bits.of_unsigned_int ~width:24 adr;
-  inp.wdata := Bits.of_unsigned_int ~width:32 wdata;
-  let k = ref 0
-  and retired = ref false in
-  while (not !retired) && !k < 60 do
-    Cyclesim.cycle sim;
-    Int.incr k;
-    if Bits.to_int_trunc !(outp.ce) = 1 then retired := true
-  done;
-  !k
 ;;
 
 let%expect_test "cellram/wbuf — retire cost: isolated store 1 cycle, back-to-back second \
                  store waits the drain out"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs ~clock_edge:Before sim in
-  inp.cpu_internal := b1 false;
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  let a = store_cost sim inp outp ~adr:0x40 ~wdata:0x11111111 in
+  let tb =
+    Bench.create ~clock_edge:Before ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ()
+  in
+  let a = Bench.store_cost tb ~adr:0x40 ~wdata:0x11111111 in
   (* back-to-back: present the second store the very next cycle, slot still draining *)
-  let b = store_cost sim inp outp ~adr:0x44 ~wdata:0x22222222 in
-  inp.mem_pend := b1 false;
+  let b = Bench.store_cost tb ~adr:0x44 ~wdata:0x22222222 in
+  Bench.release tb;
   (* let the second drain finish, then verify both landed *)
-  for _ = 1 to 12 do
-    Cyclesim.cycle sim
-  done;
-  let r1 =
-    cpu_access sim inp outp ~internal:false ~adr:0x40 ~wr:false ~ben:false ~wdata:0
-  in
-  let r2 =
-    cpu_access sim inp outp ~internal:false ~adr:0x44 ~wr:false ~ben:false ~wdata:0
-  in
+  Bench.idle tb 12;
+  let r1 = Bench.load tb ~adr:0x40 in
+  let r2 = Bench.load tb ~adr:0x44 in
   Stdlib.Printf.printf
     "isolated store: %d cycle(s)   back-to-back second store: %d cycles   readback \
      0x%08X 0x%08X\n"
@@ -1204,59 +1116,32 @@ let%expect_test "cellram/wbuf — retire cost: isolated store 1 cycle, back-to-b
 let%expect_test "cellram/wbuf — a store is accepted 0-stall even while the port serves a \
                  video read; both complete correctly"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs ~clock_edge:Before sim in
-  inp.cpu_internal := b1 false;
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0x20;
+  let tb =
+    Bench.create ~clock_edge:Before ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ()
+  in
   (* seed the video word, then let the buffer drain *)
-  ignore
-    (cpu_access
-       sim
-       inp
-       outp
-       ~internal:false
-       ~adr:0x80
-       ~wr:true
-       ~ben:false
-       ~wdata:0xFEEDF00D
-     : int);
-  for _ = 1 to 12 do
-    Cyclesim.cycle sim
-  done;
-  (* kick a video read of 0x20 (word addr = byte 0x80) and present a CPU store the next
-     cycle, while the port is mid-video-op: the store must still retire in 1 ce cycle *)
-  inp.vidreq := b1 true;
-  Cyclesim.cycle sim;
-  inp.vidreq := b1 false;
-  inp.mem_pend := b1 true;
-  inp.wr := b1 true;
-  inp.ben := b1 false;
-  inp.adr := Bits.of_unsigned_int ~width:24 0xC0;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0x0DDBA11;
+  Bench.store tb ~adr:0x80 ~wdata:0xFEEDF00D;
+  Bench.idle tb 12;
+  (* kick a video read of word 0x20 (= byte 0x80) and present a CPU store the next cycle,
+     while the port is mid-video-op: the store must still retire in 1 ce cycle *)
+  Bench.video_request tb ~word:0x20;
+  Bench.request tb ~adr:0xC0 ~wr:true ~wdata:0x0DDBA11;
   let k = ref 0
   and retired = ref false
   and vid = ref (-1) in
   while ((not !retired) || !vid < 0) && !k < 80 do
-    Cyclesim.cycle sim;
+    Bench.cycle tb;
     Int.incr k;
-    if (not !retired) && Bits.to_int_trunc !(outp.ce) = 1
+    if (not !retired) && Bench.ce tb
     then (
       Stdlib.Printf.printf "store retired after %d cycle(s)\n" !k;
       retired := true;
-      inp.mem_pend := b1 false;
-      inp.wr := b1 false);
-    if Bits.to_int_trunc !(outp.vid_ack) = 1
-    then vid := Bits.to_unsigned_int !(outp.viddata)
+      Bench.release tb;
+      tb.inp.wr := b1 false);
+    if Bench.vid_ack tb then vid := Bench.viddata tb
   done;
-  for _ = 1 to 12 do
-    Cyclesim.cycle sim
-  done;
-  let r =
-    cpu_access sim inp outp ~internal:false ~adr:0xC0 ~wr:false ~ben:false ~wdata:0
-  in
+  Bench.idle tb 12;
+  let r = Bench.load tb ~adr:0xC0 in
   Stdlib.Printf.printf "video word 0x%08X   stored word 0x%08X\n" !vid r;
   [%expect
     {|
@@ -1274,28 +1159,24 @@ let%expect_test "cellram/wbuf — a store is accepted 0-stall even while the por
 let%expect_test "cellram/wbuf depth-2 — two stores retire back-to-back, the third waits; \
                  same-address order preserved"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim =
-    Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:2)
+  let tb =
+    Bench.create
+      ~clock_edge:Before
+      ~read_cycles:2
+      ~write_cycles:2
+      ~write_buffer:true
+      ~wbuf_depth:2
+      ()
   in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs ~clock_edge:Before sim in
-  inp.cpu_internal := b1 false;
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  let a = store_cost sim inp outp ~adr:0x40 ~wdata:0x11111111 in
-  let b = store_cost sim inp outp ~adr:0x44 ~wdata:0x22222222 in
-  let c = store_cost sim inp outp ~adr:0x48 ~wdata:0x33333333 in
+  let a = Bench.store_cost tb ~adr:0x40 ~wdata:0x11111111 in
+  let b = Bench.store_cost tb ~adr:0x44 ~wdata:0x22222222 in
+  let c = Bench.store_cost tb ~adr:0x48 ~wdata:0x33333333 in
   (* same-address pair through the FIFO: the younger store must win *)
-  let d = store_cost sim inp outp ~adr:0x4C ~wdata:0xAAAAAAAA in
-  let e = store_cost sim inp outp ~adr:0x4C ~wdata:0xBBBBBBBB in
-  inp.mem_pend := b1 false;
-  for _ = 1 to 24 do
-    Cyclesim.cycle sim
-  done;
-  let rd adr =
-    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
-  in
+  let d = Bench.store_cost tb ~adr:0x4C ~wdata:0xAAAAAAAA in
+  let e = Bench.store_cost tb ~adr:0x4C ~wdata:0xBBBBBBBB in
+  Bench.release tb;
+  Bench.idle tb 24;
+  let rd adr = Bench.load tb ~adr in
   Stdlib.Printf.printf
     "store costs: 1st %d  2nd %d  3rd %d  (then same-addr pair %d, %d)\n"
     a
@@ -1317,11 +1198,15 @@ let%expect_test "cellram/wbuf depth-2 — two stores retire back-to-back, the th
 ;;
 
 let%expect_test "cellram/wbuf depth-2 — 32-bit round-trip: word + byte stores [qcheck]" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let sim =
-    Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:2)
-  in
-  roundtrip_qcheck ~clock_edge:Before ~name:"cellram-wbuf2-roundtrip" sim;
+  roundtrip_qcheck
+    ~name:"cellram-wbuf2-roundtrip"
+    (Bench.create
+       ~clock_edge:Before
+       ~read_cycles:2
+       ~write_cycles:2
+       ~write_buffer:true
+       ~wbuf_depth:2
+       ());
   [%expect {| |}]
 ;;
 
@@ -1335,29 +1220,26 @@ let%expect_test "cellram/wbuf depth-2 — 32-bit round-trip: word + byte stores 
 let%expect_test "cellram/wbuf — every depth: [depth] stores retire back-to-back, the \
                  next ones wait, all land"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   for depth = 1 to 4 do
-    let sim =
-      Sim.create
-        (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:depth)
+    let tb =
+      Bench.create
+        ~clock_edge:Before
+        ~read_cycles:2
+        ~write_cycles:2
+        ~write_buffer:true
+        ~wbuf_depth:depth
+        ()
     in
-    let inp = Cyclesim.inputs sim in
-    let outp = Cyclesim.outputs ~clock_edge:Before sim in
-    inp.cpu_internal := b1 false;
-    inp.vidreq := b1 false;
-    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
     let n = depth + 2 in
     let adr k = 0x40 + (4 * k)
     and data k = 0x1111_1111 * (k + 1) in
     (* an explicit loop: the stores must go out in address order *)
     let costs = Array.create ~len:n 0 in
     for k = 0 to n - 1 do
-      costs.(k) <- store_cost sim inp outp ~adr:(adr k) ~wdata:(data k)
+      costs.(k) <- Bench.store_cost tb ~adr:(adr k) ~wdata:(data k)
     done;
     let landed =
-      List.for_all (List.range 0 n) ~f:(fun k ->
-        cpu_access sim inp outp ~internal:false ~adr:(adr k) ~wr:false ~ben:false ~wdata:0
-        = data k)
+      List.for_all (List.range 0 n) ~f:(fun k -> Bench.load tb ~adr:(adr k) = data k)
     in
     Stdlib.Printf.printf
       "depth %d: store costs %s   all %d read back: %b\n"
@@ -1378,29 +1260,26 @@ let%expect_test "cellram/wbuf — every depth: [depth] stores retire back-to-bac
 let%expect_test "cellram/wbuf — every depth: store bursts with random gaps land in order \
                  [qcheck]"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let win = 16 in
   let run_depth depth =
-    let sim =
-      Sim.create
-        (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:depth)
+    let tb =
+      Bench.create
+        ~clock_edge:Before
+        ~read_cycles:2
+        ~write_cycles:2
+        ~write_buffer:true
+        ~wbuf_depth:depth
+        ()
     in
-    let inp = Cyclesim.inputs sim in
-    let outp = Cyclesim.outputs ~clock_edge:Before sim in
-    inp.cpu_internal := b1 false;
-    inp.vidreq := b1 false;
-    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
     let burst ops =
       let model = Array.create ~len:win 0 in
       for w = 0 to win - 1 do
-        ignore (store_cost sim inp outp ~adr:(w * 4) ~wdata:0 : int)
+        ignore (Bench.store_cost tb ~adr:(w * 4) ~wdata:0 : int)
       done;
       List.iter ops ~f:(fun (gap, ben, adr, wdata) ->
-        inp.mem_pend := b1 false;
-        for _ = 1 to gap do
-          Cyclesim.cycle sim
-        done;
-        ignore (store_cost ~ben sim inp outp ~adr ~wdata : int);
+        Bench.release tb;
+        Bench.idle tb gap;
+        ignore (Bench.store_cost ~ben tb ~adr ~wdata : int);
         let w = adr lsr 2
         and l = adr land 3 in
         if ben
@@ -1408,9 +1287,7 @@ let%expect_test "cellram/wbuf — every depth: store bursts with random gaps lan
           let byte = (wdata lsr (8 * l)) land 0xFF in
           model.(w) <- model.(w) land lnot (0xFF lsl (8 * l)) lor (byte lsl (8 * l)))
         else model.(w) <- wdata);
-      List.for_all (List.range 0 win) ~f:(fun w ->
-        cpu_access sim inp outp ~internal:false ~adr:(w * 4) ~wr:false ~ben:false ~wdata:0
-        = model.(w))
+      List.for_all (List.range 0 win) ~f:(fun w -> Bench.load tb ~adr:(w * 4) = model.(w))
     in
     Risc5.Test_gen.check_exn
       (QCheck.Test.make
@@ -1431,16 +1308,15 @@ let%expect_test "cellram/wbuf — every depth: store bursts with random gaps lan
 ;;
 
 let%expect_test "cellram — elaboration guards fail loudly" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  let try_create f =
-    match Sim.create f with
-    | (_ : Sim.t) -> Stdlib.print_endline "elaborated"
+  let try_create create =
+    match create () with
+    | (_ : Bench.t) -> Stdlib.print_endline "elaborated"
     | exception Failure msg -> Stdlib.print_endline msg
   in
-  try_create (Tb.create ~write_cycles:1);
-  try_create (Tb.create ~read_cycles:17);
-  try_create (Tb.create ~write_buffer:true ~wbuf_depth:5);
-  try_create (Tb.create ~read_cycles:1 ~write_cycles:2);
+  try_create (Bench.create ~write_cycles:1);
+  try_create (Bench.create ~read_cycles:17);
+  try_create (Bench.create ~write_buffer:true ~wbuf_depth:5);
+  try_create (Bench.create ~read_cycles:1 ~write_cycles:2);
   [%expect
     {|
     Cellram: read_cycles must be in 1..16 and write_cycles in 2..16 (the 4-bit phase counter; WE# is low for all but a write phase's last cycle), got 2/1
@@ -1459,20 +1335,11 @@ let%expect_test "cellram — elaboration guards fail loudly" =
 let%expect_test "cellram/2a — himem [1 MB, 16 MB) is addressable and distinct from low \
                  memory"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   (* back 4 MiB so a few himem words round-trip (the real chip is 16 MiB); the small
      default model can't hold them. *)
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2 ~addr_bits:22) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
-  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  let store adr wdata =
-    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben:false ~wdata : int)
-  in
-  let load adr =
-    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
-  in
+  let tb = Bench.create ~read_cycles:2 ~write_cycles:2 ~addr_bits:22 () in
+  let store adr wdata = Bench.store tb ~adr ~wdata
+  and load adr = Bench.load tb ~adr in
   (* the crux of 2a: under the old 18-bit mask (adr[19:2] drops bit 20+) byte 0x100000 and
      byte 0 shared one word address, so a himem store clobbered low memory. Widened to
      adr[23:2] they are distinct. 0x300000 sets word-address bits 20 and 21 together. *)
@@ -1491,34 +1358,24 @@ let%expect_test "cellram/2a — himem [1 MB, 16 MB) is addressable and distinct 
 ;;
 
 let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM pins" =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   (* pins only — the small default model is fine (a high store aliases in it harmlessly);
      mem_adr carries the true 22-bit word address to the (16 MiB) chip regardless. *)
-  let sim = Sim.create (Tb.create ~read_cycles:2 ~write_cycles:2) in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs sim in
-  inp.vidreq := b1 false;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  inp.cpu_internal := b1 false;
-  inp.ben := b1 false;
-  inp.wdata := Bits.of_unsigned_int ~width:32 0;
+  let tb = Bench.create ~read_cycles:2 ~write_cycles:2 () in
   (* the phase-0 word address the controller drives for a store to [adr]: capture mem_adr
      while WE is asserted in the low halfword phase (mem_adr[0] = 0), then drop the half. *)
   let pin_word adr =
-    inp.mem_pend := b1 true;
-    inp.wr := b1 true;
-    inp.adr := Bits.of_unsigned_int ~width:24 adr;
+    Bench.request tb ~adr ~wr:true;
     let seen = ref (-1)
     and k = ref 0 in
     while !seen < 0 && !k < 40 do
-      Cyclesim.cycle sim;
+      Bench.cycle tb;
       Int.incr k;
-      let we_n = Bits.to_int_trunc !(outp.we_n) in
-      let ma = Bits.to_unsigned_int !(outp.mem_adr) in
+      let we_n = Bits.to_int_trunc !(tb.outp.we_n) in
+      let ma = Bits.to_unsigned_int !(tb.outp.mem_adr) in
       if we_n = 0 && ma land 1 = 0 then seen := ma lsr 1
     done;
-    inp.mem_pend := b1 false;
-    Cyclesim.cycle sim;
+    Bench.release tb;
+    Bench.cycle tb;
     !seen
   in
   (* addresses exercising each formerly-masked bit up to adr[23]; 0xFFBFFC is the top RAM
@@ -1544,30 +1401,21 @@ let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM p
 let%expect_test "cellram/wbuf 2a — himem round-trip through the shipped write buffer \
                  (depth 2)"
   =
-  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   (* the board's shipped memory config — write_buffer, depth 2 — over a 4 MiB model, so a
      himem store captured into the FIFO and drained back exercises the [wb_word] 22-bit
-     widening on the exact path the board runs. Wbuf ce is input-driven ⇒
-     [~clock_edge:Before] (the Phase-10d harness lesson). *)
-  let sim =
-    Sim.create
-      (Tb.create
-         ~read_cycles:2
-         ~write_cycles:2
-         ~write_buffer:true
-         ~wbuf_depth:2
-         ~addr_bits:22)
+     widening on the exact path the board runs. *)
+  let tb =
+    Bench.create
+      ~clock_edge:Before
+      ~read_cycles:2
+      ~write_cycles:2
+      ~write_buffer:true
+      ~wbuf_depth:2
+      ~addr_bits:22
+      ()
   in
-  let inp = Cyclesim.inputs sim in
-  let outp = Cyclesim.outputs ~clock_edge:Before sim in
-  inp.vidreq := Bits.of_unsigned_int ~width:1 0;
-  inp.vidadr := Bits.of_unsigned_int ~width:18 0;
-  let store adr wdata =
-    ignore (cpu_access sim inp outp ~internal:false ~adr ~wr:true ~ben:false ~wdata : int)
-  in
-  let load adr =
-    cpu_access sim inp outp ~internal:false ~adr ~wr:false ~ben:false ~wdata:0
-  in
+  let store adr wdata = Bench.store tb ~adr ~wdata
+  and load adr = Bench.load tb ~adr in
   (* a low word and two himem words drain through the FIFO and read back distinct —
      0x100000 is word 0's alias under the old 18-bit mask, 0x2AAAA8 sets a scattered high
      bit pattern *)

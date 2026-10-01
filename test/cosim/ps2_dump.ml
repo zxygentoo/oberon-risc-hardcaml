@@ -21,14 +21,6 @@ module Sim = Cyclesim.With_interface (Ps2.I) (Ps2.O)
 
 let h = 4 (* ps2c half-period in clocks (>=2 for the synchronizer to see the edge) *)
 
-let odd_parity data =
-  let ones = ref 0 in
-  for j = 0 to 7 do
-    ones := !ones + ((data lsr j) land 1)
-  done;
-  1 - (!ones land 1)
-;;
-
 let () =
   let sim = Sim.create Ps2.create in
   let inp = (Cyclesim.inputs sim : _ Ps2.I.t) in
@@ -69,12 +61,7 @@ let () =
         push ()
       done
     in
-    send_bit 0;
-    for j = 0 to 7 do
-      send_bit ((data lsr j) land 1)
-    done;
-    send_bit (odd_parity data);
-    send_bit 1;
+    List.iter (fun b -> send_bit (Bool.to_int b)) (Ps2.For_tests.frame_bits data);
     set inp.ps2c 1;
     for _ = 1 to h do
       Cyclesim.cycle sim;
