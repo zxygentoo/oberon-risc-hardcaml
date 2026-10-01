@@ -15,6 +15,10 @@ proc
 {renames}
 opt
 equiv_make {top} {gate} equiv
+# keep: cutpoint removes the black boxes, which are the only readers of the unit-INPUT
+# $equiv cells; unmarked, opt_clean deletes those cells before they are ever proven and
+# the glue-to-unit wiring goes unchecked.
+setattr -set keep 1 t:$equiv
 hierarchy -top equiv
 cutpoint -blackbox
 opt -full

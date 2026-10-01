@@ -532,11 +532,12 @@ let run_vid ~work_dir =
 
 (* The VID fetch-CDC invariant — the property the vid proof cuts. Proves
    [Video.pulse_sync] is no-loss + no-spurious (one req per req0) for ALL clk/pclk phase
-   interleavings and ALL reachable states, by k-INDUCTION (yosys-smtbmc -i / z3) —
-   unbounded, the part the single-phase Cyclesim test can't reach. [k] is the induction
-   length: threshold ~38 (k must span a fetch cycle so the k-step history forces a
-   reachable state); 48 leaves margin. [proofs/vid_invariant.ys.template] only emits the
-   SMT problem; run_proof's [~smtbmc] runs the k-induction. *)
+   interleavings and ALL reachable states, by k-INDUCTION (yosys-smtbmc / z3: a BMC base
+   case plus the [-i] step) — unbounded, the part the single-phase Cyclesim test can't
+   reach. [k] is the induction length: threshold ~38 (k must span a fetch cycle so the
+   k-step history forces a reachable state); 48 leaves margin.
+   [proofs/vid_invariant.ys.template] only emits the SMT problem; run_proof's [~smtbmc]
+   runs the k-induction. *)
 let vid_invariant_k = 48
 
 let run_vid_invariant ~work_dir =
@@ -551,12 +552,12 @@ let run_vid_invariant ~work_dir =
        ~ok:
          (Printf.sprintf
             "vid_invariant: PROVEN — one req per req0, no loss, no spurious, all \
-             phases/states  (all-phase CDC · yosys-smtbmc k-induction k=%d)"
+             phases/states  (all-phase CDC · yosys-smtbmc k-induction k=%d, base + step)"
             vid_invariant_k)
        ~bad:
          (Printf.sprintf
-            "vid_invariant: NOT PROVEN — induction counterexample  (all-phase CDC · \
-             yosys-smtbmc k-induction k=%d)"
+            "vid_invariant: NOT PROVEN — the base case or the induction step failed  \
+             (all-phase CDC · yosys-smtbmc k-induction k=%d)"
             vid_invariant_k)
 ;;
 

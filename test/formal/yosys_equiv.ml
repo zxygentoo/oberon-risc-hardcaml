@@ -35,8 +35,11 @@ let renames_block ~gate ~renames = String.concat ~sep:"\n" (rename_block ~gate ~
    yosys, and maps the exit code.
 
    [smtbmc] handles the one property proof (the VID CDC invariant): there the template only
-   emits an SMT problem to [{smt2}], so yosys success means nothing — the verdict is the
-   k-induction, and we run [yosys-smtbmc -i -t smtbmc] on [{smt2}] and map ITS exit instead.
+   emits an SMT problem to [{smt2}], so yosys success means nothing — the verdict is
+   yosys-smtbmc's, and it takes BOTH halves of k-induction: the base case (BMC from the
+   initial state for [smtbmc] steps, with [--presat] so unsatisfiable assumptions cannot
+   pass vacuously) and the step ([-i]: any [smtbmc] consecutive good states are followed
+   by a good one). The step alone starts from arbitrary states and never visits reset.
 
    A real yosys command never contains a literal '{', so any brace surviving substitution is
    an unfilled placeholder (a template/[subst] mismatch) — we raise on it rather than let
@@ -73,14 +76,16 @@ let run_proof ~work_dir ~ours ~template ~subst ?smtbmc () =
   match sh (Printf.sprintf "yosys -q -s %s" (Stdlib.Filename.quote script)), smtbmc with
   | 0, None -> Equivalent
   | 0, Some depth ->
-    (match
-       sh
-         (Printf.sprintf
-            "yosys-smtbmc -i -s z3 -t %d %s > /dev/null 2>&1"
-            depth
-            (Stdlib.Filename.quote smt2))
-     with
-     | 0 -> Equivalent
-     | _ -> Not_equivalent)
+    let smtbmc mode =
+      sh
+        (Printf.sprintf
+           "yosys-smtbmc %s -s z3 -t %d %s > %s/smtbmc%s.log 2>&1"
+           mode
+           depth
+           (Stdlib.Filename.quote smt2)
+           (Stdlib.Filename.quote work_dir)
+           (String.strip mode ~drop:(Char.equal '-')))
+    in
+    if smtbmc "--presat" = 0 && smtbmc "-i" = 0 then Equivalent else Not_equivalent
   | _, _ -> Not_equivalent
 ;;

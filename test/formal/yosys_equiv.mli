@@ -33,10 +33,11 @@ val renames_block : gate:string -> renames:(string * string) list -> string
     writes the concrete script under [work_dir] (inspectable + runnable), runs yosys, and
     maps the exit code to {!result}. Raises if any [{placeholder}] is left unsubstituted.
 
-    [smtbmc] is the induction depth for the one property proof (the VID CDC invariant),
-    whose template only emits an SMT problem to [{smt2}]: there yosys success is not the
-    verdict, so [run_proof] runs [yosys-smtbmc -i -t smtbmc] on [{smt2}] and maps ITS
-    exit. *)
+    [smtbmc] is the depth [k] for the one property proof (the VID CDC invariant), whose
+    template only emits an SMT problem to [{smt2}]: there yosys success is not the
+    verdict, so [run_proof] runs yosys-smtbmc on [{smt2}] twice — the base case (BMC from
+    the initial state for [k] steps, [--presat]) and the induction step ([-i]) — and
+    reports {!Equivalent} only if both succeed. *)
 val run_proof
   :  work_dir:string
   -> ours:Circuit.t

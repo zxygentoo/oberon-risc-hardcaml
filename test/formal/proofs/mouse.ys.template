@@ -26,6 +26,8 @@ setundef -one
 memory
 opt
 equiv_make {gold_shim} {ours_shim} equiv
+# keep: an $equiv whose output nothing reads must still be proven, not swept by opt_clean.
+setattr -set keep 1 t:$equiv
 hierarchy -top equiv
 opt -full
 equiv_simple

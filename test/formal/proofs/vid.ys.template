@@ -23,6 +23,8 @@ expose -input {top}/w:vidbuf
 expose -input {gate}/w:vidbuf
 opt
 equiv_make {top} {gate} equiv
+# keep: an $equiv whose output nothing reads must still be proven, not swept by opt_clean.
+setattr -set keep 1 t:$equiv
 hierarchy -top equiv
 # exclude the TWO deliberate departures from VID60.v, both fed only by their now-excluded output:
 #  - req:    our toggle pulse-synchroniser vs the RTL async-set req1 (the CDC; closed formally by
