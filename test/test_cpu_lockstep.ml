@@ -50,9 +50,9 @@ type t =
   }
 
 (* [?core] swaps the core constructor so the same harness can lockstep a variant build —
-   e.g. the Phase-9 [~fast_mul ~mul_stages:2] pipelined-DSP core (see the runner).
-   Defaults to the faithful [Core.create]; eta-expanded to erase its optional args to the
-   plain [_ I.t -> _ O.t] the simulator wants. *)
+   e.g. the core with the pipelined DSP multipliers (see the runner). Defaults to the
+   faithful [Core.create]; eta-expanded to erase its optional args to the plain
+   [_ I.t -> _ O.t] the simulator wants. *)
 let create ?(core = fun i -> Core.create i) () =
   let sim = Sim.create ~config:Cyclesim.Config.trace_all core in
   let inp = Cyclesim.inputs sim in
@@ -775,21 +775,24 @@ let () =
     seed_prog
     (agree_prog t);
   print_stats ();
-  (* The pipelined DSP multipliers (Cpu.create ~fast_mul:true ~mul_stages:2) under the
-     real core's driving: the register-op property, then the program property — where a
-     multiply can directly follow a multiply, which no single-instruction case and neither
-     unit differential (lib/multiplier.ml, fp_multiplier.ml) ever does. The units are
-     bit-identical to the faithful ones, so the same §8 handling applies. *)
-  let t_fast = create ~core:(fun i -> Core.create ~fast_mul:true ~mul_stages:2 i) () in
+  (* The 2-stage pipelined DSP multipliers (the shipped board's choice of
+     [Cpu.multipliers]) under the real core's driving: the register-op property, then the
+     program property — where a multiply can directly follow a multiply, which no
+     single-instruction case and neither unit differential (lib/multiplier.ml,
+     fp_multiplier.ml) ever does. The units are bit-identical to the faithful ones, so the
+     same §8 handling applies. *)
+  let t_fast =
+    create ~core:(fun i -> Core.create ~multipliers:(Dsp { stages = 2 }) i) ()
+  in
   run
-    ~name:"register ops, fast_mul mul_stages:2"
+    ~name:"register ops, DSP multipliers, 2 stages"
     ~count:50_000
     ~max_gen:60_000
     seed
     (fun raw -> agree_reg_op t_fast (decode raw));
   reset_stats ();
   run
-    ~name:"programs, random stallX, fast_mul mul_stages:2"
+    ~name:"programs, random stallX, DSP multipliers, 2 stages"
     ~count:20_000
     ~max_gen:40_000
     seed_prog

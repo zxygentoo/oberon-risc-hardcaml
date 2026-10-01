@@ -58,31 +58,11 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create
-  ~contents
-  ?(clocks_per_ms = 25000)
-  ?read_cycles
-  ?write_cycles
-  ?(spi_slow_div_log2 = 6)
-  ?(fast_mul = false)
-  ?(mul_stages = 0)
-  ?(icache = false)
-  ?lines_log2
-  ?(write_update = false)
-  ?(video = true)
-  ?(fb_bram = false)
-  ?(halftone = false)
-  ?(write_buffer = false)
-  ?wbuf_depth
-  ?(uart_baud_slow = 1302)
-  ?(uart_baud_fast = 217)
-  (i : _ I.t)
-  : _ O.t
-  =
+let create ~contents ?(video = true) (c : Build_config.t) (i : _ I.t) : _ O.t =
   (* [halftone] without [fb_bram] would silently elaborate with no Halftone at all (its
      claim muxes against the Framebuf shadow) — an A/B run would then "measure" a build
      that never instantiated the module. Fail loudly instead, like the lib guards. *)
-  if halftone && not fb_bram
+  if c.halftone && not c.fb_bram
   then failwith "Soc: halftone requires fb_bram (the claim muxes the Framebuf shadow)";
   let spec = Reg_spec.create () ~clock:i.clock in
   (* fetch/load feedback, broken by the core's pc/ir registers; [ms_tick] closes the same
@@ -136,8 +116,7 @@ let create
   let core =
     Cpu.create
       ~ce:core_ce
-      ~fast_mul
-      ~mul_stages
+      ~multipliers:c.multipliers
       { Cpu.I.clock = i.clock; rst_n = i.rst_n; irq; stall_x = gnd; inbus; codebus }
   in
   (* ── Address decode ── (same constants as soc.ml / RISC5Top) *)
@@ -172,10 +151,10 @@ let create
   (* ── PSRAM controller / CPU+video arbiter ── *)
   let cellram =
     Cellram.create
-      ?read_cycles
-      ?write_cycles
-      ~write_buffer
-      ?wbuf_depth
+      ~read_cycles:c.read_cycles
+      ~write_cycles:c.write_cycles
+      ~write_buffer:c.write_buffer
+      ~wbuf_depth:c.wbuf_depth
       { Cellram.I.clock = i.clock
       ; mem_pend = core.mem_pend &: ~:cache_hit
       ; cpu_internal
@@ -183,7 +162,7 @@ let create
       ; wr = core.wr
       ; ben = core_ben
       ; wdata = core.outbus
-      ; vidreq = (if fb_bram then gnd else vidreq)
+      ; vidreq = (if c.fb_bram then gnd else vidreq)
       ; vidadr
       ; mem_dq_i = i.mem_dq_i
       }
@@ -195,7 +174,7 @@ let create
      write port taps exactly the store the cache snoops ([psram_store]) in the same
      write-through transaction, so shadow ≡ PSRAM framebuffer window at every instant. *)
   let viddata_src, vid_ack_src, vidpar_src, ht_status_src =
-    if fb_bram
+    if c.fb_bram
     then (
       let fb =
         Framebuf.create
@@ -215,7 +194,7 @@ let create
          (v1 muxed on the whole-screen mode bit). With the control word never written no
          request ever claims, and this elaboration is display-identical to
          [halftone:false] (the do-no-harm gate below is the visual golden). *)
-      if halftone
+      if c.halftone
       then (
         let ht =
           Halftone.create
@@ -244,14 +223,14 @@ let create
      store to PSRAM snoops. When off, [cache_hit] is tied low and the word is Cellram's,
      verbatim. *)
   let mem_rdata =
-    if icache
+    if c.icache
     then (
       let cacheable_read = core.mem_pend &: ~:(core.wr) &: ~:cpu_internal in
       let cacheable_read = cacheable_read -- "cache_read" in
       let cache =
         Cache.create
-          ?lines_log2
-          ~write_update
+          ~lines_log2:c.lines_log2
+          ~write_update:c.write_update
           { Cache.I.clock = i.clock
           ; adr = core_adr
           ; cacheable_read
@@ -276,10 +255,10 @@ let create
      at read slot 10 (0xFFFFE8). *)
   let per =
     Peripherals.create
-      ~clocks_per_ms
-      ~slow_div_log2:spi_slow_div_log2
-      ~baud_slow:uart_baud_slow
-      ~baud_fast:uart_baud_fast
+      ~clocks_per_ms:c.clocks_per_ms
+      ~slow_div_log2:c.spi_slow_div_log2
+      ~baud_slow:c.uart_baud_slow
+      ~baud_fast:c.uart_baud_fast
       ~extra_read_slots:[ Halftone.status_slot, ht_status ]
       { Peripherals.I.clock = i.clock
       ; rst_n = i.rst_n
@@ -327,27 +306,6 @@ let create
   ; ram_ub_n = cellram.ub_n
   ; ram_lb_n = cellram.lb_n
   }
-;;
-
-let create_config ~contents (c : Build_config.t) i =
-  create
-    ~contents
-    ~clocks_per_ms:c.clocks_per_ms
-    ~read_cycles:c.read_cycles
-    ~write_cycles:c.write_cycles
-    ~spi_slow_div_log2:c.spi_slow_div_log2
-    ~fast_mul:c.fast_mul
-    ~mul_stages:c.mul_stages
-    ~icache:c.icache
-    ~lines_log2:c.lines_log2
-    ~write_update:c.write_update
-    ~fb_bram:c.fb_bram
-    ~halftone:c.halftone
-    ~write_buffer:c.write_buffer
-    ~wbuf_depth:c.wbuf_depth
-    ~uart_baud_slow:c.uart_baud_slow
-    ~uart_baud_fast:c.uart_baud_fast
-    i
 ;;
 
 (* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── [Soc] is
@@ -407,29 +365,20 @@ module For_tests = struct
     (* [addr_bits] defaults to a tiny 2^12-halfword model: the co-located tests confine
        CPU stimulus under byte 0x200, and the faithful 1 MB model cost seconds of runtest
        (the video DMA reads alias in the shrunk model, but nothing observes [viddata]
-       here). The boot gates pass 19 — the full 1 MiB — to load the real disk image. *)
+       here). The boot gates pass 19 — the full 1 MiB — to load the real disk image.
+
+       [datasheet_chip] holds the chip model to the -70 part's datasheet at [c]'s clock:
+       70 ns from address/CE#/byte-enable valid to read data (tAA/tCO/tBA) and a 45 ns
+       write pulse (tWP). The write-side access figure (tAW/tCW/tBW) is held to 62 ns, not
+       the datasheet's 70: the shipped write phase provides 62.5 ns by decision (see
+       {!Build_config.shipped}), and this keeps a shorter phase from slipping in
+       unnoticed. A configuration whose phases are too short for its clock then fails. *)
     let create
       ~contents
-      ?clocks_per_ms
-      ?(read_cycles = 2)
-      ?(write_cycles = 2)
-      ?icache
-      ?lines_log2
-      ?write_update
       ?video
-      ?fb_bram
-      ?halftone
-      ?write_buffer
-      ?wbuf_depth
-      ?fast_mul
-      ?mul_stages
-      ?spi_slow_div_log2
-      ?uart_baud_slow
-      ?uart_baud_fast
       ?(addr_bits = 12)
-      ?psram_read_access
-      ?psram_write_access
-      ?psram_write_pulse
+      ?(datasheet_chip = false)
+      (c : Build_config.t)
       (i : _ I.t)
       : _ O.t
       =
@@ -437,22 +386,8 @@ module For_tests = struct
       let soc =
         sb_create
           ~contents
-          ?clocks_per_ms
-          ~read_cycles
-          ~write_cycles
-          ?icache
-          ?lines_log2
-          ?write_update
           ?video
-          ?fb_bram
-          ?halftone
-          ?write_buffer
-          ?wbuf_depth
-          ?fast_mul
-          ?mul_stages
-          ?spi_slow_div_log2
-          ?uart_baud_slow
-          ?uart_baud_fast
+          c
           { Sb_I.clock = i.clock
           ; pclk = i.pclk
           ; rst_n = i.rst_n
@@ -468,12 +403,15 @@ module For_tests = struct
           ; mem_dq_i = dq
           }
       in
+      let chip_cycles ~ns =
+        if datasheet_chip then Build_config.cycles_of_ns c ~ns else 1
+      in
       let m =
         Cellram_model.create
           ~addr_bits
-          ?read_access_cycles:psram_read_access
-          ?write_access_cycles:psram_write_access
-          ?write_pulse_cycles:psram_write_pulse
+          ~read_access_cycles:(chip_cycles ~ns:70)
+          ~write_access_cycles:(chip_cycles ~ns:62)
+          ~write_pulse_cycles:(chip_cycles ~ns:45)
           { Cellram_model.I.clock = i.clock
           ; mem_adr = soc.mem_adr
           ; mem_dq_o = soc.mem_dq_o
@@ -492,38 +430,6 @@ module For_tests = struct
       ; vsync = soc.vsync
       ; rgb = soc.rgb
       }
-    ;;
-
-    (* The chip model is held to the -70 part's datasheet at [c]'s clock: 70 ns from
-       address/CE#/byte-enable valid to read data (tAA/tCO/tBA) and a 45 ns write pulse
-       (tWP). The write-side access figure (tAW/tCW/tBW) is held to 62 ns, not the
-       datasheet's 70: the shipped write phase provides 62.5 ns by decision (see
-       {!Build_config.shipped}), and this keeps a shorter phase from slipping in
-       unnoticed. A configuration whose phases are too short for its clock fails the board
-       gates. *)
-    let create_config ~contents ?addr_bits (c : Build_config.t) i =
-      create
-        ~psram_read_access:(Build_config.cycles_of_ns c ~ns:70)
-        ~psram_write_access:(Build_config.cycles_of_ns c ~ns:62)
-        ~psram_write_pulse:(Build_config.cycles_of_ns c ~ns:45)
-        ~contents
-        ~clocks_per_ms:c.clocks_per_ms
-        ~read_cycles:c.read_cycles
-        ~write_cycles:c.write_cycles
-        ~icache:c.icache
-        ~lines_log2:c.lines_log2
-        ~write_update:c.write_update
-        ~fb_bram:c.fb_bram
-        ~halftone:c.halftone
-        ~write_buffer:c.write_buffer
-        ~wbuf_depth:c.wbuf_depth
-        ~fast_mul:c.fast_mul
-        ~mul_stages:c.mul_stages
-        ~spi_slow_div_log2:c.spi_slow_div_log2
-        ~uart_baud_slow:c.uart_baud_slow
-        ~uart_baud_fast:c.uart_baud_fast
-        ?addr_bits
-        i
     ;;
   end
 
@@ -572,7 +478,11 @@ let%expect_test "board soc — fetch ROM, store + load round-trip through PSRAM"
      ; nop
     |]
   in
-  let sim = Sim.create ~config:Cyclesim.Config.trace_all (Tb.create ~contents:prog) in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:prog Build_config.bare)
+  in
   let inp = Cyclesim.inputs sim in
   let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
   drive_idle inp;
@@ -604,7 +514,7 @@ let%expect_test "board soc — ms timer counts clocks, not ce cycles (free-runni
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Tb.create ~contents:prog ~clocks_per_ms:50)
+      (Tb.create ~contents:prog { Build_config.bare with clocks_per_ms = 50 })
   in
   let inp = Cyclesim.inputs sim in
   let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
@@ -654,7 +564,7 @@ let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still 
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Tb.create ~contents:prog ~clocks_per_ms:50)
+      (Tb.create ~contents:prog { Build_config.bare with clocks_per_ms = 50 })
   in
   let inp = Cyclesim.inputs sim in
   let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
@@ -693,7 +603,9 @@ let%expect_test "board soc — ms timer free-runs across a mid-run reset (RESET-
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Tb.create ~contents:(Array.create ~len:8 nop) ~clocks_per_ms:10)
+      (Tb.create
+         ~contents:(Array.create ~len:8 nop)
+         { Build_config.bare with clocks_per_ms = 10 })
   in
   let inp = Cyclesim.inputs sim in
   let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
@@ -744,7 +656,11 @@ let%expect_test "board soc — MMIO word 1: read {btn, sw}; store latches the LE
      ; nop
     |]
   in
-  let sim = Sim.create ~config:Cyclesim.Config.trace_all (Tb.create ~contents:prog) in
+  let sim =
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Tb.create ~contents:prog Build_config.bare)
+  in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let regfile = Option.value_exn (Cyclesim.lookup_mem_by_name sim "regfile") in
@@ -823,7 +739,9 @@ let%expect_test "board soc — Halftone on: the rect scans out composed pixels, 
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Tb.create ~contents:prog ~fb_bram:true ~halftone:true)
+      (Tb.create
+         ~contents:prog
+         { Build_config.bare with fb_bram = true; halftone = true })
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in

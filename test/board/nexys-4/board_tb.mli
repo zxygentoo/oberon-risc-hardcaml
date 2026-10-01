@@ -10,69 +10,27 @@ module O = Nexys4_board.Soc.For_tests.Tb.O
     level ([rst_n] excluded — reset sequencing belongs to the test). *)
 val drive_idle : Bits.t ref I.t -> unit
 
-(** [create ?read_cycles ?write_cycles ?icache ?lines_log2 ?write_update ?video ?fast_mul ?mul_stages i]
-    wires the board SoC, booting the design ROM {!Risc5.Rom.bootloader}, to the full-size
-    PSRAM model ([addr_bits] 19 — the gates load the real disk image into low RAM). It is
-    {!Nexys4_board.Soc.For_tests.Tb.create} with those two knobs pinned; every other knob
-    forwards. [read_cycles] / [write_cycles] default to 2 (the model answers at once, so
-    small waits exercise only the controller FSM — the checkpoint's regime; the visual
-    golden passes 5 to match the board). The cache knobs ([icache] / [lines_log2] /
-    [write_update]) and [fast_mul] / [mul_stages] (all default off) forward to
-    {!Nexys4_board.Soc.create} — for the bench's sweeps; the tests leave them off. [sclk]
-    is the only output read directly; everything else is reached by name under
-    [Cyclesim.Config.trace_all]. *)
+(** [create c i] wires the board SoC in configuration [c], booting the design ROM
+    {!Risc5.Rom.bootloader}, to the full-size PSRAM model ([addr_bits] 19 — the gates load
+    the real disk image into low RAM): {!Nexys4_board.Soc.For_tests.Tb.create} with those
+    two pinned. [?video] and [?datasheet_chip] forward — the gates hold the chip model to
+    the datasheet when they boot {!config_of_env}. [sclk] and [rgb] are the outputs read
+    directly; everything else is reached by name under [Cyclesim.Config.trace_all]. *)
 val create
-  :  ?clocks_per_ms:int
-       (** forwards to {!Nexys4_board.Soc.create} (the ms-timer prescaler) *)
-  -> ?read_cycles:int
-  -> ?write_cycles:int
-  -> ?icache:bool
-  -> ?lines_log2:int
-  -> ?write_update:bool
-       (** default [false]; [true] = the Phase-10b write-update snoop policy (word
-           store-hits refresh the cached line in place — see {!Nexys4_board.Cache}) *)
-  -> ?video:bool
-       (** default [true]; [false] gates the video DMA off the PSRAM port — the
-           framebuffer-in-BRAM counterfactual (see {!Nexys4_board.Soc.create}) *)
-  -> ?fb_bram:bool
-       (** default [false]; [true] = Phase-10c: video served from the
-           {!Nexys4_board.Framebuf} BRAM shadow, PSRAM video port tied off (see
-           {!Nexys4_board.Soc.create}) *)
-  -> ?halftone:bool
-       (** default [false]; [true] = feat/halftone v2: instantiate the
-           {!Nexys4_board.Halftone} display mode, claim-muxed against Framebuf per request
-           (see {!Nexys4_board.Soc.create}) *)
-  -> ?write_buffer:bool
-       (** default [false]; [true] = Phase-10d: 1-entry write buffer in
-           {!Nexys4_board.Cellram} — stores retire in one ce cycle, the write drains in
-           the background (see {!Nexys4_board.Cellram.create}) *)
-  -> ?wbuf_depth:int
-       (** write-buffer FIFO depth 1..4 (default 1; see {!Nexys4_board.Cellram.create}) *)
-  -> ?fast_mul:bool
-  -> ?mul_stages:int
-  -> ?spi_slow_div_log2:int
-       (** forwards to {!Nexys4_board.Soc.create}: the slow SPI divider depth (default 6 =
-           SPI.v's clk÷64; the gates' SPI_DIV_LOG2=2 turbo knob passes 2 = clk÷4) *)
-  -> ?uart_baud_slow:int
-  -> ?uart_baud_fast:int
-  -> ?psram_read_access:int
-  -> ?psram_write_access:int
-  -> ?psram_write_pulse:int
-       (** the chip model's timing demands in clocks (default 1 = an instantly responding
-           chip; see {!Nexys4_board.Cellram_model.create}) *)
+  :  ?video:bool
+  -> ?datasheet_chip:bool
+  -> Nexys4_board.Build_config.t
   -> Signal.t I.t
   -> Signal.t O.t
 
-(** [create_config c i] is {!create} with every knob taken from [c] — the board gates pass
-    {!config_of_env}, so by default they boot exactly what the bitstream contains. *)
-val create_config : Nexys4_board.Build_config.t -> Signal.t I.t -> Signal.t O.t
-
 (** {!Nexys4_board.Build_config.shipped} with the gates' environment overrides applied —
     controls for bisecting a failure or running an A/B, never needed for the default run:
-    [ICACHE] / [WRITE_UPDATE] / [FB_BRAM] / [HALFTONE] / [FAST_MUL] (each [0] or [1]),
-    [LINES_LOG2], [MUL_STAGES], [WBUF] ([0] = no write buffer, [n] = depth n),
+    [ICACHE] / [WRITE_UPDATE] / [FB_BRAM] / [HALFTONE] / [FAST_MUL] (each [0] or [1];
+    [FAST_MUL=0] = the iterative multipliers), [LINES_LOG2], [MUL_STAGES] (the DSP
+    multipliers' pipeline depth), [WBUF] ([0] = no write buffer, [n] = depth n),
     [READ_CYCLES] / [WRITE_CYCLES] (the PSRAM phase lengths) and [SPI_DIV_LOG2] (the
-    boot-speed knob). Anything unparsable fails loudly. *)
+    boot-speed knob). Anything unparsable, or [MUL_STAGES] without the DSP multipliers,
+    fails loudly. *)
 val config_of_env : unit -> Nexys4_board.Build_config.t
 
 (** [read_word ~cram_lo ~cram_hi w] reconstructs 32-bit word [w] from the model's two

@@ -51,8 +51,9 @@
     {1 Parameters}
 
     [~contents] is the boot ROM image (keeping the design library free of [prom.mem]);
-    [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz; [?fast_mul] (default [false],
-    Phase 9) selects the core's DSP-backed multipliers ({!Cpu.create} — see there). *)
+    [~clocks_per_ms] defaults to 25000 — 1 ms at 25 MHz; [?spi_slow_div_log2] is {!Spi}'s
+    slow-clock divider depth (default 6 = [SPI.v]'s clk÷64; the boot gates' fast mode
+    passes 2). *)
 
 open Hardcaml
 
@@ -101,7 +102,6 @@ end
 val create
   :  contents:int array
   -> ?clocks_per_ms:int
-  -> ?fast_mul:bool
   -> ?spi_slow_div_log2:int
   -> Signal.t I.t
   -> Signal.t O.t

@@ -23,11 +23,12 @@
 open Hardcaml
 open Boot_checkpoint_common
 
-(* The board SoC + behavioural PSRAM model is the shared {!Board_tb}; the bench drives its
-   [fast_mul] / [mul_stages] (the DSP-multiplier variant) and [read_cycles] /
-   [write_cycles] (the PSRAM latency) knobs across the sweeps below. Only [sclk] is read
-   directly (for the SD bridge); the rest go by name via [trace_all]. *)
+(* The board SoC + behavioural PSRAM model is the shared {!Board_tb}; the bench varies the
+   multipliers, the PSRAM latency and the memory-stack knobs of its
+   {!Nexys4_board.Build_config.t} across the sweeps below. Only [sclk] is read directly
+   (for the SD bridge); the rest go by name via [trace_all]. *)
 module Sim = Cyclesim.With_interface (Board_tb.I) (Board_tb.O)
+module Build_config = Nexys4_board.Build_config
 
 let cycle_cap = 80_000_000
 
@@ -51,20 +52,22 @@ let () =
   | None -> ()
 ;;
 
+(* Every gauge builds on the bare board SoC ({!Build_config.bare}), at the SPI divider the
+   environment asks for. *)
+let base =
+  match spi_slow_div_log2 with
+  | None -> Build_config.bare
+  | Some n -> { Build_config.bare with spi_slow_div_log2 = n }
+;;
+
 (* boot to the OS handoff; return the cycle count (or None if it never leaves the ROM) *)
-let boot_cycles ~icache ~fast_mul ~mul_stages ~read_cycles ~write_cycles =
+let boot_cycles ~icache ~multipliers ~read_cycles ~write_cycles =
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
-    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create
-        ?spi_slow_div_log2
-        ~fast_mul
-        ~mul_stages
-        ~icache
-        ~read_cycles
-        ~write_cycles
-        i)
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Board_tb.create { base with multipliers; icache; read_cycles; write_cycles })
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -155,7 +158,7 @@ let make_os
   ?(write_update = false)
   ?(fb_bram = false)
   ?(write_buffer = false)
-  ?wbuf_depth
+  ?(wbuf_depth = 1)
   ?(read_cycles = 5)
   ~write_cycles
   ~icache
@@ -165,21 +168,20 @@ let make_os
   let tmp = copy_to_temp disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
-    Sim.create ~config:Cyclesim.Config.trace_all (fun i ->
-      Board_tb.create
-        ?spi_slow_div_log2
-        ~fast_mul:false
-        ~mul_stages:0
-        ~icache
-        ~lines_log2
-        ~write_update
-        ~video
-        ~fb_bram
-        ~write_buffer
-        ?wbuf_depth
-        ~read_cycles
-        ~write_cycles
-        i)
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Board_tb.create
+         ~video
+         { base with
+           icache
+         ; lines_log2
+         ; write_update
+         ; fb_bram
+         ; write_buffer
+         ; wbuf_depth
+         ; read_cycles
+         ; write_cycles
+         })
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in
@@ -585,33 +587,20 @@ let () =
      %!";
   Printf.printf "  booting (faithful mul, read_cycles=5) ...\n%!";
   let f5, _, _ =
-    must
-      (boot_cycles
-         ~icache:false
-         ~fast_mul:false
-         ~mul_stages:0
-         ~read_cycles:5
-         ~write_cycles:5)
+    must (boot_cycles ~icache:false ~multipliers:Iterative ~read_cycles:5 ~write_cycles:5)
   in
   Printf.printf "  booting (DSP fast_mul mul_stages:2, read_cycles=5) ...\n%!";
   let x5, _, _ =
     must
       (boot_cycles
          ~icache:false
-         ~fast_mul:true
-         ~mul_stages:2
+         ~multipliers:(Dsp { stages = 2 })
          ~read_cycles:5
          ~write_cycles:5)
   in
   Printf.printf "  booting (faithful mul, read_cycles=2) ...\n%!";
   let f2, _, _ =
-    must
-      (boot_cycles
-         ~icache:false
-         ~fast_mul:false
-         ~mul_stages:0
-         ~read_cycles:2
-         ~write_cycles:2)
+    must (boot_cycles ~icache:false ~multipliers:Iterative ~read_cycles:2 ~write_cycles:2)
   in
   (* rc only touches PSRAM accesses, so the rc 2->5 delta is *pure* wait: +3 cycles per
      half-word, so (C5 - C2) / 3 = half-word accesses and ~rc * that = the wait at that
@@ -662,13 +651,7 @@ let () =
   Printf.printf "\n  I-cache (Phase-10a) — faithful mul, read_cycles=5:\n%!";
   Printf.printf "  booting (I-CACHE ON) ...\n%!";
   let c_on, acc, hits =
-    must
-      (boot_cycles
-         ~icache:true
-         ~fast_mul:false
-         ~mul_stages:0
-         ~read_cycles:5
-         ~write_cycles:5)
+    must (boot_cycles ~icache:true ~multipliers:Iterative ~read_cycles:5 ~write_cycles:5)
   in
   let hr = if acc = 0 then 0.0 else 100.0 *. float_of_int hits /. float_of_int acc in
   Printf.printf "    icache off : %d cycles\n" f5;

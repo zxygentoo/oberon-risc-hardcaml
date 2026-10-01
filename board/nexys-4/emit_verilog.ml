@@ -14,12 +14,12 @@
    NB (feat/clock-push): retuned for a 64 MHz system clock (nexys4_top.v MMCM VCO 1040,
    CLKOUT0_DIVIDE_F = 16.250 — the VCO that keeps 64 and the 65 pixel clock both exact);
    before that, feat/fast-clock's 60 MHz (VCO 780 ÷ 13.000), enabled by the pipelined DSP
-   multiplies (mul_stages:2) that move the multiply off the critical path. At 64 MHz
-   (15.625 ns/cycle) the read phase keeps 6 cycles (93.75 ns = 70 for the chip + 23.75 for
-   the FPGA round trip; the xdc groups tightened 12.0 → 11.7 to fit) and the SPI slow
-   divider stays ÷256 (250 kHz ≤ the 400 kHz SD-init ceiling). Timing note: 64 closes at
-   WNS +0.004 only under build.tcl's ExtraTimingOpt placement (Explore plateaus at −0.071)
-   — the thinnest rung of the ladder; the structural relief if a rebuild ever refuses is
+   multiplies (2 stages) that move the multiply off the critical path. At 64 MHz (15.625
+   ns/cycle) the read phase keeps 6 cycles (93.75 ns = 70 for the chip + 23.75 for the
+   FPGA round trip; the xdc groups tightened 12.0 → 11.7 to fit) and the SPI slow divider
+   stays ÷256 (250 kHz ≤ the 400 kHz SD-init ceiling). Timing note: 64 closes at WNS
+   +0.004 only under build.tcl's ExtraTimingOpt placement (Explore plateaus at −0.071) —
+   the thinnest rung of the ladder; the structural relief if a rebuild ever refuses is
    registering the icache fill path (or reverting a rung). Revert to 62.4 MHz:
    clocks_per_ms 62400, uart_baud 541/541, MMCM VCO 780 (MULT_F 39.000) / CLKOUT0 12.500 /
    CLKOUT1 12, xdc groups back to 12.0. Revert to 60: likewise with clocks_per_ms 60000,
@@ -38,7 +38,7 @@ let () =
        flow reads board/_generated/nexys-4/soc_board.v — renaming the artifact would churn
        the board flow for nothing. *)
       ~name:"soc_board"
-      (Soc.create_config ~contents:Risc5.Rom.bootloader Nexys4_board.Build_config.shipped)
+      (Soc.create ~contents:Risc5.Rom.bootloader Nexys4_board.Build_config.shipped)
   in
   Rtl.print Verilog circuit
 ;;

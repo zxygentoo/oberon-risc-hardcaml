@@ -45,7 +45,9 @@ let boot_board ~(cfg : Nexys4_board.Build_config.t) ~target ~cap ~chunk ~settle 
   let tmp = BCC.copy_to_temp BCC.disk_image in
   let bridge = Sd_bridge.create (Emu.Disk.to_spi (Emu.Disk.create (Some tmp))) in
   let sim =
-    Sim.create ~config:Cyclesim.Config.trace_all (fun i -> Board_tb.create_config cfg i)
+    Sim.create
+      ~config:Cyclesim.Config.trace_all
+      (Board_tb.create ~datasheet_chip:true cfg)
   in
   let inp = Cyclesim.inputs sim
   and outp = Cyclesim.outputs sim in

@@ -63,14 +63,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create
-  ~contents
-  ?(clocks_per_ms = 25000)
-  ?(fast_mul = false)
-  ?spi_slow_div_log2
-  (i : _ I.t)
-  : _ O.t
-  =
+let create ~contents ?(clocks_per_ms = 25000) ?spi_slow_div_log2 (i : _ I.t) : _ O.t =
   (* Core + memory; the fetch/load feedback is broken by the core's pc/ir registers, so
      [codebus]/[inbus] are wires assigned below. [irq] closes the same kind of loop with
      {!Peripherals} (built after the core, whose strobes it consumes): its [ms_tick] comes
@@ -96,7 +89,6 @@ let create
      [vidadr]. *)
   let core =
     Cpu.create
-      ~fast_mul
       { Cpu.I.clock = i.clock; rst_n = i.rst_n; irq; stall_x = vidreq; inbus; codebus }
   in
   let prom = Rom.create ~contents { Rom.I.adr = select core.adr ~high:10 ~low:2 } in

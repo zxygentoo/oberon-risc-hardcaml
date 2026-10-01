@@ -90,7 +90,7 @@ change starts from a gauge and ends with a same-work comparison.
 2. **Two layers, two contracts.** `lib/` (library `risc5`) is the **faithful port** —
    changes there must keep the co-sim and formal proofs green. Performance and
    architecture extensions — caches, write buffer, framebuffer shadow, Halftone, and
-   the default-off seams inside `lib/` (`?fast_mul`, `?mul_stages`, `?baud_*`) — live
+   the default-off seams inside `lib/` (`?multipliers`, `?baud_*`) — live
    in the **board layer** (or behind those seams) and are judged against the
    **ISA/oracle**: instruction-level lockstep, same-work benchmarks, the goldens, an
    on-hardware boot — not `RISC5.v` timing. The faithful default stays byte-identical;
@@ -116,7 +116,7 @@ separation enforced by one-way library dependencies (`nexys4_board` depends on `
 never the reverse):
 
 - **`lib/` (library `risc5`) — the faithful machine.** RISC5 core (`cpu.ml` ↔
-  `RISC5.v`), the datapath units (+ default-off DSP `?fast_mul` variants, proven
+  `RISC5.v`), the datapath units (+ default-off DSP `?multipliers` variants, proven
   bit-identical), register file (3R/1W async-read array — Vivado infers distributed
   RAM), all peripherals, boot ROM, and the sim SoC (`soc.ml`: the full `RISC5Top` MMIO
   map over a flat 1 MB single-cycle RAM) — the §6 verification vehicle.
@@ -134,8 +134,8 @@ never the reverse):
   in-file notes before touching the CDC constraints).
 
 **The shipped board configuration** — single source of truth
-`board/nexys-4/emit_verilog.ml` (each knob carries its rationale as a comment; retune
-there): 60 MHz (`fast_mul` + `mul_stages:2` pipelined DSP multiplies made it close),
+`board/nexys-4/build_config.ml` (each knob carries its rationale as a comment; retune
+there): 60 MHz (2-stage pipelined DSP multiplies made it close),
 **16 KiB I-cache** with write-update snoop, framebuffer-in-BRAM, **depth-2 write
 buffer**, PSRAM read 6 / write 5 cycles, Halftone on, UART **115200** (both `fsel`
 settings), SPI slow divider ÷256 (SD-init ≤ 400 kHz). Running-OS CPI ≈ **1.37** (vs
@@ -178,7 +178,7 @@ is **`build-log.md`**. One line each:
 | 6 | All peripherals (cosim-proven) + SoC top; visual golden (byte-identical desktop) |
 | 7 | Board layer: PSRAM controller + vendor shim + `.xdc` → **boots on real silicon** |
 | 8 | Formal: every datapath unit, the core glue, and the peripherals proven ≡ their `.v` (17 checks) |
-| 9 | Compute arc: DSP MUL/FML (`?fast_mul`), pipelined → **60 MHz**; verdict: memory-bound |
+| 9 | Compute arc: DSP MUL/FML (`?multipliers`), pipelined → **60 MHz**; verdict: memory-bound |
 | 10 | Memory arc: I-cache + write-update + fb-BRAM + write buffer — running-OS CPI 26.28 → **1.37** |
 | 11 | Display arc: `Halftone` — dithered 8bpp overlay at scanout; DOOM 14.1 fps on silicon |
 

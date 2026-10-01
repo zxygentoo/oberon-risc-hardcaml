@@ -55,6 +55,20 @@ module O : sig
   [@@deriving hardcaml]
 end
 
+(** The implementation behind both multiplies — the integer {!Multiplier} and the FP
+    {!Fp_multiplier} mantissa engine. Every choice computes the same results (each DSP
+    variant is checked bit-identical by its differential qcheck); they differ in cycles
+    and in what the synthesizer builds. *)
+type multipliers =
+  | Iterative
+  (** the shift-add units of [Multiplier.v] / [FPMultiplier.v]: 33 / 25 cycles, proven
+      equivalent to the RTL *)
+  | Dsp of { stages : int }
+  (** DSP-block products. [stages = 0] is the combinational [create_opt]; [stages = n > 0]
+      is [create_opt_pipelined], with [n] product registers the synthesizer retimes into
+      the DSP48 so the multiply leaves the critical path (it takes [n] cycles again,
+      through the core's stall path). *)
+
 (** [create] builds the CPU core: the state registers updated in one synchronous block,
     and the combinational decode / datapath / control logic that feeds them. The real
     synthesizable core, with the submodules inlined.
@@ -65,23 +79,10 @@ end
     AGENT.md §3). The default leaves the core byte-identical to the bare RTL port — the
     sim SoC never drives it.
 
-    [?fast_mul] (default [false], Phase 9 — AGENT.md §5) swaps both shift-add multipliers
-    — the integer {!Multiplier} and the FP {!Fp_multiplier} mantissa engine — for their
-    DSP variants (each proven bit-identical via its differential qcheck) through the
-    {!Units} seam; the default keeps the faithful, Phase-8-proven units. Everything else
-    is unchanged.
-
-    [?mul_stages] (default [0], experiment [feat/fast-clock]) selects which DSP variant
-    [fast_mul] uses: [0] = the combinational [create_opt] (the 50 MHz build); [n > 0] =
-    [create_opt_pipelined ~stages:n], where [n] product registers are retimed into the
-    DSP48 so the multiply drops off the critical path — for running the system clock past
-    ~52 MHz (the multiplies become [n]-cycle again, via the core's stall path). *)
-val create
-  :  ?ce:Signal.t
-  -> ?fast_mul:bool
-  -> ?mul_stages:int
-  -> Signal.t I.t
-  -> Signal.t O.t
+    [?multipliers] (default {!Iterative}) picks the units behind MUL and FML through the
+    {!Units} seam — see {!multipliers}. The default keeps the faithful, proven units;
+    everything else is unchanged either way. *)
+val create : ?ce:Signal.t -> ?multipliers:multipliers -> Signal.t I.t -> Signal.t O.t
 
 (** the reset vector ([RISC5.v]'s [StartAdr]) as a word address — [pc] is pulled here
     while [rst_n] is low. Exported so the SoC's ROM-window decode

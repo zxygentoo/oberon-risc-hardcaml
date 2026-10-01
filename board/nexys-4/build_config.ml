@@ -5,8 +5,7 @@ type t =
   ; read_cycles : int
   ; write_cycles : int
   ; spi_slow_div_log2 : int
-  ; fast_mul : bool
-  ; mul_stages : int
+  ; multipliers : Risc5.Cpu.multipliers
   ; icache : bool
   ; lines_log2 : int
   ; write_update : bool
@@ -44,14 +43,11 @@ let shipped =
        ceiling). ÷128 would be 500 kHz, over the limit. FAST stays clk÷3 = 21.3 MHz, under
        the 25 MHz SD limit. *)
     spi_slow_div_log2 = 8
-  ; (* Phase-9 DSP multipliers: swap the iterative MUL/FML for their DSP48-backed variants
-       (proven bit-identical). *)
-    fast_mul = true
-  ; (* feat/fast-clock: 2-stage *pipelined* DSP multiplies (registers retimed into the
-       DSP48 MREG/PREG) move the multiply off the critical path, which is what lets the
-       system clock go to 60 MHz. The new limiter is the FPAdder's normalize/round
-       arithmetic (see the branch's synth notes). *)
-    mul_stages = 2
+  ; (* DSP48-backed MUL/FML in place of the iterative units (checked bit-identical), with
+       2 pipeline registers on the product (retimed into the DSP48 MREG/PREG): that moves
+       the multiply off the critical path, which is what lets the system clock run past
+       ~52 MHz (at 60 MHz the next limiter was the FPAdder's normalize/round arithmetic). *)
+    multipliers = Dsp { stages = 2 }
   ; (* Phase-10a: the direct-mapped read/I-cache in front of Cellram. Async-read
        distributed RAM (LUTRAM), so a hit is combinational — check the util report infers
        RAM (distributed), not BRAM/FF, and that the combinational hit path (regfile → tag
@@ -118,20 +114,41 @@ let shipped =
   }
 ;;
 
+(* [Cellram]'s and [Cache]'s own defaults and the constants of the original 25 MHz machine
+   ([Peripherals] / [Spi] / the UARTs default to the same values). *)
+let bare =
+  { clocks_per_ms = 25000
+  ; read_cycles = 2
+  ; write_cycles = 2
+  ; spi_slow_div_log2 = 6
+  ; multipliers = Iterative
+  ; icache = false
+  ; lines_log2 = 10
+  ; write_update = false
+  ; fb_bram = false
+  ; halftone = false
+  ; write_buffer = false
+  ; wbuf_depth = 1
+  ; uart_baud_slow = 1302
+  ; uart_baud_fast = 217
+  }
+;;
+
 (* ceil (ns / clock period), the period being 1e6 / clocks_per_ms ns *)
 let cycles_of_ns c ~ns = ((ns * c.clocks_per_ms) + 999_999) / 1_000_000
 
 let to_string c =
   Printf.sprintf
-    "clocks_per_ms=%d rc=%d wc=%d spi_slow_div_log2=%d fast_mul=%b mul_stages=%d \
-     icache=%b lines_log2=%d write_update=%b fb_bram=%b halftone=%b write_buffer=%b \
-     wbuf_depth=%d uart_baud=%d/%d"
+    "clocks_per_ms=%d rc=%d wc=%d spi_slow_div_log2=%d multipliers=%s icache=%b \
+     lines_log2=%d write_update=%b fb_bram=%b halftone=%b write_buffer=%b wbuf_depth=%d \
+     uart_baud=%d/%d"
     c.clocks_per_ms
     c.read_cycles
     c.write_cycles
     c.spi_slow_div_log2
-    c.fast_mul
-    c.mul_stages
+    (match c.multipliers with
+     | Iterative -> "iterative"
+     | Dsp { stages } -> Printf.sprintf "dsp/%d" stages)
     c.icache
     c.lines_log2
     c.write_update

@@ -24,22 +24,10 @@
     (the board boot checkpoint); on the board the Verilog top wires IOBUFs. The
     synthesizable design here holds no main-memory array.
 
-    Parameters (defaults are the faithful/sim values; the 60 MHz board build's overrides
-    all live in emit_verilog.ml): [contents] is the boot-ROM image; [clocks_per_ms] the
-    ms-timer prescaler (default 25000 = 1 ms at 25 MHz; the board passes 60000);
-    [read_cycles]/[write_cycles] the PSRAM phase lengths (default {!Cellram}'s — 2, the
-    sim/test value; the board synthesizes read 6 / write 5 = 100 / 83 ns at 60 MHz — see
-    emit_verilog.ml); [spi_slow_div_log2] the SPI slow-divider depth (default 6 = clk÷64 =
-    {!Spi}/[SPI.v]; the board passes 8 = clk÷256 to keep SD init ≤400 kHz at 60 MHz);
-    [fast_mul]/[mul_stages] (defaults [false]/[0], Phase 9) swap the core's iterative
-    multipliers for the DSP-backed, optionally pipelined {!Cpu.create} variants — see
-    there (the board passes [true]/[2]); [icache] (default [false], Phase-10a) inserts a
-    direct-mapped write-through read cache in front of {!Cellram} ({!Cache}), serving
-    PSRAM fetches/loads from on-chip distributed RAM (LUTRAM) on a hit, sized by
-    [lines_log2] (default 10 = 4 KiB) with the [write_update]/[video] knobs documented at
-    the signature below; [uart_baud_slow]/[uart_baud_fast] the {!Uart_rx}/{!Uart_tx}
-    divisors (defaults 1302/217, the faithful 25 MHz constants; the board passes 521/521 —
-    both settings ~115200, see emit_verilog.ml). *)
+    Parameters: [contents] is the boot-ROM image; every build knob — the timer, SPI and
+    UART retunes for the board's clock, the PSRAM phase lengths, the multipliers, the
+    cache, the framebuffer shadow, Halftone, the write buffer — arrives in one
+    {!Build_config.t}, documented field by field there. *)
 
 open Hardcaml
 
@@ -94,63 +82,20 @@ module O : sig
   [@@deriving hardcaml]
 end
 
+(** [create ~contents c i] elaborates the board SoC in configuration [c] — the emitter
+    passes {!Build_config.shipped}.
+
+    [?video] is a sim-only A/B seam, deliberately outside the configuration (default
+    [true] = the board): [false] gates [vidreq], taking the video DMA off the PSRAM port —
+    the framebuffer-in-BRAM counterfactual for the bench. NB holding the [pclk] {e input}
+    low does not do this: in Cyclesim's one-domain sim the pclk raster advances 1:1 with
+    [clk] regardless, so video is live in every board sim unless gated here. *)
 val create
   :  contents:int array
-  -> ?clocks_per_ms:int
-  -> ?read_cycles:int
-  -> ?write_cycles:int
-  -> ?spi_slow_div_log2:int
-  -> ?fast_mul:bool
-  -> ?mul_stages:int
-  -> ?icache:bool
-  -> ?lines_log2:int
-  -> ?write_update:bool
-       (** Phase-10b cache snoop policy (default [false] = the proven Phase-10a
-           snoop-invalidate): word store-hits update the cached line in place instead of
-           dropping it — see {!Cache.create}. Like [lines_log2], consulted only when
-           [icache]. *)
   -> ?video:bool
-       (** sim-only A/B seam (default [true] = the board): [false] gates [vidreq], taking
-           the video DMA off the PSRAM port — the framebuffer-in-BRAM counterfactual for
-           the bench. NB holding the [pclk] {e input} low does not do this: in Cyclesim's
-           one-domain sim the pclk raster advances 1:1 with [clk] regardless, so video is
-           live in every board sim unless gated here. *)
-  -> ?fb_bram:bool
-       (** Phase-10c (default [false] = the proven PSRAM video path): serve the video DMA
-           from the {!Framebuf} BRAM shadow — a 1-cycle on-chip read — and tie
-           {!Cellram}'s [vidreq] low, taking video off the PSRAM port entirely (the
-           synthesizer then prunes the arbiter's video FSM and read-preemption logic). The
-           shadow mirrors the same PSRAM-bound stores the cache snoops, so it equals the
-           PSRAM framebuffer window at every instant — see {!Framebuf}. *)
-  -> ?halftone:bool
-       (** feat/halftone v2 (default [false]; requires [fb_bram] — enforced at
-           elaboration): instantiate {!Halftone} — the generalized 8bpp display mode
-           (client-uploaded tone LUT, threshold map, row map, scale registers, overlay
-           rect). Its per-request [claim] (mode on AND the fetch word inside the client's
-           rect) selects which shadow answers the video DMA: unclaimed = {!Framebuf} (the
-           proven mono path, bit-identical to [halftone:false] while the control word is
-           never written), claimed = the Halftone compose FSM. Also wires the
-           vblank/frame-counter status word at MMIO slot 10 ([0xFFFFE8]). *)
-  -> ?write_buffer:bool
-       (** Phase-10d (default [false] = the proven synchronous write path): a 1-entry
-           write buffer in {!Cellram} — a PSRAM store retires in one [ce] cycle and the
-           write drains in the background; PSRAM reads wait out a pending drain
-           (drain-before-read), so coherence is untouched. Pair with [fb_bram] on the
-           board (without it a not-yet-drained framebuffer word could reach the raster a
-           frame stale) — see {!Cellram.create}. *)
-  -> ?wbuf_depth:int
-       (** write-buffer FIFO depth 1..4 (default 1 = the proven Phase-10d slot); bursts up
-           to the depth retire back-to-back — see {!Cellram.create}. Consulted only when
-           [write_buffer]. *)
-  -> ?uart_baud_slow:int
-  -> ?uart_baud_fast:int
+  -> Build_config.t
   -> Signal.t I.t
   -> Signal.t O.t
-
-(** [create_config ~contents c i] is {!create} with every knob taken from [c] — how the
-    emitter and the board gates elaborate one and the same machine
-    ({!Build_config.shipped}). *)
-val create_config : contents:int array -> Build_config.t -> Signal.t I.t -> Signal.t O.t
 
 (** Test scaffolding, not hardware (the {!Risc5.Ps2.For_tests} precedent): the board SoC
     closed with the behavioural {!Cellram_model} on its PSRAM pins, plus the idle-level
@@ -192,42 +137,20 @@ module For_tests : sig
       [@@deriving hardcaml]
     end
 
-    (** [create ~contents i] closes {!Soc.create} with the {!Cellram_model}; the
-        structural knobs forward. [?addr_bits] sizes the model: default [12] (a 4 KiB
-        double — the co-located tests stay under byte 0x200; the video DMA aliases in it,
-        unobserved); the boot gates pass [19], the full 1 MiB, to load the real disk. *)
+    (** [create ~contents c i] closes {!Soc.create} in configuration [c] with the
+        {!Cellram_model}. [?addr_bits] sizes the model: default [12] (a 4 KiB double — the
+        co-located tests stay under byte 0x200; the video DMA aliases in it, unobserved);
+        the boot gates pass [19], the full 1 MiB, to load the real disk.
+
+        [?datasheet_chip] (default [false] = a chip that answers at once, so short phases
+        exercise only the controller's control flow) holds the model, at [c]'s clock, to
+        the datasheet's read access time and write pulse width and to the write access
+        time the shipped configuration provides (62 ns; see {!Cellram_model.create}). *)
     val create
       :  contents:int array
-      -> ?clocks_per_ms:int
-      -> ?read_cycles:int
-      -> ?write_cycles:int
-      -> ?icache:bool
-      -> ?lines_log2:int
-      -> ?write_update:bool
       -> ?video:bool
-      -> ?fb_bram:bool
-      -> ?halftone:bool
-      -> ?write_buffer:bool
-      -> ?wbuf_depth:int
-      -> ?fast_mul:bool
-      -> ?mul_stages:int
-      -> ?spi_slow_div_log2:int
-      -> ?uart_baud_slow:int
-      -> ?uart_baud_fast:int
       -> ?addr_bits:int
-      -> ?psram_read_access:int
-      -> ?psram_write_access:int
-      -> ?psram_write_pulse:int
-      -> Signal.t I.t
-      -> Signal.t O.t
-
-    (** {!create} with every structural knob taken from a {!Build_config.t}, and the chip
-        model held, at that configuration's clock, to the datasheet's read access time and
-        write pulse width and to the write access time the shipped configuration provides
-        (62 ns; see {!Cellram_model.create}) *)
-    val create_config
-      :  contents:int array
-      -> ?addr_bits:int
+      -> ?datasheet_chip:bool
       -> Build_config.t
       -> Signal.t I.t
       -> Signal.t O.t
