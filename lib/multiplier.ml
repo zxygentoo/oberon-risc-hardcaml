@@ -157,11 +157,11 @@ let%expect_test "MUL = x*y reference (signed & unsigned) [qcheck, 2000 cases]" =
     let yb = to_s32 y in
     Int64.( * ) xb yb
   in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:2000
        ~name:"mul"
-       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       QCheck.(triple (int_bound 1) Test_gen.word32 Test_gen.word32)
        (fun (u, x, y) -> Int64.equal (mul ~u ~x ~y) (reference ~u ~x ~y)));
   [%expect {| |}]
 ;;
@@ -180,11 +180,11 @@ let%expect_test "MUL create_opt ≡ create (differential qcheck, full 64-bit z, 
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"create_opt=create"
-       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       QCheck.(triple (int_bound 1) Test_gen.word32 Test_gen.word32)
        (fun (u, x, y) ->
          Int64.equal (run_mul ri ro ref_sim ~u ~x ~y) (run_mul oi oo opt_sim ~u ~x ~y)));
   [%expect {| |}]
@@ -205,11 +205,11 @@ let%expect_test "MUL create_opt_pipelined ≡ create (differential qcheck, stage
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"create_opt_pipelined=create"
-       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       QCheck.(triple (int_bound 1) Test_gen.word32 Test_gen.word32)
        (fun (u, x, y) ->
          Int64.equal (run_mul ri ro ref_sim ~u ~x ~y) (run_mul oi oo opt_sim ~u ~x ~y)));
   [%expect {| |}]

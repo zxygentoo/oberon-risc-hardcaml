@@ -38,10 +38,6 @@ let drive sim ~run ~stall ~z =
   result
 ;;
 
-(* QCheck's [int32] gives full 32-bit coverage with edge cases (0, min, max) and
-   shrinking; reinterpret it as an unsigned 32-bit word for the units/oracle *)
-let u32 (x : int32) = Int32.to_int x land 0xFFFF_FFFF
-
 (* apply [f] to the space-separated fields *after the tag* of every [tag]-line in the
    vectors *)
 let iter_vectors ~tag ~f =
@@ -59,6 +55,17 @@ let iter_vectors ~tag ~f =
         done
       with
       | End_of_file -> ())
+;;
+
+(* a vector line that does not have the fields its tag promises is an error, not a line to
+   skip: skipped lines are how a replay ends up passing on nothing *)
+let malformed ~tag fields =
+  failwith
+    (Printf.sprintf
+       "%s: malformed %s-vector: %s"
+       vectors_path
+       tag
+       (String.concat " " fields))
 ;;
 
 (* replay every frozen [tag]-vector ([tag x y result]) against the port's [run ~x ~y],
@@ -81,25 +88,21 @@ let replay_simple ~name ~tag ~run =
         then (
           incr shown;
           Printf.printf "  vec FAIL x=%08X y=%08X: got %08X want %08X\n" x y got want))
-    | _ -> ());
+    | fields -> malformed ~tag fields);
+  if !n = 0 then failwith (Printf.sprintf "%s: no %s-vectors in %s" name tag vectors_path);
   Printf.printf "%s frozen: %d/%d %s-vectors pass\n" name (!n - !fails) !n tag;
   !fails
 ;;
 
-(* fuzz the full operand domain against [oracle] (QCheck int32 — boundary coverage +
-   shrinking); raises (test fails) on any mismatch *)
+(* fuzz the full operand domain against [oracle] — uniform bit patterns mixed with the
+   exponent/mantissa edges ({!Risc5.Test_gen.fp32}); raises (test fails) on any mismatch *)
 let fuzz_xy ~name ~run ~oracle =
-  QCheck.Test.check_exn
+  Risc5.Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:(name ^ " fuzz")
-       (QCheck.set_print
-          (fun (x, y) -> Printf.sprintf "x=%08lx y=%08lx" x y)
-          (QCheck.pair QCheck.int32 QCheck.int32))
-       (fun (x, y) ->
-         let x = u32 x
-         and y = u32 y in
-         run ~x ~y = oracle x y));
+       (QCheck.pair Risc5.Test_gen.fp32 Risc5.Test_gen.fp32)
+       (fun (x, y) -> run ~x ~y = oracle x y));
   Printf.printf "%s fuzz: 20000 QCheck cases vs Emu.Fp, ok\n" name
 ;;
 

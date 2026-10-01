@@ -102,7 +102,8 @@ let replay_reachable run =
               v
               got
               want)))
-    | _ -> ());
+    | fields -> Fp_replay.malformed ~tag:"A" fields);
+  if !replayed = 0 then failwith "fp-adder: no reachable A-vectors replayed";
   Printf.printf
     "fp-adder frozen: %d/%d reachable A-vectors pass (%d unreachable skipped: FLT/FLOOR \
      y<>magic + u=v=1)\n"
@@ -135,15 +136,14 @@ let fuzz_conversions run =
       check_conv ~u:1 ~v:0 x;
       check_conv ~u:0 ~v:1 x)
     edges;
-  QCheck.Test.check_exn
+  Risc5.Test_gen.check_exn
     (QCheck.Test.make
        ~count:5000
        ~name:"fp-adder FLT/FLOOR fuzz"
-       (QCheck.set_print (fun x -> Printf.sprintf "x=%08lx" x) QCheck.int32)
-       (fun x32 ->
-         let x = Fp_replay.u32 x32 in
-         run ~u:1 ~v:0 ~x ~y:magic = Emu.Fp.fp_add x magic true false
-         && run ~u:0 ~v:1 ~x ~y:magic = Emu.Fp.fp_add x magic false true));
+       Risc5.Test_gen.word32
+       (fun x ->
+          run ~u:1 ~v:0 ~x ~y:magic = Emu.Fp.fp_add x magic true false
+          && run ~u:0 ~v:1 ~x ~y:magic = Emu.Fp.fp_add x magic false true));
   Printf.printf
     "fp-adder fuzz: %d edge + 5000 QCheck FLT/FLOOR cases vs Emu.Fp, %d edge fail\n"
     !conv_n

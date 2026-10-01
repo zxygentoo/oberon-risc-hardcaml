@@ -55,11 +55,11 @@ let%expect_test "ASR/ROR = references [qcheck, 10k cases]" =
     if sc = 0 then x else (x lsr sc) lor (x lsl (32 - sc)) land 0xFFFF_FFFF
   in
   let reference ~x ~sc ~md = if md = 1 then ror_ref ~x ~sc else asr_ref ~x ~sc in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:10_000
        ~name:"asr_ror"
-       QCheck.(triple (int_bound 0xFFFF_FFFF) (int_bound 31) (int_bound 1))
+       QCheck.(triple Test_gen.word32 (int_bound 31) (int_bound 1))
        (fun (x, sc, md) ->
          Bits.equal
            (eval ~x ~sc ~md)

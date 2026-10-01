@@ -189,21 +189,18 @@ let%expect_test "rs232r — both baud rates recover the byte" =
   [%expect {| fast=0xC3  slow=0x3C |}]
 ;;
 
-let%expect_test "rs232r — random byte round-trips [qcheck]" =
+let%expect_test "rs232r — every byte round-trips" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   reset_idle sim inp;
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:64
-       ~name:"rs232r-roundtrip"
-       (QCheck.int_bound 0xFF)
-       (fun data ->
-          let rdy, got = recv_frame sim inp outp ~fast:true ~data in
-          ack sim inp;
-          rdy = 1 && got = data));
+  for data = 0 to 255 do
+    let rdy, got = recv_frame sim inp outp ~fast:true ~data in
+    ack sim inp;
+    if not (rdy = 1 && got = data)
+    then Stdlib.Printf.printf "sent 0x%02X: rdy=%d data=0x%02X\n" data rdy got
+  done;
   [%expect {| |}]
 ;;
 

@@ -41,11 +41,11 @@ let%expect_test "LSL = (x lsl sc) reference [qcheck, 10k cases]" =
     !(outp.y)
   in
   let reference ~x ~sc = Bits.of_unsigned_int ~width:32 ((x lsl sc) land 0xFFFF_FFFF) in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:10_000
        ~name:"lsl"
-       QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 31))
+       QCheck.(pair Test_gen.word32 (int_bound 31))
        (fun (x, sc) -> Bits.equal (eval ~x ~sc) (reference ~x ~sc)));
   [%expect {| |}]
 ;;

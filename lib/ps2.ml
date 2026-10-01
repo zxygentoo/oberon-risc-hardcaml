@@ -203,19 +203,20 @@ let%expect_test "ps2 — 16-byte FIFO buffers and pops in order" =
   [%expect {| popped 0x11 0x22 0x33; rdy now 0 |}]
 ;;
 
-let%expect_test "ps2 — random scancode round-trips [qcheck]" =
+let%expect_test "ps2 — every scancode round-trips" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   reset_idle sim inp;
-  QCheck.Test.check_exn
-    (QCheck.Test.make ~count:64 ~name:"ps2-roundtrip" (QCheck.int_bound 0xFF) (fun data ->
-       send_byte sim inp ~data;
-       let rdy = Bits.to_int_trunc !(outp.rdy) in
-       let got = Bits.to_int_trunc !(outp.data) in
-       pop sim inp;
-       rdy = 1 && got = data));
+  for data = 0 to 255 do
+    send_byte sim inp ~data;
+    let rdy = Bits.to_int_trunc !(outp.rdy) in
+    let got = Bits.to_int_trunc !(outp.data) in
+    pop sim inp;
+    if not (rdy = 1 && got = data)
+    then Stdlib.Printf.printf "sent 0x%02X: rdy=%d data=0x%02X\n" data rdy got
+  done;
   [%expect {| |}]
 ;;
 

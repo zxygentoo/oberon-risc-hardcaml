@@ -185,7 +185,7 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
      flag-leak bug that escaped this test while it only ever drove register ops. The
      result mux is op-only (p-independent), so only the C/OV check distinguishes the two
      values of [p]. *)
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"aluRes + C/OV honour ~p"
@@ -199,7 +199,7 @@ let%expect_test "aluRes = reference, ops {0,4..9} [qcheck, 20k cases]" =
                  (int_bound 1))
               (int_bound 1))
            (pair
-              (quad (int_bound 0xFFFF) (int_bound mask) (int_bound mask) (int_bound mask))
+              (quad (int_bound 0xFFFF) Test_gen.word32 Test_gen.word32 Test_gen.word32)
               (int_bound 0xF)))
        (fun (((op, u, q, v), p), ((imm, b, c1, h), f)) ->
          let n = (f lsr 3) land 1

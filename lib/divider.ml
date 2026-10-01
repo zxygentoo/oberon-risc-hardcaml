@@ -165,11 +165,11 @@ let%expect_test "DIV edge vectors — corners random sampling won't reliably hit
 let%expect_test "DIV = floored/unsigned reference [qcheck, 2000 cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:2000
        ~name:"div"
-       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_range 1 0x7FFF_FFFF))
+       QCheck.(triple (int_bound 1) Test_gen.word32 Test_gen.divisor)
        (fun (u, x, y) ->
          let qh, rh = run_div sim ~u ~x ~y in
          let qr, rr = reference ~u ~x ~y in

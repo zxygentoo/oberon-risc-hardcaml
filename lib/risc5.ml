@@ -32,3 +32,7 @@ module Mouse = Mouse
 module Rom = Rom
 module Peripherals = Peripherals
 module Soc = Soc
+
+(** test scaffolding (QCheck seed + corner-reaching generators), shared with the board
+    layer's and [test/]'s property tests *)
+module Test_gen = Test_gen

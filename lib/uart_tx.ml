@@ -203,20 +203,21 @@ let%expect_test "rs232t — both baud rates decode (fsel selects the divider)" =
   [%expect {| fast decode=0x4B  slow decode=0xB4 |}]
 ;;
 
-let%expect_test "rs232t — random byte round-trips [qcheck]" =
+let%expect_test "rs232t — every byte round-trips" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   reset_idle sim inp;
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:64
-       ~name:"rs232t-roundtrip"
-       (QCheck.int_bound 0xFF)
-       (fun data ->
-          let frame, _ = send_frame sim inp outp ~fast:true ~data in
-          frame.(0) = 0 && frame.(9) = 1 && decode_byte frame = data));
+  for data = 0 to 255 do
+    let frame, _ = send_frame sim inp outp ~fast:true ~data in
+    if not (frame.(0) = 0 && frame.(9) = 1 && decode_byte frame = data)
+    then
+      Stdlib.Printf.printf
+        "sent 0x%02X: frame decodes to 0x%02X\n"
+        data
+        (decode_byte frame)
+  done;
   [%expect {| |}]
 ;;
 

@@ -103,7 +103,7 @@ let%expect_test "ram = word-array model, word + byte writes [qcheck, 500 sequenc
         else model.(w) <- wdata;
       Bits.equal !(outp.rdata) (Bits.of_unsigned_int ~width:32 model.(w)))
   in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:500
        ~name:"ram"

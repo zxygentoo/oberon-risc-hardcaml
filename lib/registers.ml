@@ -107,7 +107,7 @@ let%expect_test "registers = 16×32 array model [qcheck, 500 sequences]" =
       && Bits.equal !(outp.dout1) (w32 mem.(rno1))
       && Bits.equal !(outp.dout2) (w32 mem.(rno2)))
   in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:500
        ~name:"registers"

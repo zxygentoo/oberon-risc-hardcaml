@@ -182,11 +182,11 @@ let%expect_test "FML create_opt ≡ create (differential qcheck, 32-bit z, 20000
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"fp_create_opt=create"
-       QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       QCheck.(pair Test_gen.fp32 Test_gen.fp32)
        (fun (x, y) ->
          Int.equal (run_fml ri ro ref_sim ~x ~y) (run_fml oi oo opt_sim ~x ~y)));
   [%expect {| |}]
@@ -205,11 +205,11 @@ let%expect_test "FML create_opt_pipelined ≡ create (differential qcheck, stage
   and ro = Cyclesim.outputs ref_sim
   and oi = Cyclesim.inputs opt_sim
   and oo = Cyclesim.outputs opt_sim in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:20_000
        ~name:"fp_create_opt_pipelined=create"
-       QCheck.(pair (int_bound 0xFFFF_FFFF) (int_bound 0xFFFF_FFFF))
+       QCheck.(pair Test_gen.fp32 Test_gen.fp32)
        (fun (x, y) ->
          Int.equal (run_fml ri ro ref_sim ~x ~y) (run_fml oi oo opt_sim ~x ~y)));
   [%expect {| |}]

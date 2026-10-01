@@ -280,7 +280,7 @@ let%expect_test "soc — ms timer monotonic across random mid-run resets [qcheck
   in
   let inp = Cyclesim.inputs sim in
   let cnt1 = Option.value_exn (Cyclesim.lookup_reg_by_name sim "cnt1") in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:200
        ~name:"timer free-run under reset"
@@ -616,10 +616,19 @@ let%expect_test "soc — UART loopback through MMIO words 2/3" =
     inp.rxd := !(outp.txd);
     Cyclesim.cycle sim
   done;
+  (* R6 holds the status word of the poll that left the loop: rdyRx (bit 0) is up while
+     the transmitter is still on its stop bit (rdyTx, bit 1, down) — which pins the order
+     of the two status bits, not just that one of them rose *)
   Stdlib.Printf.printf
-    "R0 (UART data_rx, loopback of 0x5A) = 0x%X\n"
-    (Cyclesim.Memory.to_int regfile ~address:0);
-  [%expect {| R0 (UART data_rx, loopback of 0x5A) = 0x5A |}]
+    "R0 (UART data_rx, loopback of 0x5A) = 0x%X\n\
+     R6 (status {rdyTx, rdyRx} at loop exit) = 0x%X\n"
+    (Cyclesim.Memory.to_int regfile ~address:0)
+    (Cyclesim.Memory.to_int regfile ~address:6);
+  [%expect
+    {|
+    R0 (UART data_rx, loopback of 0x5A) = 0x5A
+    R6 (status {rdyTx, rdyRx} at loop exit) = 0x1
+    |}]
 ;;
 
 let%expect_test "soc — PS/2 keyboard: a scancode frame surfaces at words 6/7" =
