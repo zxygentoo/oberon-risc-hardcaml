@@ -13,10 +13,12 @@
    register outputs, "stall" a named node. The oracle uses its [For_tests] white-box
    pokes.
 
-   Scope: ops 0..15. Steering (§8) — all unreachable from compiled Oberon-07, so we follow
-   the hardware: the ADD'/SUB' carry corner, the unsigned MUL' high word, the DIV 0<y<2^31
-   precondition, and FP forced register-register (FLT/FLOOR are covered by the FP-unit
-   tests). See [steered] below. *)
+   Scope: register ops 0..15, branches, loads and stores one instruction at a time, then
+   short programs run from RAM under a random stallX. §8 handling (all unreachable from
+   compiled Oberon-07, so we follow the hardware) is in [authority] / [steered_branch]:
+   the ADD'/SUB' carry corner and DIV outside its y > 0 precondition are skipped, the
+   unsigned MUL' high word is compared against the hardware's own definition, and FP is
+   forced register-register (FLT/FLOOR are covered by the FP-unit tests). *)
 
 open Hardcaml
 module Core = Risc5.Cpu
@@ -184,66 +186,93 @@ let step_oracle t case =
   read_oracle t
 ;;
 
-(* do the two machines agree on the full architectural state after [case]? *)
-let agree t case =
+(* The high word [Multiplier.v] produces for an unsigned multiply: its second operand is
+   sign-extended regardless (§8), so H is the high half of [b_unsigned * c1_signed]. The
+   oracle multiplies unsigned by unsigned, which differs exactly when [c1] has bit 31 set. *)
+let rtl_unsigned_mul_h ~b ~c1 =
+  let c1_signed = Int64.of_int32 (Int32.of_int c1) in
+  let product = Int64.mul (Int64.of_int b) c1_signed in
+  Int64.to_int (Int64.shift_right_logical product 32) land 0xFFFF_FFFF
+;;
+
+(* the second ALU operand of a register op: the immediate (16 [v]-bits above it) or R.c *)
+let operand_c1 ~instr ~regs =
+  let q = (instr lsr 30) land 1
+  and v = (instr lsr 28) land 1
+  and imm = instr land 0xFFFF in
+  if q = 1 then if v = 1 then 0xFFFF_0000 lor imm else imm else regs.(instr land 0xF)
+;;
+
+(* Where the oracle is not the authority for a register op (§8; all unreachable from
+   compiled Oberon — the port follows the hardware):
+   - [Skip]: ADD'/SUB' with carry-in and a second operand of 0xFFFFFFFF (the oracle's
+     carry-by-comparison misses it), and DIV outside its precondition y > 0 — the divider
+     is defined for positive divisors only ([Divider.v] says so, and the compiler rejects
+     a constant divisor <= 0 and traps on a variable one), so there is no result to agree
+     on;
+   - [Rtl_h h]: unsigned MUL' with C1[31] set — everything but H is compared with the
+     oracle, H with the value the hardware defines. *)
+type authority =
+  | Oracle
+  | Skip
+  | Rtl_h of int
+
+let authority ~instr ~regs ~c =
+  let op = (instr lsr 16) land 0xF
+  and u = (instr lsr 29) land 1 in
+  let c1 = operand_c1 ~instr ~regs in
+  let c1_neg = (c1 lsr 31) land 1 = 1 in
+  if (op = 8 || op = 9) && u = 1 && c = 1 && c1 = 0xFFFF_FFFF
+  then Skip
+  else if op = 11 && (c1 = 0 || c1_neg)
+  then Skip
+  else if op = 10 && u = 1 && c1_neg
+  then Rtl_h (rtl_unsigned_mul_h ~b:regs.((instr lsr 20) land 0xF) ~c1)
+  else Oracle
+;;
+
+(* do the two machines agree on the full architectural state after [case]? [expect]
+   rewrites the oracle's result where the hardware is the authority. *)
+let agree ?(expect = Fun.id) t case =
   let hw = step_core t case in
-  let oracle = step_oracle t case in
-  state_eq hw oracle
+  state_eq hw (expect (step_oracle t case))
+;;
+
+let agree_reg_op t case =
+  match authority ~instr:case.instr ~regs:case.regs ~c:case.c with
+  | Skip -> QCheck.assume_fail ()
+  | Oracle -> agree t case
+  | Rtl_h h -> agree t case ~expect:(fun (regs, flags, pc, _) -> regs, flags, pc, h)
 ;;
 
 (* ─── Generating a random register-op case ─── *)
 
-(* QCheck's int32 gives full 32-bit coverage with edge cases + shrinking; reinterpret as
-   an unsigned 32-bit word *)
-let u32 (x : int32) = Int32.to_int x land 0xFFFF_FFFF
+module Gen = Risc5.Test_gen
 
 (* decode a raw QCheck draw into a [case]: a register-op instruction word (p=0), two
    operand values placed at its source registers R[irb]/R[irc], the flags, and H. FP (op
    12..15) is forced register-register (q=u=v=0). *)
-let decode (instr31, ob32, oc32, flags4, h32) =
+let decode (instr31, ob, oc, flags4, h) =
   let op = (instr31 lsr 16) land 0xF in
   let instr = if op >= 12 then instr31 land lnot 0x7000_0000 else instr31 in
   let irb = (instr lsr 20) land 0xF
   and irc = instr land 0xF in
   let regs = Array.make 16 0 in
-  regs.(irb) <- u32 ob32;
-  regs.(irc) <- u32 oc32 (* if irb=irc, R holds oc (placed last), identically in both *);
-  case_of ~regs ~op ~instr ~flags:flags4 ~h:(u32 h32)
-;;
-
-(* the §8 corners / unit preconditions, all unreachable from compiled Oberon (we follow
-   the hardware), steered out per case: the ADD'/SUB' carry corner (2nd operand 0xFFFFFFFF
-   with carry-in), the unsigned MUL' high word (sign-extended operand, C1[31]=1), and the
-   DIV precondition (the restoring divider needs 0 < y < 2^31). *)
-let steered { op; instr; regs; c; _ } =
-  let q = (instr lsr 30) land 1
-  and u = (instr lsr 29) land 1
-  and v = (instr lsr 28) land 1
-  and imm = instr land 0xFFFF
-  and irc = instr land 0xF in
-  let c1 = if q = 1 then if v = 1 then 0xFFFF_0000 lor imm else imm else regs.(irc) in
-  let c1_neg = (c1 lsr 31) land 1 = 1 in
-  ((op = 8 || op = 9) && u = 1 && c = 1 && c1 = 0xFFFF_FFFF)
-  || (op = 10 && u = 1 && c1_neg)
-  || (op = 11 && (c1 = 0 || c1_neg))
+  regs.(irb) <- ob;
+  regs.(irc) <- oc (* if irb=irc, R holds oc (placed last), identically in both *);
+  case_of ~regs ~op ~instr ~flags:flags4 ~h
 ;;
 
 let seed =
   QCheck.set_print
     (fun (instr31, ob, oc, f, h) ->
-      Printf.sprintf
-        "instr31=%08x op_b=%08lx op_c=%08lx flags=%x h=%08lx"
-        instr31
-        ob
-        oc
-        f
-        h)
+      Printf.sprintf "instr31=%08x op_b=%08x op_c=%08x flags=%x h=%08x" instr31 ob oc f h)
     (QCheck.tup5
        (QCheck.int_bound 0x7FFF_FFFF)
-       QCheck.int32
-       QCheck.int32
+       Gen.word32
+       Gen.word32
        (QCheck.int_bound 15)
-       QCheck.int32)
+       Gen.word32)
 ;;
 
 (* ─── Generating a random branch case ─── *)
@@ -251,11 +280,11 @@ let seed =
 (* decode a raw branch draw into a [case]. A branch is p=q=1; we keep the target in the
    in-range domain (§8 addressing): the register target R[irc] < 1 MB (so R[irc]>>2 stays
    in the oracle's RAM and within the core's 22-bit PC) and the relative disp small (so
-   PC+1+disp neither wraps nor branches "into the void"). Register branches force
-   IR[5:4]=0 to avoid the interrupt forms RTI/STI/CLI (4.5). [op]=0 selects the
-   single-cycle path. *)
-let decode_branch (bctrl, target32, disp, flags4) =
-  let u = (bctrl lsr 29) land 1 in
+   PC+1+disp neither wraps nor branches "into the void"). [op]=0 selects the single-cycle
+   path. *)
+let decode_branch (bctrl, target, disp, flags4) =
+  let u = (bctrl lsr 29) land 1
+  and v = (bctrl lsr 28) land 1 in
   let irc = bctrl land 0xF in
   let ctrl = bctrl land 0x3F00_0000 (* u, v, neg, cc — bits 29..24 *) in
   let instr =
@@ -266,26 +295,28 @@ let decode_branch (bctrl, target32, disp, flags4) =
          we write the small disp across all 24 bits (the compiler likewise emits
          sign-extended offsets) *)
       0xC000_0000 lor ctrl lor (disp land 0xFF_FFFF)
-    else 0xC000_0000 lor ctrl lor (bctrl land 0x000F_0000) lor irc
-    (* register: irc in IR[3:0], IR[5:4]=0. We also scatter random bits into the op field
-       IR[19:16] — unused by a branch, but it must stay inert: a branch ([p=1]) whose op
-       field is 8/9 must NOT recompute/clobber C/OV (the [~p] qualifier). The compiler
-       emits exactly such branches (e.g. [BLR] [0xDA08281C], op field 8); the old
-       constrained disp / zero op-field kept this corner unreachable here, so the
-       flag-leak escaped to boot. *)
+    else (
+      (* register: only IR[3:0] (the target register) means anything, so everything else
+         in IR[23:4] is random and must stay inert — the op field (a branch whose op field
+         is 8/9 must not touch C/OV: the [~p] qualifier; the compiler emits such branches,
+         e.g. [BLR] [0xDA08281C]) and, for a linking branch, IR[5:4] too (RTI/STI/CLI are
+         [~v] forms; that same BLR has IR[4] set). Without the link IR[5:4] = 0: those ARE
+         the interrupt instructions, which the oracle does not model. *)
+      let inert = bctrl land if v = 1 then 0x00FF_FFF0 else 0x00FF_FFC0 in
+      0xC000_0000 lor ctrl lor inert lor irc)
   in
   let regs = Array.make 16 0 in
-  regs.(irc) <- u32 target32 land 0xF_FFFF;
+  regs.(irc) <- target land 0xF_FFFF;
   case_of ~regs ~op:0 ~instr ~flags:flags4 ~h:0
 ;;
 
 let seed_branch =
   QCheck.set_print
     (fun (bctrl, target, disp, f) ->
-      Printf.sprintf "bctrl=%08x target=%08lx disp=%d flags=%x" bctrl target disp f)
+      Printf.sprintf "bctrl=%08x target=%08x disp=%d flags=%x" bctrl target disp f)
     (QCheck.tup4
        (QCheck.int_bound 0x3FFF_FFFF)
-       QCheck.int32
+       Gen.word32
        (QCheck.int_range (-0x800) 0x7FF)
        (QCheck.int_bound 15))
 ;;
@@ -302,48 +333,60 @@ let steered_branch { instr; _ } =
   u = 0 && v = 1 && irc = 15
 ;;
 
-(* ─── Loads ─── *)
+(* ─── Loads and stores ─── *)
 
-(* run a load on both machines and compare (regs, flags, pc, h). The loaded word is
-   presented on inbus and placed in the oracle's ram[adr_word]; a byte load selects the
-   lane at adr[1:0] from that word, a word load takes it whole. The 2-cycle access writes
-   R[a] on its stallL0 cycle, then the bubble advances PC. *)
-let agree_load t ~case ~adr_word ~load_val =
+(* the bus strobes on the access's first (stallL0) cycle, sampled pre-edge *)
+let bus_pre t =
+  ( Bits.to_int_trunc !(t.out_pre.adr)
+  , Bits.to_int_trunc !(t.out_pre.rd)
+  , Bits.to_int_trunc !(t.out_pre.wr)
+  , Bits.to_int_trunc !(t.out_pre.ben) )
+;;
+
+(* run a load on both machines and compare (regs, flags, pc, h), and the bus: the full
+   byte address, rd without wr, and ben = the byte flag. The loaded word is presented on
+   inbus and placed in the oracle's ram[adr_word]; a byte load selects the lane at
+   adr[1:0] from that word, a word load takes it whole. The 2-cycle access writes R[a] on
+   its stallL0 cycle, then the bubble advances PC. *)
+let agree_load t ~case ~adr_byte ~byte_mode ~load_val =
   poke_core t case;
   t.inbus := Bits.of_unsigned_int ~width:32 load_val;
   Cyclesim.cycle t.sim;
+  let bus = bus_pre t in
   Cyclesim.cycle t.sim;
   let hw = read_core t in
   poke_oracle t case;
-  (R.For_tests.ram t.oracle).(adr_word) <- load_val;
+  (R.For_tests.ram t.oracle).(adr_byte lsr 2) <- load_val;
   R.For_tests.single_step t.oracle;
-  state_eq hw (read_oracle t)
+  bus = (adr_byte, 1, 0, byte_mode) && state_eq hw (read_oracle t)
 ;;
 
-(* a load draw: [ctrl] packs a/b/byte-mode/flags; [addr_byte] is the data address (kept in
-   a small RAM region below the instruction at base_pc, so the oracle finds it in RAM and
-   the word index never aliases base_pc); [off] is a small signed offset (we set R[b] =
-   addr-off so R[b]+off lands on addr); [load_word] is what memory returns; [h] is the aux
-   register. *)
-let seed_load =
+(* a memory-access draw: [ctrl] packs a/b/byte-mode/flags; [addr_byte] is the data address
+   (kept in a small RAM region below the instruction at base_pc, so the oracle finds it in
+   RAM and the word index never aliases base_pc); [off] ranges over the whole signed
+   20-bit offset field, and R[b] = addr - off (mod 2^32) so that R[b]+off lands on addr —
+   a narrower sign-extension, or a carry lost above bit 15, lands somewhere else. *)
+let seed_mem ~print_data =
   QCheck.set_print
-    (fun (ctrl, addr, off, w, h) ->
-      Printf.sprintf "ctrl=%x addr=%x off=%d load=%08lx h=%08lx" ctrl addr off w h)
+    (fun (ctrl, addr, off, w, x) ->
+      Printf.sprintf "ctrl=%x addr=%x off=%d %s=%08x %08x" ctrl addr off print_data w x)
     (QCheck.tup5
        (QCheck.int_bound 0x1FFF)
        (QCheck.int_range 0x100 0x3C00)
-       (QCheck.int_range (-0x40) 0x3F)
-       QCheck.int32
-       QCheck.int32)
+       (Gen.signed ~bits:20)
+       Gen.word32
+       Gen.word32)
 ;;
 
-let decode_load (ctrl, addr_byte, off, load_word, h32) =
+let seed_load = seed_mem ~print_data:"load"
+
+let decode_load (ctrl, addr_byte, off, load_word, h) =
   let a = (ctrl lsr 9) land 0xF
   and b = (ctrl lsr 5) land 0xF
   and byte_mode = (ctrl lsr 4) land 1
   and flags = ctrl land 0xF in
   let regs = Array.make 16 0 in
-  regs.(b) <- addr_byte - off (* R[b]; R[b]+off = addr_byte *);
+  regs.(b) <- (addr_byte - off) land 0xFFFF_FFFF (* R[b]; R[b]+off = addr_byte *);
   let instr =
     (* LDR: p=1,q=0,u=0, v=byte_mode, a=dest, b=base, off in IR[19:0] *)
     0x8000_0000
@@ -352,64 +395,48 @@ let decode_load (ctrl, addr_byte, off, load_word, h32) =
     lor (b lsl 20)
     lor (off land 0xF_FFFF)
   in
-  case_of ~regs ~op:0 ~instr ~flags ~h:(u32 h32), addr_byte lsr 2, u32 load_word
+  case_of ~regs ~op:0 ~instr ~flags ~h, byte_mode, load_word
 ;;
 
-(* ─── Stores ─── *)
-
-(* run a store on both machines and compare. The core drives outbus/adr/wr on its stallL0
-   cycle (captured pre-edge); we apply that to memory ([init_word] at adr_word, the
-   addressed byte for a byte store) and compare with the oracle's ram[adr_word], plus the
-   strobe/address and the (unchanged) regs/flags/pc/h. *)
-let agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane =
+(* run a store on both machines and compare. The core drives outbus/adr/wr/ben on its
+   stallL0 cycle (captured pre-edge); we apply that to memory ([init_word] at the
+   addressed word, the lane [adr[1:0]] the core itself presents for a byte store) and
+   compare with the oracle's ram, plus the bus (full byte address, wr without rd, ben) and
+   the (unchanged) regs/flags/pc/h. *)
+let agree_store t ~case ~adr_byte ~init_word ~byte_mode =
   poke_core t case;
   Cyclesim.cycle t.sim;
-  let hw_adr = Bits.to_int_trunc !(t.out_pre.adr)
-  and hw_wr = Bits.to_int_trunc !(t.out_pre.wr)
+  let ((hw_adr, _, _, hw_ben) as bus) = bus_pre t
   and hw_outbus = Bits.to_int_trunc !(t.out_pre.outbus) in
   Cyclesim.cycle t.sim;
   let hw = read_core t in
   let hw_mem =
-    if byte_mode = 1
-    then
-      init_word land lnot (0xFF lsl (8 * lane)) lor (hw_outbus land (0xFF lsl (8 * lane)))
+    if hw_ben = 1
+    then (
+      let lane_mask = 0xFF lsl (8 * (hw_adr land 3)) in
+      init_word land lnot lane_mask lor (hw_outbus land lane_mask))
     else hw_outbus
   in
+  let adr_word = adr_byte lsr 2 in
   poke_oracle t case;
   (R.For_tests.ram t.oracle).(adr_word) <- init_word;
   R.For_tests.single_step t.oracle;
-  hw_wr = 1
-  && hw_adr lsr 2 = adr_word
+  bus = (adr_byte, 0, 1, byte_mode)
   && hw_mem = (R.For_tests.ram t.oracle).(adr_word)
   && state_eq hw (read_oracle t)
 ;;
 
-let seed_store =
-  QCheck.set_print
-    (fun (ctrl, addr, off, data, init) ->
-      Printf.sprintf
-        "ctrl=%x addr=%x off=%d data=%08lx init=%08lx"
-        ctrl
-        addr
-        off
-        data
-        init)
-    (QCheck.tup5
-       (QCheck.int_bound 0x1FFF)
-       (QCheck.int_range 0x100 0x3C00)
-       (QCheck.int_range (-0x40) 0x3F)
-       QCheck.int32
-       QCheck.int32)
-;;
+let seed_store = seed_mem ~print_data:"data"
 
-let decode_store (ctrl, addr_byte, off, data, init32) =
+let decode_store (ctrl, addr_byte, off, data, init) =
   let a = (ctrl lsr 9) land 0xF
   and b = (ctrl lsr 5) land 0xF
   and byte_mode = (ctrl lsr 4) land 1
   and flags = ctrl land 0xF in
   let regs = Array.make 16 0 in
-  regs.(a) <- u32 data (* R[a] = store data *);
-  regs.(b) <- addr_byte - off (* R[b] = base (placed last, so a=b takes the base) *);
+  regs.(a) <- data (* R[a] = store data *);
+  regs.(b) <- (addr_byte - off) land 0xFFFF_FFFF
+  (* R[b] = base (placed last, so a=b takes the base) *);
   let instr =
     (* STR: p=1,q=0,u=1, v=byte_mode, a=source, b=base, off in IR[19:0] *)
     0x8000_0000
@@ -419,87 +446,353 @@ let decode_store (ctrl, addr_byte, off, data, init32) =
     lor (b lsl 20)
     lor (off land 0xF_FFFF)
   in
-  ( case_of ~regs ~op:0 ~instr ~flags ~h:0
-  , addr_byte lsr 2
-  , u32 init32
-  , byte_mode
-  , addr_byte land 3 )
+  case_of ~regs ~op:0 ~instr ~flags ~h:0, init, byte_mode
+;;
+
+(* ─── Programs: several instructions back to back, under a stuttering stallX ───
+
+   The single-instruction properties above start every case from a cleared core. This one
+   runs a short random program from RAM, so instructions follow each other the way they do
+   in real code — a multiply straight after a multiply, a load after a load, a branch
+   deciding on the flags the previous instruction just set — while the external stall
+   input is asserted at random. The core's bus is served by a small memory here, the same
+   program runs on the oracle (which has no notion of a stall), and at the end the
+   registers, flags, PC, H and the whole data region must agree. *)
+
+let prog_len = 6
+let pad = 3 (* a forward branch skips at most 2: the last one lands in the padding *)
+let end_pc = base_pc + prog_len + pad
+let data_reg = 13 (* base register of every load/store; nothing in a program writes it *)
+let data_base = 0x2000 (* byte address held in R[data_reg] *)
+let data_span = 0x400 (* loads/stores stay within data_base ± data_span *)
+let data_lo = (data_base - data_span) lsr 2
+let data_hi = (data_base + data_span) lsr 2
+
+(* one raw draw -> one instruction word of a program *)
+let prog_instr (kind, bits, off) =
+  let a =
+    let a = (bits lsr 24) land 0xF in
+    if a = data_reg then data_reg - 1 else a
+  in
+  match kind with
+  | 0 | 1 ->
+    (* load / store through the data register *)
+    0x8000_0000
+    lor (kind lsl 29)
+    lor (bits land 0x1000_0000 (* byte mode *))
+    lor (a lsl 24)
+    lor (data_reg lsl 20)
+    lor (off land 0xF_FFFF)
+  | 2 ->
+    (* forward relative branch (any condition, with or without link) skipping 0..2 *)
+    0xE000_0000 lor (bits land 0x1F00_0000) lor (bits land 0x3 mod 3)
+  | _ ->
+    (* register op, destination never the data register; FP forced register-register *)
+    let op = (bits lsr 16) land 0xF in
+    let w = bits land 0x70FF_FFFF lor (a lsl 24) in
+    if op >= 12 then w land lnot 0x7000_0000 else w
+;;
+
+(* built at the generator level, so QCheck has no shrinker for it: the program, register
+   and data lists are fixed-length by construction and must stay that way *)
+let seed_prog =
+  let open QCheck.Gen in
+  let instr =
+    triple
+      (oneof_list_weighted [ 2, 0; 2, 1; 2, 2; 7, 3 ])
+      (int_bound 0x7FFF_FFFF)
+      (int_range (-data_span) (data_span - 1))
+  in
+  let word = QCheck.gen Gen.word32 in
+  QCheck.make
+    ~print:(fun (instrs, regs, (flags, h, stall_seed), data) ->
+      Printf.sprintf
+        "prog=[%s] regs=[%s] flags=%x h=%08x stall_seed=%d data=[%s]"
+        (String.concat
+           " "
+           (List.map (fun i -> Printf.sprintf "%08x" (prog_instr i)) instrs))
+        (String.concat " " (List.map (Printf.sprintf "%x") regs))
+        flags
+        h
+        stall_seed
+        (String.concat " " (List.map (Printf.sprintf "%x") data)))
+    (quad
+       (list_size (return prog_len) instr)
+       (list_size (return 16) word)
+       (triple (int_bound 15) word (int_bound 0xFFFF))
+       (list_size (return 8) word))
+;;
+
+(* What the program property actually exercised, printed with its verdict — a property
+   over generated programs is only as good as the programs, so say what they were. *)
+type prog_stats =
+  { mutable compared : int
+  ; mutable discarded : int
+  ; mutable instrs : int
+  ; mutable loads : int
+  ; mutable stores : int
+  ; mutable taken : int (* branches taken *)
+  ; mutable multi : int (* MUL/DIV/FP *)
+  ; mutable multi_pairs : int (* a multi-cycle op directly after another *)
+  ; mutable cycles : int
+  ; mutable stalled : int
+  }
+
+let stats =
+  { compared = 0
+  ; discarded = 0
+  ; instrs = 0
+  ; loads = 0
+  ; stores = 0
+  ; taken = 0
+  ; multi = 0
+  ; multi_pairs = 0
+  ; cycles = 0
+  ; stalled = 0
+  }
+;;
+
+let reset_stats () =
+  stats.compared <- 0;
+  stats.discarded <- 0;
+  stats.instrs <- 0;
+  stats.loads <- 0;
+  stats.stores <- 0;
+  stats.taken <- 0;
+  stats.multi <- 0;
+  stats.multi_pairs <- 0;
+  stats.cycles <- 0;
+  stats.stalled <- 0
+;;
+
+let print_stats () =
+  let pct a b = if b = 0 then 0 else ((100 * a) + (b / 2)) / b in
+  Printf.printf
+    "  %d programs compared, %d discarded (§8); %d instructions: %d%% loads, %d%% \
+     stores, %d%% taken branches, %d%% multi-cycle (%d back to back); %d%% of %d cycles \
+     stalled\n\
+     %!"
+    stats.compared
+    stats.discarded
+    stats.instrs
+    (pct stats.loads stats.instrs)
+    (pct stats.stores stats.instrs)
+    (pct stats.taken stats.instrs)
+    (pct stats.multi stats.instrs)
+    stats.multi_pairs
+    (pct stats.stalled stats.cycles)
+    stats.cycles
+;;
+
+(* would the instruction the oracle is about to execute leave the two machines apart for a
+   reason §8 already accounts for? In a program any such step ends the comparison (a
+   diverged H or carry feeds everything after it), so the case is discarded. *)
+let oracle_next_is_steered t =
+  let instr = (R.For_tests.ram t.oracle).(R.For_tests.pc t.oracle) in
+  instr lsr 31 = 0
+  &&
+  match
+    authority
+      ~instr
+      ~regs:(R.For_tests.regs t.oracle)
+      ~c:((R.For_tests.flags t.oracle lsr 2) land 1)
+  with
+  | Oracle -> false
+  | Skip | Rtl_h _ -> true
+;;
+
+let agree_prog t (instrs, regs, (flags, h, stall_seed), data) =
+  let prog = Array.of_list (List.map prog_instr instrs) in
+  let regs = Array.of_list regs in
+  regs.(data_reg) <- data_base;
+  (* eight seeded words around the data base; the rest of the region starts at zero *)
+  let seeded = List.mapi (fun k w -> (data_base lsr 2) - 4 + k, w) data in
+  (* ── the oracle ── *)
+  let oram = R.For_tests.ram t.oracle in
+  Array.fill oram data_lo (data_hi - data_lo) 0;
+  List.iter (fun (w, v) -> oram.(w) <- v) seeded;
+  Array.fill oram base_pc (prog_len + pad + 1) 0;
+  Array.blit prog 0 oram base_pc prog_len;
+  Array.blit regs 0 (R.For_tests.regs t.oracle) 0 16;
+  R.For_tests.set_flags t.oracle flags;
+  R.For_tests.set_h t.oracle h;
+  R.For_tests.set_pc t.oracle base_pc;
+  let steps = ref 0
+  and executed = ref 0 (* program instructions, the trailing padding not counted *)
+  and loads = ref 0
+  and stores = ref 0
+  and taken = ref 0
+  and multi = ref 0
+  and multi_pairs = ref 0
+  and prev_multi = ref false in
+  while R.For_tests.pc t.oracle <> end_pc do
+    if !steps > prog_len + pad || oracle_next_is_steered t
+    then (
+      stats.discarded <- stats.discarded + 1;
+      QCheck.assume_fail ());
+    let pc = R.For_tests.pc t.oracle in
+    let instr = oram.(pc) in
+    R.For_tests.single_step t.oracle;
+    incr steps;
+    if pc < base_pc + prog_len
+    then (
+      incr executed;
+      let is_multi = instr lsr 31 = 0 && (instr lsr 16) land 0xF >= 10 in
+      (match instr lsr 30 with
+       | 2 -> if (instr lsr 29) land 1 = 1 then incr stores else incr loads
+       | 3 -> if R.For_tests.pc t.oracle <> pc + 1 then incr taken
+       | _ -> if is_multi then incr multi);
+      if is_multi && !prev_multi then incr multi_pairs;
+      prev_multi := is_multi)
+  done;
+  (* ── the core, its bus served from [mem] ── *)
+  let mem = Hashtbl.create 64 in
+  let read w = Option.value (Hashtbl.find_opt mem w) ~default:0 in
+  List.iter (fun (w, v) -> Hashtbl.replace mem w v) seeded;
+  Array.iteri (fun k w -> Hashtbl.replace mem (base_pc + k) w) prog;
+  let inp = Cyclesim.inputs t.sim in
+  let set r v = r := Bits.of_unsigned_int ~width:(Bits.width !r) v in
+  poke_core t (case_of ~regs ~op:0 ~instr:prog.(0) ~flags ~h);
+  let lcg = ref stall_seed in
+  let bus_ok = ref true in
+  let cycles = ref 0 in
+  while Cyclesim.Reg.to_int t.reg_pc <> end_pc && !cycles < 2_000 do
+    lcg := ((!lcg * 1103515245) + 12345) land 0x7FFF_FFFF;
+    (* One instruction class is not stall-transparent in RISC5.v, and the port follows it:
+       C and OV are clocked from the adder on EVERY cycle an ADD/SUB sits in IR, stalled
+       or not (RISC5.v:161-175 — only N/Z wait for [regwr]). Harmless for plain ADD/SUB,
+       but ADD'/SUB' take C as carry-in, so a stalled cycle feeds the instruction its own
+       carry-out. The oracle executes each instruction once, so those cycles are never
+       stalled here (the formal core proof is what holds the port to the RTL there). *)
+    let ir = Cyclesim.Reg.to_int t.reg_ir in
+    let carry_in_op =
+      ir lsr 31 = 0
+      && (ir lsr 29) land 1 = 1
+      &&
+      let op = (ir lsr 16) land 0xF in
+      op = 8 || op = 9
+    in
+    let stalled = (not carry_in_op) && (!lcg lsr 16) land 3 = 0 in
+    set inp.stall_x (if stalled then 1 else 0);
+    Cyclesim.cycle_before_clock_edge t.sim;
+    let adr, rd, wr, ben = bus_pre t in
+    if stalled
+    then (
+      (* the bus is someone else's this cycle: the core must not strobe, and must not
+         consume what happens to be on it *)
+      if rd = 1 || wr = 1 then bus_ok := false;
+      set inp.codebus 0xDEAD_BEEF;
+      t.inbus := Bits.of_unsigned_int ~width:32 0xDEAD_BEEF)
+    else (
+      let w = adr lsr 2 in
+      if wr = 1
+      then (
+        let out = Bits.to_int_trunc !(t.out_pre.outbus) in
+        let lane_mask = 0xFF lsl (8 * (adr land 3)) in
+        Hashtbl.replace
+          mem
+          w
+          (if ben = 1 then read w land lnot lane_mask lor (out land lane_mask) else out));
+      set inp.codebus (read w);
+      t.inbus := Bits.of_unsigned_int ~width:32 (read w));
+    Cyclesim.cycle t.sim;
+    incr cycles;
+    if stalled then stats.stalled <- stats.stalled + 1
+  done;
+  stats.compared <- stats.compared + 1;
+  stats.instrs <- stats.instrs + !executed;
+  stats.loads <- stats.loads + !loads;
+  stats.stores <- stats.stores + !stores;
+  stats.taken <- stats.taken + !taken;
+  stats.multi <- stats.multi + !multi;
+  stats.multi_pairs <- stats.multi_pairs + !multi_pairs;
+  stats.cycles <- stats.cycles + !cycles;
+  set inp.stall_x 0;
+  set inp.codebus 0;
+  let ((hw_regs, hw_flags, hw_pc, hw_h) as hw) = read_core t in
+  let ((or_regs, or_flags, or_pc, or_h) as oracle) = read_oracle t in
+  let data_ok = ref true in
+  for w = data_lo to data_hi - 1 do
+    if read w <> oram.(w)
+    then (
+      data_ok := false;
+      Printf.printf "  mem[%x]: core %08x, oracle %08x\n" w (read w) oram.(w))
+  done;
+  let ok = !bus_ok && !data_ok && state_eq hw oracle in
+  (* say what differs: the raw draw QCheck prints is not readable on its own *)
+  if not ok
+  then (
+    Printf.printf
+      "  after %d cycles / %d oracle steps: pc %x/%x flags %x/%x h %08x/%08x strobed \
+       under stallX: %b\n"
+      !cycles
+      !steps
+      hw_pc
+      or_pc
+      hw_flags
+      or_flags
+      hw_h
+      or_h
+      (not !bus_ok);
+    Array.iteri
+      (fun k v ->
+        if v <> or_regs.(k)
+        then Printf.printf "  R%d: core %08x, oracle %08x\n" k v or_regs.(k))
+      hw_regs);
+  ok
 ;;
 
 let () =
+  let run ~name ~count ?max_gen arb prop =
+    Risc5.Test_gen.check_exn (QCheck.Test.make ~count ?max_gen ~name arb prop);
+    Printf.printf "cpu lockstep (%s): %d QCheck cases, passed\n%!" name count
+  in
   let t = create () in
-  (* int32 boundary coverage + shrinking minimizes a failure to a small instruction +
-     operands; ~max_gen above ~count absorbs the §8 [assume] discards (~5%) *)
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:50_000
-       ~max_gen:60_000
-       ~name:"cpu register-op lockstep (ops 0..15)"
-       seed
-       (fun raw ->
-          let case = decode raw in
-          QCheck.assume (not (steered case));
-          agree t case));
-  Printf.printf "cpu lockstep (register ops 0..15): 50000 QCheck cases, passed\n";
+  (* corner-heavy operands + shrinking minimizes a failure to a small instruction +
+     operands; ~max_gen above ~count absorbs the §8 [assume] discards *)
+  run ~name:"register ops 0..15" ~count:50_000 ~max_gen:60_000 seed (fun raw ->
+    agree_reg_op t (decode raw));
   (* branches reuse the same harness — no flags/regs written except a taken link, PC takes
-     the target. The in-range domain and IR[5:4]=0 are baked into [decode_branch]; the
-     lone §8 corner (BL through R15) is steered with [assume]. *)
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:50_000
-       ~max_gen:55_000
-       ~name:"cpu branch lockstep (taken/not-taken, relative/register, link)"
-       seed_branch
-       (fun raw ->
-          let case = decode_branch raw in
-          QCheck.assume (not (steered_branch case));
-          agree t case));
-  Printf.printf "cpu lockstep (branches): 50000 QCheck cases, passed\n";
+     the target. The in-range domain is baked into [decode_branch]; the lone §8 corner (BL
+     through R15) is steered with [assume]. *)
+  run ~name:"branches" ~count:50_000 ~max_gen:55_000 seed_branch (fun raw ->
+    let case = decode_branch raw in
+    QCheck.assume (not (steered_branch case));
+    agree t case);
   (* loads: R[a] gets the byte-lane-selected / whole word from memory *)
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:50_000
-       ~name:"cpu load lockstep (word/byte)"
-       seed_load
-       (fun raw ->
-          let case, adr_word, load_val = decode_load raw in
-          agree_load t ~case ~adr_word ~load_val));
-  Printf.printf "cpu lockstep (loads): 50000 QCheck cases, passed\n";
+  run ~name:"loads" ~count:50_000 seed_load (fun ((_, adr_byte, _, _, _) as raw) ->
+    let case, byte_mode, load_val = decode_load raw in
+    agree_load t ~case ~adr_byte ~byte_mode ~load_val);
   (* stores: memory at adr gets A (word) or A[7:0] in the addressed lane (byte) *)
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:50_000
-       ~name:"cpu store lockstep (word/byte)"
-       seed_store
-       (fun raw ->
-          let case, adr_word, init_word, byte_mode, lane = decode_store raw in
-          agree_store t ~case ~adr_word ~init_word ~byte_mode ~lane));
-  Printf.printf "cpu lockstep (stores): 50000 QCheck cases, passed\n";
-  (* Phase-9 fast_mul, pipelined variant — re-run the register-op lockstep on a core with
-     the 2-cycle *pipelined* DSP multipliers swapped in (Cpu.create ~fast_mul:true
-     ~mul_stages:2). The units' z + stall are already proven bit-identical to the faithful
-     multipliers by the co-located differential qcheck (lib/multiplier.ml,
-     fp_multiplier.ml), which rides the Phase-8 proof transitively; that check drives the
-     unit from a testbench that *mimics* the core's run/stall/operand-hold protocol. This
-     closes the remaining sliver: it exercises the units under the *real* core's driving,
-     over fuzzed operands broader than a boot stream — so the novel 2-cycle stall timing
-     is verified in situ. MUL (op 10) and FML (op 14) hit the swapped units; the other ops
-     run through the unchanged glue (harmless extra integration coverage). Bit-identical
-     to the faithful path, the fast core diverges from the oracle in exactly the same §8
-     corners, so [steered] is reused verbatim. The combinational create_opt (mul_stages:0)
-     is left to differential qcheck + boot + visual-golden — its result is same-cycle, no
-     stall timing to re-check. *)
+  run ~name:"stores" ~count:50_000 seed_store (fun ((_, adr_byte, _, _, _) as raw) ->
+    let case, init_word, byte_mode = decode_store raw in
+    agree_store t ~case ~adr_byte ~init_word ~byte_mode);
+  reset_stats ();
+  run
+    ~name:"programs, random stallX"
+    ~count:20_000
+    ~max_gen:40_000
+    seed_prog
+    (agree_prog t);
+  print_stats ();
+  (* The pipelined DSP multipliers (Cpu.create ~fast_mul:true ~mul_stages:2) under the
+     real core's driving: the register-op property, then the program property — where a
+     multiply can directly follow a multiply, which no single-instruction case and neither
+     unit differential (lib/multiplier.ml, fp_multiplier.ml) ever does. The units are
+     bit-identical to the faithful ones, so the same §8 handling applies. *)
   let t_fast = create ~core:(fun i -> Core.create ~fast_mul:true ~mul_stages:2 i) () in
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:50_000
-       ~max_gen:60_000
-       ~name:"cpu register-op lockstep, fast_mul mul_stages:2 (pipelined DSP MUL/FML)"
-       seed
-       (fun raw ->
-          let case = decode raw in
-          QCheck.assume (not (steered case));
-          agree t_fast case));
-  Printf.printf
-    "cpu lockstep (register ops, fast_mul mul_stages:2): 50000 QCheck cases, passed\n"
+  run
+    ~name:"register ops, fast_mul mul_stages:2"
+    ~count:50_000
+    ~max_gen:60_000
+    seed
+    (fun raw -> agree_reg_op t_fast (decode raw));
+  reset_stats ();
+  run
+    ~name:"programs, random stallX, fast_mul mul_stages:2"
+    ~count:20_000
+    ~max_gen:40_000
+    seed_prog
+    (agree_prog t_fast);
+  print_stats ()
 ;;
