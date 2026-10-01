@@ -11,10 +11,11 @@
    - Stimulus units (FP x3, SPI, RS232 T/R, PS2, VID, mouse): dump the port's outputs over
      a stimulus set, verilate the reference .v + harness, cross-check (value AND timing).
      The .cpp self-asserts (exits nonzero on mismatch).
-   - The CPU core: a whole-boot capture-and-replay — capture the core's per-cycle I/O over
-     a real Oberon boot (test/risc_core_dump.exe; ~2 M cycles by default, ~10 s, cached as
-     a ~33 MiB trace) and replay it through RISC5.v + submodules, reporting the first
-     cycle our port diverges (skips the 2-cycle reset transient; see core.cpp).
+   - The CPU core: a boot capture-and-replay — capture the core's per-cycle I/O over a
+     real Oberon boot (test/risc_core_dump.exe; 10 M cycles by default: the boot ROM, the
+     OS handoff, then OS initialisation) and replay it through RISC5.v + submodules,
+     reporting the first cycle our port diverges. Recaptured on every run: the trace is
+     the port's own recorded behaviour, so a reused one would vouch for a stale core.
 
    OPT-IN — not part of [dune runtest]. Needs [verilator] on PATH. The reference Verilog
    is fetched + checksum-verified on demand by ../fetch-rtl.sh (toolchain-free). Front
@@ -42,7 +43,6 @@ type kind =
       ; extra_v : string list (* .v in cosim_dir: ram16x1d.v (the inferred primitive) *)
       ; cpp : string
       ; top : string
-      ; skip : int (* leading reset-transient cycles to compared-skip *)
       }
 
 type spec =
@@ -87,7 +87,6 @@ let units =
           ; extra_v = [ "ram16x1d.v" ]
           ; cpp = "core.cpp"
           ; top = "RISC5"
-          ; skip = 2
           }
     }
   ]
@@ -170,22 +169,17 @@ let run_stimulus name ~rtl ~top ~cpp ~dumper ~extra =
       sh (Printf.sprintf "%s %s" (quote (Filename.concat objdir "cosim")) (quote port))))
 ;;
 
-let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
+let run_core name ~rtls ~extra_v ~cpp ~top =
   let work = Filename.concat work_root name in
   mkdir_p work;
   let trace = Filename.concat work "core_boot.trace" in
+  Printf.printf "[1/3] capturing core boot I/O -> %s ...\n%!" trace;
   let cap_ok =
-    if Sys.file_exists trace && (Unix.stat trace).st_size > 0
-    then (
-      Printf.printf "[1/3] reusing cached trace %s (delete it to recapture)\n" trace;
-      true)
-    else (
-      Printf.printf "[1/3] capturing core boot I/O -> %s (~10 s) ...\n" trace;
-      sh
-        (Printf.sprintf
-           "CORE_TRACE=%s _build/default/test/risc_core_dump.exe"
-           (quote trace))
-      = 0)
+    sh
+      (Printf.sprintf
+         "CORE_TRACE=%s _build/default/test/risc_core_dump.exe"
+         (quote trace))
+    = 0
   in
   if not cap_ok
   then (
@@ -205,46 +199,37 @@ let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
     else (
       ignore (sh (Printf.sprintf "tail -3 %s" (quote vlog)) : int);
       Printf.printf "[3/3] replaying the boot trace through RISC5.v ...\n";
-      sh
-        (Printf.sprintf
-           "%s %s %d"
-           (quote (Filename.concat objdir "cosim"))
-           (quote trace)
-           skip)))
+      sh (Printf.sprintf "%s %s" (quote (Filename.concat objdir "cosim")) (quote trace))))
 ;;
 
 let run_unit spec =
   match spec.kind with
   | Stimulus { rtl; top; cpp; dumper; extra } ->
     run_stimulus spec.name ~rtl ~top ~cpp ~dumper ~extra
-  | Core { rtls; extra_v; cpp; top; skip } ->
-    run_core spec.name ~rtls ~extra_v ~cpp ~top ~skip
+  | Core { rtls; extra_v; cpp; top } -> run_core spec.name ~rtls ~extra_v ~cpp ~top
 ;;
 
 (* The parallel pool + PASS/FAIL summary live in the shared [Fork_pool] (fork_pool.mli),
    used by both this runner and test/formal. *)
 
-(* build only the dumper/capture exes that are missing — so @cosim (which declares them as
-   deps, pre-building them) never triggers a nested `dune build` inside the dune action. *)
+(* Bring the dumper/capture exes up to date. Run by hand ([dune exec … cosim_run.exe])
+   only the runner itself is rebuilt, so an existing dumper may predate the design it
+   dumps — always rebuild (a no-op when fresh). Under @cosim the rule declares the exes as
+   deps and sets [COSIM_EXES_PREBUILT]: they are already fresh, and a nested [dune build]
+   inside the dune action would block on the build lock. *)
 let ensure_exes selected =
   let targets =
-    List.filter_map
+    List.map
       (fun spec ->
         match spec.kind with
-        | Stimulus { dumper; _ } ->
-          if Sys.file_exists (Printf.sprintf "_build/default/test/cosim/%s.exe" dumper)
-          then None
-          else Some (Printf.sprintf "test/cosim/%s.exe" dumper)
-        | Core _ ->
-          if Sys.file_exists "_build/default/test/risc_core_dump.exe"
-          then None
-          else Some "test/risc_core_dump.exe")
+        | Stimulus { dumper; _ } -> Printf.sprintf "test/cosim/%s.exe" dumper
+        | Core _ -> "test/risc_core_dump.exe")
       selected
     |> List.sort_uniq String.compare
   in
-  match targets with
-  | [] -> ()
-  | _ ->
+  match Sys.getenv_opt "COSIM_EXES_PREBUILT" with
+  | Some _ -> ()
+  | None ->
     Printf.printf "[cosim] building: %s\n%!" (String.concat " " targets);
     if sh (Printf.sprintf "dune build %s" (String.concat " " (List.map quote targets)))
        <> 0

@@ -25,8 +25,9 @@
 ; Uniform front door: `dune build @cosim` runs every unit (the 9 peripherals/FP + the CPU core)
 ; in parallel via cosim_run. OPT-IN (verilator + network on first fetch), kept out of
 ; @runtest/@check. The exes are declared deps so dune pre-builds them — cosim_run then makes no
-; nested `dune build`. dune caches the result: re-run with `dune build @cosim --force`, or
-; `dune exec test/cosim/cosim_run.exe -- <unit>` for a single unit.
+; nested `dune build` (COSIM_EXES_PREBUILT tells it so). dune caches the result: re-run with
+; `dune build @cosim --force`, or `dune exec test/cosim/cosim_run.exe -- <unit>` for a single
+; unit. The env_var deps make a changed capture knob re-run the alias.
 
 (rule
  (alias cosim)
@@ -44,6 +45,12 @@
   cosim.h
   (glob_files *.cpp)
   (glob_files *.v)
-  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var CAP)
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
  (action
-  (run %{exe:cosim_run.exe})))
+  (setenv
+   COSIM_EXES_PREBUILT
+   1
+   (run %{exe:cosim_run.exe}))))

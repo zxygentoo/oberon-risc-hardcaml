@@ -45,10 +45,15 @@ type config =
   { disk_image : string (* DISK_IMG, else the vendored .dsk *)
   ; trace_path : string (* CORE_TRACE, else an in-repo test/_work default *)
   ; cap : int (* CAP — hard cycle cap *)
+  ; cap_is_default : bool (* no CAP given: the coverage floor below is enforced *)
+  ; spi_slow_div_log2 : int
+      (* SPI_DIV_LOG2 — the SoC's slow SPI divider (default: turbo) *)
   ; cyc_from : int (* CYC_FROM/CYC_TO — inclusive windowed detailed-dump range *)
   ; cyc_to : int
   ; no_trace : bool (* NOTRACE — skip writing the (large) trace file *)
   }
+
+let default_cap = 10_000_000
 
 let read_config () =
   (* BCC.disk_image already honors DISK_IMG and resolves from the project root *)
@@ -63,14 +68,15 @@ let read_config () =
       ignore (Sys.command ("mkdir -p " ^ Filename.quote dir) : int);
       Filename.concat dir "core_boot.trace"
   in
-  (* Cycle-fidelity is a spot-check, not a full boot (boot_checkpoint / visual_golden own
-     boot correctness): the default ~2M cycles covers reset + ROM init + a solid run of
-     the SD-load driver — a real instruction stream exercising
-     decode/control/stall/flags/branch/byte-mem — at a small fraction of the full-boot
-     time/trace. Raise CAP to replay deeper (handoff is ~8M, the inner core 8M+). *)
+  (* The capture checks the core, not the SPI master, so it boots on the turbo divider:
+     the handoff lands at ~1.9M cycles instead of ~7.6M and the default cap spends the
+     rest on OS initialisation — compiled Oberon code, where byte accesses, DIV/MUL and
+     the shifts first appear (the boot ROM alone is MOV/ADD/SUB, word LD/ST and branches). *)
   { disk_image
   ; trace_path
-  ; cap = getenv_int "CAP" ~default:2_000_000
+  ; cap = getenv_int "CAP" ~default:default_cap
+  ; cap_is_default = Option.is_none (Sys.getenv_opt "CAP")
+  ; spi_slow_div_log2 = getenv_int "SPI_DIV_LOG2" ~default:2
   ; cyc_from = getenv_int "CYC_FROM" ~default:max_int
   ; cyc_to = getenv_int "CYC_TO" ~default:(-1)
   ; no_trace =
@@ -162,6 +168,9 @@ let dump_state (p : probes) ~cyc ~adr ~rd ~wr ~ben ~outbus ~inbus ~codebus =
    trap abort spin). Healthy boots never do (the idle loop oscillates), so this only fires
    on a fault, and any first divergence is BEFORE it, hence contained in the trace. *)
 let spin_limit = 4096
+
+(* pc (a word address) below the reset vector's ROM window = running from RAM *)
+let rom_base = Risc5.Cpu.start_adr
 let lo = Bits.of_unsigned_int ~width:1 0
 let hi = Bits.of_unsigned_int ~width:1 1
 
@@ -169,6 +178,8 @@ type result =
   { cycles : int
   ; final_pc : int
   ; pc_same : int (* trailing cycles pc held constant (>= spin_limit ⇒ halted) *)
+  ; left_rom : bool (* pc reached low RAM — the OS handoff happened *)
+  ; ben_cycles : int (* cycles with a byte access on the bus *)
   }
 
 (* Drive + capture each state, then take the edge: settle the combinational cloud over the
@@ -189,6 +200,8 @@ let run
   let cyc = ref 0
   and prev_pc = ref (-1)
   and pc_same = ref 0
+  and left_rom = ref false
+  and ben_cycles = ref 0
   and stop = ref false in
   while (not !stop) && !cyc < cfg.cap do
     (* drive [rst_n]: 0 for the first edge (reset → StartAdr), 1 thereafter. The recorded
@@ -196,14 +209,12 @@ let run
     let rst_n = if !cyc = 0 then 0 else 1 in
     inp.rst_n := if rst_n = 1 then hi else lo;
     Boot_tb.Spi.set_miso spi;
-    (* Record PRE-edge: settle the combinational cloud over the CURRENT state (registers
-       not yet updated), so each record is (inputs this state consumes, outputs this state
-       drives) and the edge below transitions to the next state. Pre-edge is what keeps
-       the trace self-consistent across the rst 0→1 reset boundary: the codebus consumed
-       at the first rst=1 edge (the branch-TARGET instruction) is captured here; a
-       post-edge read would record the fetch AFTER it instead and lose it, desyncing the
-       replay by one instruction whenever the boot's first instruction is a taken branch
-       (which it is). *)
+    (* Record PRE-edge: settle the combinational cloud over the CURRENT state under THIS
+       cycle's inputs, so each record is (inputs this state consumes, outputs this state
+       drives) and the edge below transitions to the next state. [outp] must be the
+       before-edge port refs: the default after-edge refs are not refreshed here and would
+       hand back the previous cycle's settle (the same state under the previous inputs —
+       wrong across the rst 0→1 boundary). *)
     Cyclesim.cycle_before_clock_edge sim;
     let irq = Cyclesim.Node.to_int probes.irq
     and stallx = Cyclesim.Node.to_int probes.stallx
@@ -222,6 +233,7 @@ let run
       lor (wr lsl 4)
       lor (ben lsl 5)
     in
+    ben_cycles := !ben_cycles + ben;
     encode_record buf ~ctrl ~codebus ~inbus ~adr ~outbus;
     if not cfg.no_trace then output_bytes oc buf;
     if !cyc >= cfg.cyc_from && !cyc <= cfg.cyc_to
@@ -236,6 +248,7 @@ let run
     let pc_now = Cyclesim.Reg.to_int probes.pc in
     if pc_now = !prev_pc then incr pc_same else pc_same := 0;
     prev_pc := pc_now;
+    if pc_now < rom_base then left_rom := true;
     if !pc_same >= spin_limit then stop := true;
     incr cyc;
     if !cyc mod 1_000_000 = 0
@@ -246,7 +259,12 @@ let run
         pc_now
         (spi_bytes ())
   done;
-  { cycles = !cyc; final_pc = !prev_pc; pc_same = !pc_same }
+  { cycles = !cyc
+  ; final_pc = !prev_pc
+  ; pc_same = !pc_same
+  ; left_rom = !left_rom
+  ; ben_cycles = !ben_cycles
+  }
 ;;
 
 (* ── orchestration ──────────────────────────────────────────────────────────── *)
@@ -259,11 +277,13 @@ let () =
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (Soc.create ~contents:Risc5.Rom.bootloader)
+      (Soc.create ~spi_slow_div_log2:cfg.spi_slow_div_log2 ~contents:Risc5.Rom.bootloader)
   in
   let inp = Cyclesim.inputs sim
-  and outp = Cyclesim.outputs sim in
-  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:outp.sclk bridge in
+  and outp = Cyclesim.outputs ~clock_edge:Before sim in
+  (* the SD bridge advances on the settled post-edge sclk, like every other boot gate *)
+  let sclk_post = (Cyclesim.outputs sim).sclk in
+  let spi = Boot_tb.Spi.attach sim ~miso:inp.miso ~sclk:sclk_post bridge in
   let probes = lookup_probes sim in
   (* idle the released peripheral lines high; switches/buttons default 0 = disk boot *)
   inp.rxd := hi;
@@ -302,5 +322,21 @@ let () =
     result.final_pc
     result.pc_same
     (if result.pc_same >= spin_limit then " — halted/stuck" else "")
-    cfg.trace_path
+    cfg.trace_path;
+  Printf.printf
+    "coverage: OS handoff %s; %d byte-access cycles\n%!"
+    (if result.left_rom then "reached" else "NOT reached")
+    result.ben_cycles;
+  (* a trace that stopped on a stuck core, or (at the default cap) never left the boot
+     ROM, must not replay as a pass *)
+  if result.pc_same >= spin_limit
+  then (
+    prerr_endline "risc_core_dump: FAIL — the core halted (pc stuck)";
+    exit 1);
+  if cfg.cap_is_default && not (result.left_rom && result.ben_cycles > 0)
+  then (
+    prerr_endline
+      "risc_core_dump: FAIL — the default capture must reach OS code (handoff + byte \
+       access)";
+    exit 1)
 ;;

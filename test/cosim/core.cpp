@@ -14,12 +14,7 @@
 // codebus/inbus/irq/stallX (+ rst) are the core INPUTS we drive into RISC5.v; adr/rd/wr/ben/
 // outbus are the OUTPUTS we compare.
 //
-// usage: risc5_cosim <trace> [skip]   skip = leading records compared-skipped (default 2: the
-//        reset transient. cyc0 is the rst=0 reset cycle; cyc1 differs benignly because our port
-//        models reset via the PC register's reset value, so its combinational adr reaches
-//        StartAdr one cycle after RISC5.v's `~rst ? StartAdr` term in pcmux. Both re-converge at
-//        cyc2 and stay in lockstep — the replay still DRIVES cyc0/cyc1 (so RTL reaches the right
-//        state), it just doesn't COMPARE them.
+// usage: risc5_cosim <trace>   every record is compared, from the rst=0 reset cycle on.
 
 #include "VRISC5.h"
 #include "cosim.h"  // tick(), Verilated
@@ -56,7 +51,7 @@ static const int RING = 24;  // recent records dumped for context at the first d
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   if (argc < 2) {
-    fprintf(stderr, "usage: %s <trace> [skip]\n", argv[0]);
+    fprintf(stderr, "usage: %s <trace>\n", argv[0]);
     return 2;
   }
   FILE* f = fopen(argv[1], "rb");
@@ -64,7 +59,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
     return 2;
   }
-  long skip = (argc >= 3) ? atol(argv[2]) : 2;
   const char* maxc = getenv("MAXCYC");
   long maxcyc = maxc ? atol(maxc) : -1;
 
@@ -81,8 +75,7 @@ int main(int argc, char** argv) {
   // drive rec[k]'s inputs (rst verbatim — rec[0] is the rst=0 reset cycle that forces
   // PC<=StartAdr on its own edge), settle, compare the outputs, then clock. No separate reset
   // tick is needed, and because the codebus consumed at the first rst=1 edge (the branch
-  // target) is in the trace, the reset boundary stays in lockstep. skip defaults to 2
-  // (see the usage note at the top).
+  // target) is in the trace, the reset boundary stays in lockstep.
 
   Rec ring[RING];
   long ring_n = 0;
@@ -91,15 +84,15 @@ int main(int argc, char** argv) {
   for (; have; k++, have = read_rec(f, &rec)) {
     if (maxcyc >= 0 && k >= maxcyc) break;
     rec.cyc = k;
-    // dut is at S_{k+1}; rec = cloud(S_{k+1}). Drive RISC5.v with rec's inputs (rst
-    // deasserted), settle, compare the outputs, then tick to S_{k+2} using the same inputs.
+    // dut is at S_k; rec = cloud(S_k). Drive RISC5.v with rec's inputs, settle, compare the
+    // outputs, then tick to S_{k+1} using the same inputs.
     dut->rst = rec.rst;
     dut->irq = rec.irq;
     dut->stallX = rec.stallx;
     dut->codebus = rec.codebus;
     dut->inbus = rec.inbus;
     dut->clk = 0;
-    dut->eval();  // settle cloud(S_{k+1})
+    dut->eval();  // settle cloud(S_k)
 
     uint32_t r_adr = dut->adr & 0xFFFFFF;
     int r_rd = dut->rd, r_wr = dut->wr, r_ben = dut->ben;
@@ -110,13 +103,13 @@ int main(int argc, char** argv) {
     ring[ring_n % RING] = rec;
     ring_n++;
 
-    if (k < 8 || (k >= skip && !match && mism < 4))
+    if (k < 8 || (!match && mism < 4))
       printf("  cyc %8ld: %s  RTL[adr=%06X rd=%d wr=%d ben=%d out=%08X] PORT[adr=%06X rd=%d "
              "wr=%d ben=%d out=%08X] code=%08X in=%08X\n",
              k, match ? "ok " : "DIFF", r_adr, r_rd, r_wr, r_ben, r_outbus, rec.adr & 0xFFFFFF,
              rec.rd, rec.wr, rec.ben, rec.outbus, rec.codebus, rec.inbus);
 
-    if (k >= skip && !match) {
+    if (!match) {
       if (mism == 0) {
         first_mism = k;
         printf("\n==== FIRST DIVERGENCE at trace cycle %ld ====\n", k);
@@ -142,7 +135,7 @@ int main(int argc, char** argv) {
       }
     }
     dut->clk = 1;
-    dut->eval();  // tick S_{k+1} -> S_{k+2}
+    dut->eval();  // tick S_k -> S_{k+1}
   }
   fclose(f);
   if (mism == 0)
