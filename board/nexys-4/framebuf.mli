@@ -1,44 +1,37 @@
-(** [Framebuf] — Phase-10c: the framebuffer shadowed in on-chip BRAM, so the video DMA
-    never touches the PSRAM port (AGENT.md §5).
+(** The framebuffer shadowed in block RAM on the FPGA, so that the video DMA never touches
+    the PSRAM port. Without it that port serves video about 23% of the time, and the CPU
+    waits meanwhile. With [vidreq] to {!Cellram} tied low, the synthesizer also removes
+    Cellram's video arbitration and its read preemption.
 
-    The Phase-10 stall profile put the video bus tax at a {b 1.228×} same-work ceiling
-    (measured by gating video off the port): the PSRAM port serves video ~23% of all
-    clocks, and ~9% of clocks the CPU sits frozen while it does. This module removes that
-    traffic at the source — and with it the need for {!Cellram}'s video arbitration
-    {e and} read-preemption logic (with [vidreq] tied low the synthesizer prunes both).
+    {1 A write-through shadow; the PSRAM keeps the truth}
 
-    {1 Design: a write-through shadow, PSRAM keeps the truth}
+    The same shape as {!Cache}'s coherence argument:
+    - CPU stores are mirrored. Every store bound for the PSRAM whose word address falls in
+      the span the DMA can address, [[Video.org, Video.org + 0x8000)], also writes the
+      shadow, in the same transaction, so the shadow follows that window of the PSRAM
+      store for store.
+    - CPU loads are untouched: they read the PSRAM, or the cache, as before.
+    - Video reads the shadow: a fetch is a one-cycle synchronous read, with [vid_ack] on
+      the next clock.
 
-    Same shape as {!Cache}'s coherence argument, applied to the framebuffer window:
+    In simulation the two start equal, both zero. On the board the PSRAM powers up with
+    arbitrary contents, which does not matter: only the shadow is displayed, and the OS
+    paints the whole screen before showing it.
 
-    - {b CPU stores are mirrored.} Every PSRAM-bound store whose word address falls in the
-      DMA-addressable span [[Video.org, Video.org + 0x8000)] also writes the shadow — in the
-      same write-through transaction that lands the word in PSRAM, so shadow and PSRAM
-      window stay equal at every instant (both power up zeroed: BRAM [INIT=0] at
-      configuration, and the OS paints the whole screen before showing it).
-    - {b CPU loads are untouched.} They read PSRAM/cache exactly as today (PSRAM has the
-      truth), so nothing changes on the CPU read path — no new read port, no mux.
-    - {b Video reads the shadow.} A {!Video} fetch ([vidreq]/[vidadr]) becomes a 1-cycle
-      synchronous BRAM read: [vid_ack] the next clock, trivially inside the prefetch's
-      ~2-group-time budget — vs the ~11-cycle arbitrated PSRAM read it replaces.
-
-    The span is the {e full} 32768 words {!Video.lookahead} can address ([org + {~vcnt,
-    col}], 128 KB ≈ 32 of the 135 unused BRAM tiles), not just the visible 24576 — so no
-    assumption is needed about which rows the raster fetches during blanking.
+    The span is the whole 32768 words {!Video.lookahead} can address, not only the 24576
+    visible ones, so nothing is assumed about which rows the raster fetches during
+    blanking.
 
     {1 Geometry}
 
-    Four byte-lane BRAMs (32768 × 8 each, the {!Risc5.Ram} idiom) share the word index, so
-    a byte store writes exactly its lane — no read-modify-write. Sync read is what lets
-    the arrays infer as {b block} RAM (the cache's async-read LUTRAM idiom would burn
-    ~26k LUTs here). *)
+    Four byte-lane RAMs of 32768 bytes share the word index, so a byte store writes
+    exactly its lane. The synchronous read is what lets them infer as block RAM. *)
 
 open Hardcaml
 
-(** The shadow's window in 22-bit word addresses: [[base, base + size)]. [base] is
-    {!Risc5.Video.org}; [size] is the full 32768-word DMA-addressable span. Exported for
-    harnesses that read the shadow back (the board visual golden's shadow-vs-PSRAM
-    equality check). *)
+(** The shadow's window in word addresses, [[base, base + size)]: [base] is
+    {!Risc5.Video.org}, [size] the 32768 words. Exported for test harnesses that read the
+    shadow back. *)
 val base : int
 
 val size : int

@@ -2,16 +2,16 @@
 ## Pins from the official Digilent Nexys-4 master XDC, cross-checked against the board.
 ## Port names match board/nexys-4/nexys4_top.v.
 ##
-## PS/2 assignment (feat/ps2-port-swap): the MOUSE is a genuine PS/2 device on a Digilent
-## Pmod PS/2 in JA's top row (msClk/msDat — open-drain, bidirectional via the top's
-## IOBUFs); the KEYBOARD is a USB keyboard bridged by the onboard USB-HID PIC
-## (PS2Clk=F4, PS2Data=B2 — receive-only, plain inputs).
+## PS/2: the MOUSE is a genuine PS/2 device on a Digilent Pmod PS/2 in JA's top row
+## (msClk/msDat — open-drain, bidirectional via the top's IOBUFs); the KEYBOARD is a USB
+## keyboard bridged by the onboard USB-HID PIC (PS2Clk=F4, PS2Data=B2 — receive-only,
+## plain inputs).
 
 ## ── Clock: 100 MHz on E3 ─────────────────────────────────────────────────────────────
 set_property -dict {PACKAGE_PIN E3 IOSTANDARD LVCMOS33} [get_ports CLK100MHZ]
 create_clock -period 10.000 -name clk100 [get_ports CLK100MHZ]
 
-## The MMCM's 60 MHz and 65 MHz outputs are auto-derived. They drive separate domains bridged
+## The MMCM's 64 MHz and 65 MHz outputs are auto-derived. They drive separate domains bridged
 ## only by VID's CDC handshakes (data stable for many cycles before sampling), so treat them as
 ## asynchronous for timing (don't time the cross-domain paths).
 set_clock_groups -asynchronous \
@@ -20,8 +20,8 @@ set_clock_groups -asynchronous \
 
 ## VID's pclk->clk request synchroniser (lib/video.ml pulse_sync: req_toggle -> sync0/sync1/
 ## sync2): mark the synchroniser flops ASYNC_REG so the tools pack them tightly (maximising
-## metastability MTBF) and never retime/optimise them away — the silicon-robustness half of
-## the flicker fix (the CDC redesign itself is in video.ml; AGENT.md §8).
+## metastability MTBF) and never retime/optimise them away. (The synchroniser itself is
+## described in lib/video.ml.)
 set_property ASYNC_REG true \
   [get_cells -hierarchical -filter {NAME =~ "*sync0*" || NAME =~ "*sync1*" || NAME =~ "*sync2*"}]
 
@@ -35,47 +35,39 @@ set_property ASYNC_REG true \
 ## set_max_delay -datapath_only instead — only then does max_delay actually apply.
 
 ## ── PSRAM async-interface I/O budget ─────────────────────────────────────────────────
-## Cellram holds each 16-bit READ phase for read_cycles = 6 clk = 93.75 ns at 64 MHz
-## (feat/clock-push; was 100 ns at 60, 96.2 at 62.4) and samples MemDB at the phase-end
-## edge. The M45W8MW16-70 needs address/CE valid 70 ns AT THE CHIP (tAA/tCO), so the
-## FPGA round trip must fit the remainder:
+## Cellram holds each 16-bit READ phase for read_cycles = 6 clocks = 93.75 ns at 64 MHz
+## and samples MemDB at the edge that ends the phase. The M45W8MW16-70 needs address and CE
+## valid for 70 ns AT THE CHIP (tAA/tCO), so the FPGA's round trip must fit the remainder:
 ##   t_out(reg -> addr/ctl pad) + board flight + t_in(MemDB pad -> deepest consumer FF)
-##     <= 93.75 - 70 = 23.75 ns.  (65 MHz would leave 22.3 — below even this tightened
-##     split; that step needs rc=7.)
-## (Phase-10d follow-up: this was read_cycles = 5 = 83.3 ns, leaving 13.3 ns split
-## 6.7 + 6.6 — a knife-edge that failed once (RamUBn -0.163) and grazed twice (+0.130,
-## +0.009 on MemDB-in) as the design grew. rc=6 costs only the cache misses ~2 cycles
-## each — measured ~0.5% CPI in bench_boot — and buys 16.7 ns of standing margin. The
-## WRITE phase stays write_cycles = 5: the write-path group-3 geometry below never
-## pressured, and drains are background work since the write buffer.)
-## Three groups (an unconstrained I/O path is never timed at all — before this block the
-## margin was hand arithmetic only):
+##     <= 93.75 - 70 = 23.75 ns.
+## One clock fewer would leave 8.1 ns, less than the input path alone uses; the sixth clock
+## is paid only by cache misses, under 1% of the running OS's clocks. Why read_cycles is 6
+## and write_cycles 5 is argued in board/nexys-4/build_config.ml.
+## An I/O path with no constraint is never timed at all, so every PSRAM pin is in one of
+## three groups:
 ##   1. Read-critical OUTPUTS <= 11.7 ns: MemAdr (tAA), RamCEn (tCO) and RamLBn/UBn
 ##      (tBA = 70 ns too, and they DO transition on the first read after a byte store).
-##      NOT RamOEn (tOE = 20 ns only) or RamWEn (write-path) — those sit in group 3.
-##      Kept on the FAST/16 drivers below (~1 ns saved per output; SI-comfortable on the
-##      short point-to-point traces).
-##   2. MemDB INPUT <= 11.7 ns. NB the budget must cover the DEEPEST same-edge consumer,
-##      not just Cellram's lo/rdata capture flop: on the load-retire cycle the raw pad
-##      value flows pad -> rdata -> inbus -> regmux -> flags/SPC in one cycle (~5.7 ns
-##      routed), and all of it sits inside the data-valid-to-capture-edge window.
-##   3. Loose sanity group <= 11.7 ns: MemDB out + tristate (write-path — tDW = 20 ns
-##      before WEn rise, ~67 ns after launch — plus turnaround), RamOEn (tOE = 20 ns:
-##      ~63 ns of real budget) and RamWEn (write pulse geometry, whole-cycle margins).
-##      Keeping any of these in group 1 over-constrains the router for nothing (it cost
-##      -0.7 ns of fake violations and pressured the real clk25 paths).
-## 1 + 2 = 23.4 of the 23.75 available — 0.35 ns over the constraint targets for board
-## flight (~0.3 ns round trip, the chip sits next to the FPGA). The 11.7s are still
-## comfortable against measured use: the 62.4 MHz datasheet.rpt showed MemDB-in setup
-## ~8.0-10.3 ns and the read-critical outputs well under their group (the historical
-## knife-edge was at rc=5's 6.7 ns budget, not these). tWP is comfortable by construction (WEn low 4
-## of 5 write cycles = 62.5 ns > 45 ns, a full cycle of data hold past WEn rise). The same 62.5 ns
-## is what address/CE/byte-enables get before WEn rises — under the datasheet's 70 ns tAW/tCW/tBW,
-## kept deliberately (board/nexys-4/build_config.ml).
-## Fast/strong drivers on the whole PSRAM interface: the OBUF is the dominant t_out
-## term (~3 ns of the strobes' ~4.4 ns logic at the default DRIVE 12 / SLOW slew), and
-## the traces are short point-to-point to the adjacent chip (no connector), so FAST/16
-## is SI-comfortable and shaves ~1 ns off every read-critical output.
+##      NOT RamOEn (tOE = 20 ns only) or RamWEn (write path): those are in group 3.
+##   2. MemDB INPUT <= 11.7 ns. The budget must cover the DEEPEST same-edge consumer,
+##      not just Cellram's capture flop: on the cycle a load retires, the raw pad value
+##      flows pad -> rdata -> inbus -> regmux -> flags/SPC in one cycle, and all of it
+##      sits inside the data-valid-to-capture-edge window.
+##   3. A loose sanity group <= 11.7 ns: MemDB out + tristate (write path: tDW = 20 ns
+##      before WEn rises, which is 62.5 ns after launch), RamOEn (tOE = 20 ns of a
+##      93.75 ns phase) and RamWEn (the write pulse, with whole-cycle margins). Putting
+##      any of these in group 1 over-constrains the router for nothing: it once cost
+##      0.7 ns of violations that were not real, and pressured the real system-clock paths.
+## 1 + 2 = 23.4 of the 23.75 ns available; the other 0.35 ns is board flight (~0.3 ns
+## round trip: the chip sits next to the FPGA). Measured use (datasheet.rpt) is about
+## 8 to 10.3 ns on MemDB-in, and the read-critical outputs are well under their group.
+## The write pulse: WEn is low for 4 of the 5 write clocks = 62.5 ns (tWP needs 45), with
+## a full clock of data hold after WEn rises. The same 62.5 ns is what address, CE and the
+## byte enables get before WEn rises — under the datasheet's 70 ns tAW/tCW/tBW, and kept
+## deliberately (board/nexys-4/build_config.ml).
+## Fast, strong drivers on the whole PSRAM interface: the OBUF is the dominant t_out
+## term (~3 ns of the strobes' ~4.4 ns at the default DRIVE 12 / SLOW slew), and the
+## traces are short point-to-point to the adjacent chip (no connector), so FAST/16 is
+## SI-comfortable and saves ~1 ns on every read-critical output.
 set_property SLEW FAST [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLBn RamUBn}]
 set_property DRIVE 16  [get_ports {MemAdr[*] MemDB[*] RamCEn RamOEn RamWEn RamLBn RamUBn}]
 

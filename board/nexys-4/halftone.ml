@@ -1,58 +1,36 @@
-(* Public API and behaviour spec live in [halftone.mli].
+(* The contract — the windows, the registers, the decision and the scaler — is in
+   [halftone.mli].
 
-   Implementation notes (v2 — the generality rework).
+   The row map is read when a request is accepted (an asynchronous array and an output
+   register), so both of its fields are valid from cycle 1. The threshold map is read as
+   an aligned group of four bytes: the thresholds of output pixels 4t..4t+3 are bytes
+   [{thr_row, 32*(col&1) + 4t .. +3}], lane k serving pixel 4t+k.
 
-   The decision function is ordered dithering's per-output-bit core: bit =
-   (lut[pix[row_base + sx]] > thr[thr_row][ox & 63]). v1 baked the 320x200 → fullscreen
-   geometry (slot tables + a row-map ROM); v2 uploads ALL policy:
+   The compose machine. One word is 32 output pixels, two per clock, over a sliding window
+   of two source words; every claimed word follows the same 21-clock schedule, counted by
+   [cnt]:
+   - 0: idle. An accepted, claimed request latches the column and parity, clears the
+     accumulator and reads the row map. At the first word of a row of the rectangle the
+     scaler is reset (sx := XOFF, xacc := XDEN); any other word carries its state on from
+     the word before.
+   - 1: [a0 = row_base + sx] is known: [wbase := a0 >> 2], [ob := a0 & 3]; the first
+     source word is requested.
+   - 2: capture [w0]; request the second word.
+   - 3: capture [w1]; request the first threshold group and the word at [wbase + 2].
+   - 4..19: sixteen beats of two pixels. Each pixel's byte is picked from [{w0, w1}],
+     looked up in its own copy of the tone table and compared with its threshold; the pair
+     is ORed into the accumulator, and the scaler steps twice. When [ob] has crossed into
+     [w1] the window slides: [w0 := w1], [w1 :=] the prefetched word, [wbase += 1].
+   - 20: acknowledge.
 
-   - the row map (768 x 22 CPU-written RAM at [thr_base + rowmap_off]): rect-relative
-     output row -> [{thr_row[6], row_base[16]}]. Read at request-accept (async array +
-     output register — the v1 registered-read timing lesson), so both fields are valid
-     from cycle 1 on. Vertical geometry lives ENTIRELY in this table: no vertical DDA, no
-     multiplier.
+   The prefetch address, [wbase + 2], is registered state alone. At no more than two
+   source bytes per beat two slides are never consecutive, so the word in flight is always
+   the one the next slide takes, and nothing the scaler computes in a cycle reaches a
+   block-RAM address port in that cycle. (With four pixels per clock it did, and that path
+   missed timing by 1.4 ns.)
 
-   - the threshold map (64x64 bytes, four byte-lane 1024x8 BRAMs at [thr_base]): uploaded
-     VERBATIM (the v1 slot-quad packing died with the slot structure). Read per beat as
-     one aligned 4-byte group: the four thresholds of output px 4t..4t+3 are bytes
-     [{thr_row, 32*(col&1) + 4t .. +3}] — lane k serves px 4t+k exactly.
-
-   - horizontal geometry: the XNUM/XDEN/XOFF registers driving an output-pixel DDA (spec
-     in the mli, frozen); XNUM >= XDEN, so sx advances at most 1 per output px.
-
-   The compose FSM (one word = 32 output px, 2 px/clock over a 2-word sliding source
-   window; all claimed words take the same 21-clk schedule):
-
-   cnt 0 idle; an accepted CLAIMED request latches [{col, par}], clears acc, resets the
-   DDA at the rect row's first word (sx := XOFF, xacc := XDEN — mid-row words CARRY
-   sx/xacc from the previous word: Video's raster-order request stream is the contract),
-   reads the row map, cnt := 1. cnt 1: a0 = row_base + sx known — prime wbase := a0>>2, ob
-   := a0&3; present pixel read a0>>2. cnt 2: capture w0; present read a0>>2 + 1. cnt 3:
-   capture w1; present the beat-0/1 threshold group and the prefetch wbase+2. cnt 4..19:
-   beats 0..15, two pixels each — byte(ob_k) from [{w0,w1}] -> its own async LUT replica
-   -> compare against the threshold pair (even beat: group bytes 0,1; odd: 2,3; a group is
-   read at the odd cnt before its pair and holds two cycles) -> the pair ORed into
-   acc[2t+1:2t]; the 2-step DDA chain advances (xacc, ob, sx); if ob crossed into w1 (ob
-   >= 4) the window slides: w0 := w1, w1 := the prefetched word, wbase += 1. The prefetch
-   address is wbase + 2, PURE REGISTERED STATE — at <= 2 source bytes per beat two slides
-   are never consecutive, so the in-flight word is always the one a slide pulls in (the
-   first build's WNS -1.382 path, the 4-px DDA chain reaching the BRAM address port, is
-   structurally gone). cnt 20: vid_ack; cnt := 0. Latency 21 clk at any scale — inside
-   Video's ~2-group prefetch budget (~59 clk at 60 MHz) and its ~29.5-clk sustained
-   spacing.
-
-   Unclaimed requests never start the FSM (the board mux forwards Framebuf on [~claim]);
-   every accepted request still updates the vblank tracker, the frame counter, and the
-   geometry-shadow latch (vblank entry = the accept whose fetch row is a blanking row, y
-   >= 768 — the prefetch keeps requesting through blanking, so frame position costs no CDC
-   and no Video change).
-
-   Verification, four rungs here (the DOOM repo's doom_sim golden stays the fifth): the
-   DDA ≡ the v1 slot tables at 16/5; a full-frame FNV hash of the reference model at the
-   DOOM configuration ≡ the gcc-compiled shipped dither.c (the v1 constant — it must not
-   move across this rework); a random differential hardware ≡ model through the real
-   write/read ports over random GEOMETRY (rects, scales, row maps) as well as random
-   tables; and a write-path/mode/status/shadow-latch test. *)
+   A request that is not claimed never starts the machine. Every request, claimed or not,
+   resets the gap counter that detects vertical blanking. *)
 
 open! Base
 open Hardcaml
@@ -62,14 +40,10 @@ let base = 0x310000
 let size = 0x10000
 let lut_off = 64000
 let ctl_off = 64256
-
-(* the status word's MMIO read slot (byte 0xFFFFE8) — the SoC passes [status_slot, status]
-   to {!Risc5.Peripherals}, whose collision check guards it *)
 let status_slot = 10
 
-(* the table window (thresholds + row map), carved from the ABI §8 spare row just below
-   the pixel window — the hardware ships CONTENT-FREE, every client uploads its rendition
-   AND its geometry before mode-on *)
+(* the table window: the hardware ships with no content, and every client uploads its
+   tables and its geometry before switching the mode on *)
 let thr_base = 0x30E000
 let thr_size = 0x2000
 let rowmap_off = 0x1000
@@ -100,8 +74,8 @@ end
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* ── write side: window decodes ── [base] is 64 KiB-aligned, so the compare is the full
-     top byte of the 24-bit address (Framebuf's wide-compare lesson, for free) *)
+  (* ── Stores: the window decodes ── [base] is 64 KiB-aligned, so the comparison is the
+     whole top byte of the address. *)
   let in_window = select i.adr ~high:23 ~low:16 ==:. base lsr 16 in
   let off = select i.adr ~high:15 ~low:0 in
   let page = select off ~high:15 ~low:8 in
@@ -113,8 +87,8 @@ let create (i : _ I.t) : _ O.t =
   let is_rowmap = bit i.adr ~pos:12 in
   let wr_thr = i.write &: in_thr_win &: ~:is_rowmap in
   let wr_rm = i.write &: in_thr_win &: is_rowmap in
-  (* ── the register block (word stores in the CTL page) ── CTL immediate; the seven
-     geometry registers are SHADOWS, latched into the active set at vblank entry *)
+  (* ── Registers ── CTL takes effect at once; the seven geometry registers are shadows,
+     made active on entry to blanking. *)
   let regw = select off ~high:7 ~low:2 in
   let wr_reg n = wr_win &: is_ctl &: (regw ==:. n) in
   let mode = reg spec ~enable:(wr_reg 0) (lsb i.wdata) -- "ht_mode" in
@@ -128,8 +102,7 @@ let create (i : _ I.t) : _ O.t =
   let sh_xnum = shadow 5 12 in
   let sh_xden = shadow 6 12 in
   let sh_xoff = shadow 7 16 in
-  (* ── request decode + frame tracking ── every accepted request (claimed or not) updates
-     these; y >= 768 = a blanking-row fetch (the prefetch's wrap rows) *)
+  (* ── Request decode and frame tracking ── *)
   let cnt = Always.Variable.reg spec ~width:5 in
   let accept = cnt.value ==:. 0 &: i.vidreq in
   let word_off =
@@ -140,13 +113,11 @@ let create (i : _ I.t) : _ O.t =
   in
   let col_req = select word_off ~high:4 ~low:0 in
   let in_blank = bit y_req ~pos:9 &: bit y_req ~pos:8 in
-  (* vblank detection. Video GATES its request pulse with ~vblank (lib/video.ml [req0]) —
-     no fetch is ever issued during vertical blanking, so blanking is visible at this seam
-     only as a REQUEST GAP: ~47k clk of silence vs ~300 clk for the longest in-frame gap
-     (hblank). A saturating 12-bit watchdog detects it — entry = the 4094->4095
-     transition, ~68 us into the ~786 us blanking, leaving the window Halftone.Sync
-     promises. ([in_blank] above is defensive only: today's request stream never carries y
-     >= 768.) *)
+  (* Video issues no request during vertical blanking, so blanking shows only as a gap in
+     the requests: about 47,000 clocks, against about 300 for the longest gap within a
+     frame. A saturating 12-bit counter detects it, on its step from 4094 to 4095.
+     ([in_blank] above is a precaution: the request stream never carries a row beyond
+     767.) *)
   let gap = Always.Variable.reg spec ~width:12 in
   let vblank = Always.Variable.reg spec ~width:1 in
   let vblank_rise = gap.value ==:. 4094 &: ~:(i.vidreq) in
@@ -159,8 +130,8 @@ let create (i : _ I.t) : _ O.t =
   let xnum = active sh_xnum in
   let xden = active sh_xden in
   let xoff = active sh_xoff in
-  (* ── the claim: mode on, visible row inside the rect, word column inside the rect.
-     Power-up actives are a zero-sized rect — nothing claims, the do-no-harm gate ── *)
+  (* ── The claim ── the mode on, a visible row inside the rectangle, a word column inside
+     it. The power-up rectangle is empty, so nothing claims. *)
   let y11 = uresize y_req ~width:11 in
   let win_y11 = uresize win_y ~width:11 in
   let y_in =
@@ -172,8 +143,8 @@ let create (i : _ I.t) : _ O.t =
   let claim_now = mode &: y_in &: x_in in
   let claim = reg spec ~enable:accept claim_now -- "ht_claim" in
   let first_of_row = col6 ==: x_w0 in
-  (* ── the row map: rect-relative output row -> [{thr_row, row_base}]; async array +
-     output register = a sync read landing exactly at cycle 1 (the v1 timing lesson) *)
+  (* ── The row map ── an asynchronous array and an output register: a read that lands at
+     cycle 1. *)
   let rel_y = select (y11 -: win_y11) ~high:9 ~low:0 in
   let rm_read =
     (multiport_memory
@@ -207,11 +178,11 @@ let create (i : _ I.t) : _ O.t =
   let a0_word = select a0 ~high:15 ~low:2 in
   let beat = cnt.value >=:. 4 &: (cnt.value <=:. 19) in
   let t_out = select (cnt.value -:. 4) ~high:3 ~low:0 in
-  (* threshold reads pair up: one aligned 4-byte group serves TWO 2-px beats — issued at
-     the odd cnt before the pair (data holds two cycles: no read lands in between) *)
+  (* threshold reads go in pairs: one aligned 4-byte group serves two beats, and is
+     requested at the odd count before them *)
   let t_thr = select (cnt.value -:. 3) ~high:3 ~low:1 in
-  (* ── the 2-step DDA chain for this beat (combinational; state regs in, next state out).
-     acc rests in [1, XNUM]: the 13-bit transient acc+XDEN <= 8190 never wraps *)
+  (* ── The scaler, two steps per beat ── [xacc] rests in 1..XNUM, so the 13-bit sum xacc
+     + XDEN cannot wrap. *)
   let xnum13 = uresize xnum ~width:13 in
   let xden13 = uresize xden ~width:13 in
   let step (accv, obv, sxv) =
@@ -227,14 +198,9 @@ let create (i : _ I.t) : _ O.t =
   (* ob2 < 4 means no slide and ob2[2] = 0 — so the truncation is the next ob either way *)
   let slide = bit ob2 ~pos:2 in
   let ob_next = uresize (select ob2 ~high:1 ~low:0) ~width:3 in
-  (* ── the pixel shadow: four byte-lane 16384x8 sync-read BRAMs. LUT/CTL-page stores also
-     land here (word indices 16000..16383) — harmless: a client row map pointing reads
-     there is a client bug, never a hazard. Address schedule per the FSM notes ── *)
-  (* the prefetch address is PURE REGISTERED STATE (wbase + a constant): at <= 2 source
-     bytes per beat two slides are never consecutive (a slide consumes a 4-byte word = >=
-     2 beats apart), so the in-flight word addressed [wbase + 2] is always the one a slide
-     pulls in — no same-cycle DDA term reaches the BRAM address port (the first build's
-     WNS -1.382 path: the 4-px DDA chain into ADDRBWRADDR) *)
+  (* ── The pixel shadow ── four byte-lane RAMs of 16384 bytes, read synchronously. Stores
+     to the tone table and the registers land here too (words 16000..16383), harmlessly.
+     The read address is registered state alone; see the note at the top. *)
   let pix_addr =
     mux2
       (cnt.value ==:. 1)
@@ -242,10 +208,9 @@ let create (i : _ I.t) : _ O.t =
       (mux2 (cnt.value ==:. 2) (a0_word +:. 1) (wbase.value +:. 2))
   in
   let pix_issue = cnt.value >=:. 1 &: (cnt.value <=:. 19) in
-  (* one byte lane of a CPU-written RAM: a word store writes all four lanes, a byte store
-     only the addressed one; lane k carries wdata's k-th byte (the lib/ram.ml idiom) —
-     shared by the pixel shadow, the threshold map and the tone LUT below, so their
-     byte-store semantics cannot drift apart *)
+  (* One byte lane of a CPU-written RAM: a word store writes all four lanes, a byte store
+     only the addressed one, lane k taking the k-th byte of [wdata]. Shared by the pixel
+     shadow, the threshold map and the tone table. *)
   let lane_we strobe k = strobe &: (~:(i.ben) |: (lane ==:. k)) in
   let lane_byte k = select i.wdata ~high:((8 * k) + 7) ~low:(8 * k) in
   let pix_lane k =
@@ -269,8 +234,8 @@ let create (i : _ I.t) : _ O.t =
        ()).(0)
   in
   let pix_rd = concat_msb [ pix_lane 3; pix_lane 2; pix_lane 1; pix_lane 0 ] in
-  (* ── the threshold map: four byte-lane 1024x8 sync-read BRAMs; one aligned 4-byte group
-     per beat, lane k = output px 4t+k. Presented one cycle ahead (t_thr) ── *)
+  (* ── The threshold map ── four byte-lane RAMs of 1024 bytes; one aligned group per pair
+     of beats, lane k for output pixel 4t+k, requested a cycle ahead. *)
   let thr_addr = concat_msb [ thr_row; lsb col_v; t_thr ] in
   let thr_issue = cnt.value >=:. 3 &: (cnt.value <=:. 17) &: lsb cnt.value in
   let thr_lane k =
@@ -294,9 +259,9 @@ let create (i : _ I.t) : _ O.t =
        ()).(0)
   in
   let thr_lanes = Array.init 4 ~f:thr_lane in
-  (* ── the tone LUT: async LUTRAM (keeps the compute stage one cycle), REPLICATED x2 —
-     the two per-clock lookups are independent bytes. 4 byte lanes per replica, one shared
-     write port shape (the v1 register-file idiom) ── *)
+  (* ── The tone table ── asynchronous distributed RAM, so that the lookup and the
+     comparison share a cycle, in two copies: the two lookups of a clock are independent
+     bytes. *)
   let window = w1.value @: w0.value in
   let win_bytes =
     Array.init 8 ~f:(fun j -> select window ~high:((8 * j) + 7) ~low:(8 * j))
@@ -371,31 +336,20 @@ let create (i : _ I.t) : _ O.t =
   { O.viddata; vid_ack; vidpar = par.value; claim; status }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ─────────────────────────────────────────
+(* ── Tests ──
+   - The scaler at 16/5 deals source widths 3, 3, 3, 3, 4.
+   - The reference model against the C dither it replaced. The expected constant is the
+     FNV-1a hash of a full frame from that C code (DOOM's libc/dither.c, compiled with gcc
+     -m32 -O2 -funsigned-char) on input filled from the generator s := s*1664525 +
+     1013904223, seed 12345, byte = (s >> 16) & 0xFF; the model must reproduce it.
+   - The hardware against the model, through the real ports: the DOOM configuration, then
+     random geometries with their own tables; fetches outside the rectangle must go
+     unclaimed, and a geometry store must not take effect before the next blanking.
+   - The store path: the mode bit, byte stores, the empty rectangle, 1:1 scale. *)
 
-   Rung 0 — the DDA ≡ the v1 slot tables at the DOOM scale (16/5): the frozen emit/advance
-   rule deals source widths 3,3,3,3,4.
-
-   Rung 1 — reference model ≡ the shipped C kernel. The expect constant is the v1
-   full-frame FNV hash: gcc -m32 -O2 -funsigned-char on a driver that #includes the DOOM
-   repo's libc/dither.c verbatim, fills src[64000] then __dg_lum[256] from the LCG s :=
-   s*1664525 + 1013904223 (seed 12345, byte = (s >> 16) & 0xFF), runs __dg_dither_fs(src,
-   fb + 767*32, -32) and FNV-1a-64-hashes the frame in (y asc, col asc) word order, 4 LE
-   bytes per word. THE CONSTANT MUST NOT MOVE across the v2 rework: same pixels, through
-   uploaded tables + the DDA instead of baked ROMs.
-
-   Rung 2 — hardware ≡ model differential through the real write/read ports, over random
-   GEOMETRY (rects, scales, XOFF, per-row-random row maps) as well as random tables;
-   unclaimed fetches (outside the rect, blanking rows) must never ack; shadow registers
-   must not take effect before a vblank entry.
-
-   Rung 3 — write path, mode, byte stores, zero-rect do-no-harm, identity scale. *)
-
-(* the DOOM vertical geometry (dither.c's __dg_dither_fs, transliterated): output row y ->
-   (source row, threshold-map row) — the 200 -> 768 Bresenham (acc += 96 per source line,
-   deal acc/25 output rows) with the out2 alternation. In v2 this is TEST-SIDE ONLY: the
-   hardware learns it by row-map upload, exactly as the DOOM blob does
-   ([__dg_upload_geometry]). *)
+(* DOOM's vertical geometry: output row to (source row, threshold row), 200 rows dealt
+   over 768. Test data only; the hardware learns it as a client would teach it, by row-map
+   upload. *)
 let row_map =
   let map = Array.create ~len:768 (0, 0) in
   let y = ref 0 in
@@ -414,10 +368,9 @@ let row_map =
   map
 ;;
 
-(* the reference model, v2: one rect ROW of composed words under uploaded tables and
-   geometry — the mli's decision function + DDA verbatim. State carries across the row's
-   words (the hardware contract: raster-order requests), so the model produces whole rows
-   and the differential fetches whole rows. *)
+(* The reference model: one row of the rectangle, composed under the given tables and
+   geometry by the decision and the scaler of the mli. State carries across a row's words,
+   so the model produces whole rows. *)
 let reference_row ~thr ~pixels ~lut ~row_base ~thr_row ~x_w0 ~n_words ~xnum ~xden ~xoff =
   let words = Array.create ~len:n_words 0 in
   let sx = ref xoff in
@@ -439,11 +392,8 @@ let reference_row ~thr ~pixels ~lut ~row_base ~thr_row ~x_w0 ~n_words ~xnum ~xde
   words
 ;;
 
-(* The DOOM blue-noise table — TEST-ORACLE DATA ONLY, deliberately unexported (the mli
-   seals it: nothing in the design can reference one client's content). Verbatim from the
-   DOOM repo's libc/dither.c [__dg_bn64] (bin/bluenoise.ml default output, sigma 1.5,
-   values 1..254); the hash test pins model ≡ the gcc-compiled C kernel, and the
-   differential uses it as the first uploaded table. *)
+(* DOOM's blue-noise threshold table, copied from its libc/dither.c. Test data only, and
+   not exported: nothing in the design may depend on one client's content. *)
 let bn64 =
   [|  15;  85;  28;  49; 151; 221;  66; 206;   6; 197; 223; 137;  97; 215;  61;  33;
      186; 102;  26; 218;  18; 180;  62;  31; 130;  94;  43; 185;  71;  47;  95; 152;
@@ -768,10 +718,9 @@ let%expect_test "halftone — reference model ≡ gcc-compiled dither.c (full fr
   [%expect {| b66f831b508c374f |}]
 ;;
 
-(* ── The shared hardware testbench (both hardware tests drive the same closed loop):
-   [store] presents one CPU store cycle; [fetch] issues a video-bus request for output row
-   y, word column col, then polls for the ack; [pulse] is a fire-and-forget request;
-   [latch] rides a vblank entry so the geometry shadows take. One harness per sim. *)
+(* The testbench both hardware tests share. [store] presents one CPU store; [fetch]
+   requests the word at output row y, column col, and waits for the acknowledge; [pulse]
+   requests and does not wait; [latch] makes the geometry shadows active. *)
 type harness =
   { store : adr:int -> ben:int -> wdata:int -> unit
   ; fetch : y:int -> col:int -> int option
@@ -799,9 +748,7 @@ let harness sim (inp : _ I.t) (outp : _ O.t) =
   let fetch ~y ~col =
     request ~y ~col;
     let word = ref None in
-    (* poll unconditionally: the FSM needs the post-ack cycle to return to idle, and a
-       parked sim would drop the next request (the board never sees this — requests are
-       ~29.5 cycles apart) *)
+    (* clock on after the acknowledge: the machine needs one more cycle to return to idle *)
     for _ = 1 to 30 do
       Cyclesim.cycle sim;
       if Bits.to_unsigned_int !(outp.vid_ack) = 1 && Option.is_none !word
@@ -815,9 +762,8 @@ let harness sim (inp : _ I.t) (outp : _ O.t) =
       Cyclesim.cycle sim
     done
   in
-  (* a vblank ENTRY latches the geometry shadows. Video never requests during blanking, so
-     the hardware detects vblank as a >4095-cycle request gap: issue one request (ending
-     any prior gap), then hold the bus idle past the threshold. *)
+  (* the shadows become active on entry to blanking, which the hardware sees as more than
+     4095 clocks without a request: make one request, then leave the bus idle past that *)
   let latch () =
     pulse ~y:100 ~col:0;
     for _ = 1 to 4200 do

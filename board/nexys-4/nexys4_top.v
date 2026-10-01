@@ -1,19 +1,18 @@
 `timescale 1ns / 1ps
 `default_nettype none
 //
-// Phase 7 board top for the original Digilent Nexys 4 (XC7A100T, Cellular-RAM).
-// Hand-written vendor wrapper around the Hardcaml-generated `soc_board`
-// (board/_generated/nexys-4/soc_board.v): clock generation (MMCM 100->60/65 MHz), a
-// power-on reset, and the IOBUFs / pin mapping the synthesizable design can't express.
-// See board/nexys-4/README.md.
+// The board top for the original Digilent Nexys 4 (XC7A100T, Cellular RAM): the
+// hand-written vendor wrapper around the Hardcaml-generated `soc_board`
+// (board/_generated/nexys-4/soc_board.v). It holds what the synthesizable design cannot
+// express: clock generation (one MMCM, 100 -> 64 and 65 MHz), the power-on reset, and the
+// IOBUFs and pin mapping. See board/nexys-4/README.md.
 //
-// PS/2 port assignment (feat/ps2-port-swap): a genuine 3-button PS/2 MOUSE sits on the
-// Digilent Pmod PS/2 in JA's top row (msClk/msDat — open-drain bidirectional via IOBUFs:
-// the Mouse module transmits its init commands), and a USB KEYBOARD sits on the onboard
-// port (PS2Clk/PS2Data — the USB-HID PIC bridges it to PS/2; our side is receive-only, so
-// two plain inputs). The direction machinery follows the device ROLE, not the connector.
-// The Mouse module is develop's faithful, cosim/formal-proven port of MousePM.v. LD9-14
-// diagnose the PS/2 bring-up (see the status-LED block at the bottom).
+// PS/2: a genuine 3-button PS/2 MOUSE sits on the Digilent Pmod PS/2 in JA's top row
+// (msClk/msDat — open-drain and bidirectional through IOBUFs, because the Mouse module
+// transmits its initialisation commands), and a USB KEYBOARD on the onboard port
+// (PS2Clk/PS2Data — the USB-HID PIC bridges it to PS/2; our side only receives, so two
+// plain inputs). The direction machinery follows the device's ROLE, not the connector.
+// LD9-14 show the state of the two PS/2 links (the status-LED block at the bottom).
 //
 module nexys4_top (
   input  wire        CLK100MHZ,     // E3, 100 MHz
@@ -61,29 +60,24 @@ module nexys4_top (
 );
 
   // ── Clocking: one MMCM, 100 MHz -> 64 MHz (system) + 65 MHz (pixel) ──────────────
-  // VCO = 100/5 * 52 = 1040 MHz; 1040/16.25 = 64 MHz, 1040/16 = 65 MHz (1024x768@60
-  // pixel clk) — 1040 is the common multiple that keeps BOTH outputs exact (CLKOUT0
-  // fractional 16.250, CLKOUT1 integer 16). feat/clock-push: 60 -> 62.4 (VCO 780,
-  // ÷12.5) -> 64. At 64 the rc=6 PSRAM read phase is 93.75 ns - 70 = 23.75 ns of I/O
-  // budget, so the .xdc groups tighten 12.0 -> 11.7 (measured use ~10.3). 65 MHz
-  // (1040/16 on this VCO) would leave 22.3 — below even the tightened split; that step
-  // needs rc=7.
-  // feat/fast-clock: system clock raised 50->60 MHz (enabled by the pipelined DSP
-  // multipliers — mul_stages:2 — which move the multiply off the critical path). 780 is the
-  // LCM of 60 and 65, so BOTH outputs stay exact (CLKOUT0 fractional 13.000, CLKOUT1 integer
-  // 12); reaching VCO 780 from the 100 MHz input needs DIVCLK 5 / MULT 39 (PFD 20 MHz). The
-  // clk25/bufg_25 net & instance names are KEPT (they now carry 60 MHz) to avoid rippling
-  // through soc_board's `clock` port and the .xdc bufg_25/O selectors. PSRAM wait-states + ms
-  // prescaler + SPI divider are retuned to match in emit_board_verilog.ml (5, 60000, ÷256).
+  // VCO = 100/5 * 52 = 1040 MHz; 1040/16.25 = 64 MHz, and 1040/16 = 65 MHz, the pixel
+  // clock of 1024x768@60. Both outputs are exact (CLKOUT0 fractional, CLKOUT1 integer).
+  // What sets the system clock: at 64 MHz the six-clock PSRAM read phase is 93.75 ns, which
+  // leaves 23.75 ns for the FPGA's I/O after the chip's 70 ns (the budget in nexys4.xdc,
+  // which splits 23.4 of it). 65 MHz would leave 22.3 ns: that step needs a seventh clock.
+  // Everything in the design that counts system clocks is in build_config.ml, whose test
+  // checks the MMCM parameters below against it.
+  // The names clk25 and bufg_25 date from the original 25 MHz system clock. They are kept
+  // because the .xdc selects the system clock by the pin bufg_25/O.
   wire clk25, clk65, clkfb, clkfb_bufg, mmcm_locked;
   wire clk25_raw, clk65_raw;
 
   MMCME2_BASE #(
     .CLKIN1_PERIOD   (10.000),   // 100 MHz
     .DIVCLK_DIVIDE   (5),        // PFD = 100/5 = 20 MHz
-    .CLKFBOUT_MULT_F (52.000),   // VCO = 20 * 52 = 1040 MHz (feat/clock-push; was 39 = 780)
-    .CLKOUT0_DIVIDE_F(16.250),   // 64 MHz (1040/16.25; was 780/12.5 = 62.4, 780/13 = 60)
-    .CLKOUT1_DIVIDE  (16),       // 65 MHz (1040/16; was 780/12)
+    .CLKFBOUT_MULT_F (52.000),   // VCO = 20 * 52 = 1040 MHz
+    .CLKOUT0_DIVIDE_F(16.250),   // 64 MHz (1040/16.25)
+    .CLKOUT1_DIVIDE  (16),       // 65 MHz (1040/16)
     .STARTUP_WAIT    ("FALSE")
   ) mmcm (
     .CLKIN1   (CLK100MHZ),
@@ -110,16 +104,14 @@ module nexys4_top (
 
   // ── Power-on / button reset (active-low rst_n to the SoC) ────────────────────────
   // Held low until the MMCM locks and a counter elapses, and whenever the reset button is
-  // pressed (btnCpuReset is active-low). The counter gives ~1.1 s (26 bits at 60 MHz;
-  // it was ~2.7 s when picked empirically at 25 MHz — the margin shrank with the clock
-  // bump but stays ample, mouse-confirmed on hardware at 60 MHz). Post-swap the delay
-  // covers BOTH init-timing hazards: the genuine PS/2 mouse on the Pmod finishes its
-  // power-on self-test (BAT, ~500 ms) before the Mouse module's one-shot init fires and
-  // latches `run` (fire early => streaming never starts until a manual reset), and the
-  // USB-HID PIC gets time to enumerate the USB keyboard (receive-only, so merely losing
-  // pre-enumeration keystrokes — harmless). Dwarfed by Oberon's ~20 s boot; trim/raise
-  // if a slower mouse needs it.
-  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~1.1 s at 60 MHz (was 16 bits / ~1 ms)
+  // pressed (btnCpuReset is active-low). The counter gives about a second (26 bits at
+  // 64 MHz), which covers two hazards. The PS/2 mouse on the Pmod must finish its power-on
+  // self-test (BAT, ~500 ms) before the Mouse module's one-shot initialisation fires and
+  // latches `run`: fired early, streaming never starts until a manual reset. And the
+  // USB-HID PIC gets time to enumerate the USB keyboard (receive-only, so too short a
+  // delay would only lose keystrokes typed before enumeration). The delay is small against
+  // Oberon's boot from the SD card; raise it if a slower mouse needs it.
+  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~1 s at 64 MHz
   wire        por_done = (por_cnt == 26'd0);
   always @(posedge clk25) begin
     if (!mmcm_locked)   por_cnt <= 26'h3FFFFFF;
@@ -154,8 +146,7 @@ module nexys4_top (
   // Drive the line low when the SoC requests it (msX_oe=1), else release to hi-Z — the
   // XDC pullup + the device pullup hold it high. A genuine PS/2 mouse hangs off the Pmod;
   // the Mouse module sends enable / sample-rate init by pulling the lines low
-  // (request-to-send), then receives the device's report stream. (The IOBUFs moved here
-  // from the onboard port with the swap — the mouse is the bidirectional device.)
+  // (request-to-send), then receives the device's report stream.
   wire        msclk_oe, msdat_oe;   // mouse open-drain pull-low requests (from the SoC)
   wire        ps2c_in, ps2d_in;     // resolved PS/2 lines into the mouse module
   wire [27:0] mouse_dbg;            // {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]} for the LEDs
@@ -232,14 +223,14 @@ module nexys4_top (
   assign Vsync    = vsync;
 
   // ── microSD housekeeping ─────────────────────────────────────────────────────────
-  assign sd_reset = 1'b0;    // hold the card out of reset / powered (verify polarity on HW)
+  assign sd_reset = 1'b0;    // low keeps the card slot powered (high would cut its supply)
 
   // ── Status / PS/2-mouse-diagnostic LEDs (upper bank) ─────────────────────────────
   // LD8 = system-clock heartbeat, LD15 = MMCM locked. LD9-14 diagnose the mouse bring-up.
   reg [24:0] heartbeat = 25'd0;
   always @(posedge clk25) heartbeat <= heartbeat + 25'd1;
 
-  localparam [24:0] HOLD = 25'd2_500_000;   // ~42 ms persistence at 60 MHz
+  localparam [24:0] HOLD = 25'd2_500_000;   // ~39 ms persistence at 64 MHz
 
   // Decoded mouse state from the SoC debug word {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}.
   wire        ms_run  = mouse_dbg[27];
@@ -249,10 +240,9 @@ module nexys4_top (
   // Sticky "has the module EVER decoded movement?" latches — the decisive bring-up
   // signal. Move the mouse, then read them: x/y_ever lit => the report decode works
   // (so a dead cursor is Oberon-side); dark => the decode/done path is failing.
-  // Cleared by reset (btnCpuReset / POR). (btns_ever retired with the mouse bring-up;
-  // LD12 now watches the keyboard.)
+  // Cleared by reset (btnCpuReset / POR).
   reg x_ever = 1'b0, y_ever = 1'b0;
-  // Retriggerable activity one-shots (on = happening now, off ~0.1 s after it stops).
+  // Retriggerable activity one-shots (on = happening now, off ~40 ms after it stops).
   reg [24:0] hold_ps2c = 0, hold_host = 0, hold_kbdc = 0;
   reg        ps2c_d = 0, kbdc_d = 0;
   always @(posedge clk25) begin
@@ -269,7 +259,7 @@ module nexys4_top (
     hold_kbdc <= (kbdc_d ^ PS2Clk)     ? HOLD : (hold_kbdc != 0 ? hold_kbdc - 25'd1 : 25'd0);
   end
 
-  assign led[8]  = heartbeat[24];      // ~1.8 Hz blink: the 60 MHz clock is alive
+  assign led[8]  = heartbeat[24];      // ~1.9 Hz blink: the system clock is alive
   assign led[9]  = ms_run;             // mouse init completed (run=1, now streaming reports)
   assign led[10] = x_ever;             // module's X accumulated away from 0 (X decode works)
   assign led[11] = y_ever;             // module's Y accumulated away from 0 (Y decode works)

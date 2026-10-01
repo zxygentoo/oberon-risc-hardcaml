@@ -1,11 +1,4 @@
-(* Public API and behaviour spec live in [soc.mli].
-
-   Implementation note. This is [Soc] (lib/soc.ml) with the memory layer swapped for the
-   PSRAM controller {!Cellram} and the core run on its clock-enable. The peripheral / MMIO
-   block is the shared {!Risc5.Peripherals} cluster (the per-MMIO-word rationale lives
-   there); the board's departures ride its seams — [slow_div_log2]/[baud_*] retunes, the
-   Halftone status word as an extra read slot — and its exports ([sd_cs] from [spi_ctrl],
-   the ce-domain IRQ stretch on [ms_tick], both below). *)
+(* The contract is in [soc.mli]. *)
 
 open! Base
 open Hardcaml
@@ -59,27 +52,22 @@ module O = struct
 end
 
 let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
-  (* [halftone] without [fb_bram] would silently elaborate with no Halftone at all (its
-     claim muxes against the Framebuf shadow) — an A/B run would then "measure" a build
-     that never instantiated the module. Fail loudly instead, like the lib guards. *)
+  (* [halftone] without [fb_bram] would elaborate with no Halftone at all, and a
+     measurement of that build would be of a machine without the module *)
   if c.halftone && not c.fb_bram
   then failwith "Soc: halftone requires fb_bram (the claim muxes the Framebuf shadow)";
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* fetch/load feedback, broken by the core's pc/ir registers; [ms_tick] closes the same
-     kind of loop with the shared {!Peripherals} cluster (built after the core, whose
-     strobes it consumes) — it comes straight off the timer register, so nothing
-     combinational cycles *)
+  (* the fetch and load buses are wires, closed after the core; so is [ms_tick], from the
+     peripherals built after it *)
   let codebus = wire 32 in
   let inbus = wire 32 in
   let ms_tick = wire 1 in
-  (* ── Video ── two clocks; the framebuffer word is supplied by the arbiter and latched
-     on its [vid_ack] (the PSRAM read is multi-cycle, so not on [req] as the BRAM SoC
-     does). *)
+  (* ── Video ── the framebuffer word arrives on an acknowledge, not on the request as
+     with single-cycle RAM *)
   let viddata = wire 32 in
   let vid_ack = wire 1 in
   let vidpar = wire 1 in
-  (* feat/halftone v2: the display-mode status word (vblank + frame counter), read at MMIO
-     slot 10 — zero unless the Halftone elaboration below drives it *)
+  (* the display-mode status word read at MMIO slot 10; zero without Halftone *)
   let ht_status = wire 32 in
   let vid =
     Video.create
@@ -89,21 +77,16 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   in
   let vidreq = vid.req -- "vidreq" in
   let vidadr = vid.vidadr -- "vidadr" in
-  (* ── Core ── on the arbiter's clock-enable; [stall_x] tied off (video is arbitrated in
-     {!Cellram}, which freezes the core via [ce] instead). The
-     [core_ce → core → cellram → core_ce] path is not combinational — [ce] gates only the
-     core's registers, not its combinational [adr]/[mem_pend] — so [core_ce] is a forward
-     wire. *)
+  (* ── Core ── [core_ce → core → cellram → core_ce] is not a combinational loop: [ce]
+     gates the core's registers, not its combinational [adr] and [mem_pend]. *)
   let core_ce = wire 1 in
-  (* ── IRQ stretch (board-only) ── RISC5.v clocks its interrupt capture every cycle
-     ([irq1]/[intPnd] latch even under stallX), but this board freezes those flops with
-     [ce] — a 1-clock [limit] tick landing in a PSRAM/video wait (ce=0) would vanish (~39%
-     of running-OS cycles are frozen; bench_boot). Hold the request across frozen cycles
-     and drop it once a ce=1 cycle has sampled it: the wire stays continuously high from
-     tick to delivery, so the core's edge-detect sees exactly one edge per tick — and with
-     [ce] always 1 the hold term is identically 0, reducing this to [irq = limit], the lib
-     [Soc] semantics. Inert to Oberon (never runs STI, so [int_enb] stays 0); the
-     co-located [irq stretch] test pins the delivery count. *)
+  (* ── Interrupt stretch ── RISC5.v captures its interrupt every clock, even when
+     stalled. Here the capture registers are frozen with the core, so a one-clock tick
+     arriving in a frozen cycle would vanish. The request is held across frozen cycles and
+     dropped once an enabled cycle has sampled it: the line stays high from the tick to
+     its delivery, and the core's edge detector sees one edge per tick. With [ce] always
+     high the hold term is 0 and this is [irq = limit], as in the simulation SoC. (Oberon
+     never enables interrupts; the test below counts the deliveries.) *)
   let irq_pend = Always.Variable.reg spec ~width:1 in
   let irq_pend_v = irq_pend.value -- "irq_pend" in
   Always.(compile [ irq_pend <-- (i.rst_n &: ~:core_ce &: (ms_tick |: irq_pend_v)) ]);
@@ -122,10 +105,8 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   in
   let ioenb = (select core_adr ~high:23 ~low:6 ==:. 0x3FFFF) -- "ioenb" in
   let iowadr = select core_adr ~high:5 ~low:2 in
-  (* on-chip fast path: a ROM-region fetch (codebus from PROM) or any MMIO load/store (top
-     64 B). These take {!Cellram}'s 1-cycle path — never touching the PSRAM — which also
-     keeps each MMIO access one CPU-cycle long, so the write strobes below pulse exactly
-     once. *)
+  (* served on the FPGA in one cycle: a fetch from the ROM region, or any MMIO access. One
+     cycle per MMIO access is what makes each write strobe fire once. *)
   let core_rd = core.rd -- "core_rd" in
   let core_wr = core.wr -- "core_wr" in
   let is_fetch = (core.mem_pend &: ~:core_rd &: ~:core_wr) -- "is_fetch" in
@@ -136,12 +117,10 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   (* the one store transaction every shadow rides (the cache snoop, Framebuf, Halftone) —
      bound once so their write-coherence cannot drift apart *)
   let psram_store = core_wr &: ~:cpu_internal in
-  (* Phase-10a: an optional direct-mapped read/I-cache in front of Cellram. On a hit we
-     drop [mem_pend] to Cellram — its [ce] is [~mem_pend | …], so it rises this cycle (a
-     0-stall hit) — and serve the word from the cache; misses and stores flow through
-     unchanged (write-through), the cache snooping stores to stay coherent ({!Cache}).
-     [cache_hit] is driven below (after Cellram, whose [ce]/[rdata] the cache needs); the
-     loop is not combinational — [hit] reads the cache array, not Cellram. *)
+  (* On a cache hit [mem_pend] is withheld from Cellram, so [ce] is high this cycle and
+     the word comes from the cache. [cache_hit] is driven further down, after Cellram,
+     whose [ce] and [rdata] the cache needs; the loop is not combinational, the hit being
+     a read of the cache's own array. *)
   let cache_hit = wire 1 in
   (* ── PSRAM controller / CPU+video arbiter ── *)
   let cellram =
@@ -163,11 +142,8 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
       }
   in
   assign core_ce (cellram.ce -- "core_ce");
-  (* Phase-10c: [fb_bram] serves the video DMA from the {!Framebuf} BRAM shadow (a 1-cycle
-     on-chip read) instead of the PSRAM port — Cellram's [vidreq] is tied low above, so
-     its video FSM + read-preemption logic go dead (pruned at synthesis). The shadow's
-     write port taps exactly the store the cache snoops ([psram_store]) in the same
-     write-through transaction, so shadow ≡ PSRAM framebuffer window at every instant. *)
+  (* With [fb_bram] the video DMA is served from the framebuffer shadow, and Cellram's
+     [vidreq] is tied low above. The shadow takes exactly the store the cache watches. *)
   let viddata_src, vid_ack_src, vidpar_src, ht_status_src =
     if c.fb_bram
     then (
@@ -182,13 +158,9 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
           ; vidadr
           }
       in
-      (* feat/halftone v2: the generalized 8bpp display mode ({!Halftone}), taps the same
-         store transaction the Framebuf shadow and the cache snoop ride. [claim] — latched
-         per accepted request: mode on AND the fetch word inside the client's rect — muxes
-         which shadow answers the DMA, so the mono path serves everything outside the rect
-         (v1 muxed on the whole-screen mode bit). With the control word never written no
-         request ever claims, and this elaboration is display-identical to
-         [halftone:false] (the do-no-harm gate below is the visual golden). *)
+      (* Halftone takes the same store. [claim], latched per request — the mode on, and
+         the word inside the client's rect — selects which shadow answers; outside the
+         rect, and whenever the control word has never been written, the mono path does. *)
       if c.halftone
       then (
         let ht =
@@ -213,10 +185,7 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   assign vid_ack vid_ack_src;
   assign vidpar vidpar_src;
   assign ht_status ht_status_src;
-  (* Phase-10a: drive [cache_hit] and pick the CPU read word. When on, a fetch/load to
-     PSRAM (not ROM/MMIO — [cpu_internal] takes the 1-cycle path) can hit the cache; a
-     store to PSRAM snoops. When off, [cache_hit] is tied low and the word is Cellram's,
-     verbatim. *)
+  (* the CPU's read word: from the cache on a hit, else Cellram's *)
   let mem_rdata =
     if c.icache
     then (
@@ -243,11 +212,7 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
       cellram.rdata)
   in
   let prom = Rom.create ~contents { Rom.I.adr = select core_adr ~high:10 ~low:2 } in
-  (* ── The shared peripheral/MMIO cluster ({!Peripherals}) ── never ce-gated: a slow
-     (wait-stated) CPU polls full-speed peripherals, exactly as on real hardware. Board
-     seams: the SPI slow divider + UART bauds retuned for the 60 MHz clock
-     (emit_verilog.ml), and the Halftone status word (vblank + frame counter, the v2 seam)
-     at read slot 10 (0xFFFFE8). *)
+  (* ── Peripherals ── never clock-gated. The Halftone status word is an extra read slot. *)
   let per =
     Peripherals.create
       ~clocks_per_ms:c.clocks_per_ms
@@ -303,16 +268,9 @@ let create ~contents (c : Build_config.t) (i : _ I.t) : _ O.t =
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── [Soc] is
-   [Soc] (lib/soc.ml) with the memory layer swapped for {!Cellram} + the core on a
-   clock-enable, sharing the {!Peripherals} cluster. These mirror soc.ml's own co-located
-   integration tests (a hand-assembled boot stub in the boot ROM, run on the interpreter,
-   read back through the core's named [regfile] — no oracle, so the board library stays
-   oracle-free, §3/§6), here closed with the behavioural {!Cellram_model} on the PSRAM
-   pins. They guard the board-specific paths: the Cellram memory round-trip, the shared
-   timer's free-run under wait-states (ce interplay the lib SoC can't see), and the MMIO
-   read/write path through the on-chip fast path. (The full boot through this SoC is the
-   opt-in [@boot_checkpoint_board].) *)
+(* ── Tests ── Small programs in the ROM, as in lib/soc.ml, here with the chip model on
+   the PSRAM pins: the memory round trip, the timer running through memory waits, the
+   interrupt stretch, MMIO through the one-cycle path, and Halftone switched on. *)
 
 module Sb_I = I
 
@@ -320,14 +278,9 @@ let sb_create = create
 
 module For_tests = struct
   module Tb = struct
-    (* the board SoC closed with the behavioural cellular-RAM double on its PSRAM pins —
-       the ONE closure shared by the co-located tests below and the test/board harnesses
-       (board_tb: the board gates + bench_boot). [leds] serves the MMIO test; [sclk]
-       drives the gates' SD bridge; [hsync]/[vsync]/[rgb] keep the whole video pixel path
-       (the Framebuf shadow BRAMs included) live under Cyclesim's dead-code elimination —
-       with them unobserved the fetched-word path drives no output and is pruned, and a
-       [lookup_mem_by_name "fb0".."fb3"] readback finds nothing. Internal state
-       ([regfile]/[cnt1]/[core_ce]/...) is reached by name via [trace_all]. *)
+    (* the board SoC closed with the chip model. [leds] is for the MMIO test, [sclk] for
+       the gates' SD card; [hsync], [vsync] and [rgb] keep the pixel path from being
+       pruned (see soc.mli). *)
     module I = struct
       type 'a t =
         { clock : 'a
@@ -357,17 +310,15 @@ module For_tests = struct
       [@@deriving hardcaml]
     end
 
-    (* [addr_bits] defaults to a tiny 2^12-halfword model: the co-located tests confine
-       CPU stimulus under byte 0x200, and the faithful 1 MB model cost seconds of runtest
-       (the video DMA reads alias in the shrunk model, but nothing observes [viddata]
-       here). The boot gates pass 19 — the full 1 MiB — to load the real disk image.
+    (* A small model by default: the tests here stay under byte 0x200. The boot gates pass
+       19 bits, the whole 1 MiB.
 
-       [datasheet_chip] holds the chip model to the -70 part's datasheet at [c]'s clock:
-       70 ns from address/CE#/byte-enable valid to read data (tAA/tCO/tBA) and a 45 ns
-       write pulse (tWP). The write-side access figure (tAW/tCW/tBW) is held to 62 ns, not
-       the datasheet's 70: the shipped write phase provides 62.5 ns by decision (see
+       [datasheet_chip] holds the model to the -70 part's datasheet at [c]'s clock: 70 ns
+       from address, CE# or byte enable to read data (tAA/tCO/tBA) and a 45 ns write pulse
+       (tWP). The write-side access figure (tAW/tCW/tBW) is held to 62 ns, not the
+       datasheet's 70: the shipped write phase provides 62.5 ns by decision (see
        {!Build_config.shipped}), and this keeps a shorter phase from slipping in
-       unnoticed. A configuration whose phases are too short for its clock then fails. *)
+       unnoticed. *)
     let create
       ~contents
       ?(addr_bits = 12)
@@ -426,12 +377,9 @@ module For_tests = struct
     ;;
   end
 
-  (* drive every line to its idle level ([rst_n] excluded — reset sequencing is the test's
-     own). NB [pclk] low does NOT quiet the video DMA: under Cyclesim's one-domain
-     semantics the pclk-clocked raster advances 1:1 with [clk] whatever this input holds
-     (lib/soc.ml's video test relies on exactly that), so video contends for the PSRAM
-     port in every board sim that does not serve it from the framebuffer shadow
-     ([fb_bram]). *)
+  (* the idle level of every input but [rst_n], which the test sequences. Holding [pclk]
+     low does not stop the video DMA: in a one-domain simulation the raster advances with
+     [clk] whatever this input does. *)
   let drive_idle (inp : _ Tb.I.t) =
     let lo = Bits.gnd
     and hi = Bits.vdd in
@@ -541,13 +489,9 @@ let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still 
                  the core [irq stretch]"
   =
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
-  (* the timer test's freeze-heavy load loop again — most cycles have [ce]=0, so most
-     1-clock [limit] ticks land while the core's ce-gated [irq1]/[int_pnd] flops are
-     frozen. The board-layer IRQ stretch must deliver every tick anyway: each tick makes
-     the (stretched) [irq] wire rise and stay high until a ce=1 cycle samples it, so the
-     core's [irq1] (which follows [irq] on enabled cycles, independent of [int_enb]) rises
-     exactly once per tick. Without the stretch, ticks in frozen cycles vanish and [irq1]
-     rises far fewer times than [cnt1]. *)
+  (* The same loop, in which the core is frozen most of the time, so most ticks arrive in
+     a frozen cycle. Every tick must still be delivered: [irq1], which follows [irq] on
+     enabled cycles whether or not interrupts are enabled, must rise once per tick. *)
   let prog =
     [| 0x41000100 (* MOV R1, #0x100 *)
      ; 0x82100000 (* LD R2, [R1] : PSRAM read (multi-cycle) *)
@@ -586,11 +530,8 @@ let%expect_test "board soc — a ms tick landing in a frozen (ce=0) cycle still 
 ;;
 
 let%expect_test "board soc — ms timer free-runs across a mid-run reset (RESET-FINDINGS)" =
-  (* The timer is the shared {!Peripherals}' now, but the property stays guarded through
-     THIS harness too: RISC5Top's cnt0/cnt1 carry no rst term (l.139-140), EO's
-     abort-recovery relies on [Kernel.Time()] never rewinding across a button reset, and
-     only the board composition has a ce-gated core underneath (a reset term would show as
-     a rewind AND undercount here). *)
+  (* The timer must run through a reset here too (see lib/soc.ml), under a core that is
+     frozen part of the time. *)
   let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
   let nop = 0x40080000 in
   let sim =

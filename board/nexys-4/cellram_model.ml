@@ -1,6 +1,4 @@
-(* Public API and behaviour spec live in [cellram_model.mli]. A two-byte-lane memory (twin
-   of lib/[ram.ml], but 16-bit) modelling the external cellular PSRAM for Cyclesim
-   testbenches. *)
+(* The contract is in [cellram_model.mli]. *)
 
 open! Base
 open Hardcaml
@@ -31,11 +29,8 @@ end
 let poison_lo = 0xAD
 let poison_hi = 0xBA
 
-(* [addr_bits] halfword-address bits are backed (default 19 = the faithful 1 MB window; the
-   real chip is 23 = 16 MiB). Boot / golden sims keep the default — the OS only drives the
-   low 1 MB, so a 1 MB model is exact and cheap; himem tests (DOOM.md §3) raise it to reach
-   [1 MB, 16 MB). Addresses above the backed span alias down (the top [23 - addr_bits] bits
-   are dropped) — harmless, since a smaller model is only used where no such address arises. *)
+(* [addr_bits] halfword-address bits are backed; addresses above that alias down. The boot
+   gates keep the default: the OS drives only the low 1 MiB. *)
 let create
   ?(addr_bits = 19)
   ?(read_access_cycles = 1)

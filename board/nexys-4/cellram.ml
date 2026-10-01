@@ -1,17 +1,14 @@
-(* Public API and behaviour spec live in [cellram.mli].
+(* The contract is in [cellram.mli].
 
-   Implementation note. A small FSM around one PSRAM port. Each transaction reads or
-   writes a 32-bit word as two 16-bit halfword phases (half 0 = low, half 1 = high), each
-   phase holding the async pins for [read_cycles]/[write_cycles] cycles. The CPU is frozen
-   between its access start and completion via [ce] (the core's clock-enable); video reads
-   (priority) interleave on the same port. ROM-fetch / MMIO accesses ([cpu_internal])
-   bypass the PSRAM and complete in one [ce] cycle. See the .mli for the full picture. *)
+   A small state machine around one PSRAM port. A transaction reads or writes a 32-bit
+   word as two 16-bit phases, the low half then the high, each holding the pins for
+   [read_cycles] or [write_cycles] clocks. *)
 
 open! Base
 open Hardcaml
 open Signal
 
-let cnt_width = 4 (* up to 15 cycles per phase — ample *)
+let cnt_width = 4 (* a phase is at most 16 cycles *)
 
 module I = struct
   type 'a t =
@@ -58,10 +55,9 @@ let create
   =
   if wbuf_depth < 1 || wbuf_depth > 4
   then failwith (Printf.sprintf "Cellram: wbuf_depth must be in 1..4, got %d" wbuf_depth);
-  (* the 4-bit phase counter loads [cycles - 1], so a phase is at most 16 cycles; out of
-     range would previously die as an opaque width error nowhere near the knob. A write
-     phase needs at least 2: WE# is low for all but the phase's last cycle, so a 1-cycle
-     phase would never pulse it and every store would be lost in silence. *)
+  (* the 4-bit phase counter loads [cycles - 1], so a phase is at most 16 clocks. A write
+     phase needs at least 2: WE# is low for all but its last clock, so a 1-clock phase
+     would never pulse it, and every store would be lost in silence. *)
   if read_cycles < 1 || read_cycles > 16 || write_cycles < 2 || write_cycles > 16
   then
     failwith
@@ -72,11 +68,7 @@ let create
          write_cycles);
   let spec = Reg_spec.create () ~clock:i.clock in
   let cval n = of_unsigned_int ~width:cnt_width n in
-  (* ── State ── a transaction in progress ([busy]), whether it is a video read ([op_vid])
-     or a CPU write ([op_wr]), the halfword phase ([half]), the per-phase down-counter
-     ([cnt]), the captured low halfword ([lo]), the latched request ([req_*]), the held
-     framebuffer word ([viddata_reg]), and the latched video request ([vid_pending]). No
-     reset: powers up to 0 (= Idle), like the core. *)
+  (* ── State ── No reset: everything powers up as 0, which is idle. *)
   let busy = Always.Variable.reg spec ~width:1 in
   let op_vid = Always.Variable.reg spec ~width:1 in
   let op_wr = Always.Variable.reg spec ~width:1 in
@@ -89,16 +81,12 @@ let create
   let req_wdata = Always.Variable.reg spec ~width:32 in
   let viddata_reg = Always.Variable.reg spec ~width:32 in
   let vid_pending = Always.Variable.reg spec ~width:1 in
-  (* ── Write buffer (Phase-10d, [?write_buffer] × [?wbuf_depth]) ── a [wbuf_depth]-entry
-     FIFO of pending stores [{word, ben, lane, wdata}]. Slot 0 is the drain source (the
-     OLDEST store — total store order preserved); a completing drain shifts the queue down
-     one; [wb_cnt] counts occupied slots {e including} the one mid-drain, so [wb_cnt = 0]
-     means "nothing pending anywhere" (the drain-before-read condition). [op_wb] tags the
-     in-flight op as a background drain. Constructed unconditionally, but every read of
-     their values is behind [if write_buffer] — with the seam off nothing reaches an
-     output, so the registers fall out of the output cone and the default netlist is
-     untouched. Depth 1 reduces cycle-for-cycle to the proven single slot
-     ([~full = empty], no shift, accept and completion can never coincide). *)
+  (* ── Write buffer ── A FIFO of pending stores. Slot 0, the oldest, is the one that
+     drains; a completing drain shifts the queue down. [wb_cnt] counts the occupied slots,
+     the one draining included, so [wb_cnt = 0] means nothing is pending anywhere. [op_wb]
+     marks the operation in flight as a drain. The registers are built unconditionally,
+     but every use of them is behind [if write_buffer], so without the buffer nothing of
+     them reaches an output. *)
   let wb_cnt_w = Int.ceil_log2 (wbuf_depth + 1) in
   let wb_word = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:22) in
   let wb_ben = Array.init wbuf_depth ~f:(fun _ -> Always.Variable.reg spec ~width:1) in
@@ -136,10 +124,8 @@ let create
   let drain_complete = op_done &: op_wb_v in
   (* an on-chip access (ROM/MMIO) needs no PSRAM and finishes the cycle it is requested *)
   let cpu_complete_internal = i.mem_pend &: i.cpu_internal in
-  (* a PSRAM store retires the cycle the buffer captures it (0-stall, like a cache hit) —
-     whenever a slot is free, even mid-video-op or mid-drain (capture needs no port). With
-     the FIFO full a further store waits frozen: the burst cost the stall profile prices
-     per depth. *)
+  (* a store retires on the cycle the buffer takes it, whenever a slot is free, even while
+     the port serves video or a drain; with the FIFO full it waits *)
   let wb_accept =
     if write_buffer
     then (i.mem_pend &: i.wr &: ~:(i.cpu_internal) &: ~:wb_full) -- "wb_accept"
@@ -148,12 +134,10 @@ let create
   (* the CPU advances when it wants no memory (compute stall), or its access just
      completed *)
   let ce = ~:(i.mem_pend) |: cpu_complete_psram |: cpu_complete_internal |: wb_accept in
-  (* arbiter: video wins the port; then a pending drain; then a CPU access that actually
-     needs PSRAM. With the buffer on, a CPU *store* never starts an op here (it goes
-     through [wb_accept]) and a CPU *read* waits for the slot to empty — drain-before-read
-     keeps every PSRAM read seeing fully-drained memory, so no forwarding/address-compare
-     logic is needed (reads that get here are cache misses, ~0.3% of accesses; the wait is
-     noise — measured, not guessed: bench_boot). *)
+  (* Video wins the port, then a pending drain, then a CPU access that needs the PSRAM.
+     With the buffer, a CPU store never starts an operation here (it goes through
+     [wb_accept]), and a CPU read waits for the FIFO to empty, so that every read sees
+     drained memory and no forwarding is needed. *)
   let start_vid = ~:busy_v &: vid_pending_v in
   let start_wb =
     if write_buffer then ~:busy_v &: ~:vid_pending_v &: wb_nonempty else gnd
@@ -165,16 +149,9 @@ let create
     &: ~:(i.cpu_internal)
     &: if write_buffer then ~:(i.wr) &: ~:wb_nonempty else vdd
   in
-  (* Preemptible CPU reads. A framebuffer fetch has a hard ~477 ns raster deadline
-     ([Video]'s [req0]→[xfer]); the worst case is it arriving just after a CPU access
-     grabbed the port and having to wait the whole access out. So if a video request lands
-     while a CPU READ is mid-flight (and not already completing this cycle), abort the
-     read and let video go at once — the core is frozen on [ce] and never saw it retire,
-     so it just re-arbitrates and restarts after. Reads are idempotent, so aborting costs
-     only the few wasted cycles (re-earned before the next group's ~500 ns-away request).
-     WRITES are never preempted — a half-written word would corrupt RAM. This removes the
-     arbiter-wait term from the video deadline; the residual flicker / contention risk
-     lives in the deadline margin itself (see the .mli + board/nexys-4/README.md). *)
+  (* A video request arriving while a CPU read is in flight aborts the read: the fetch has
+     a deadline (see the .mli), and the core, frozen by [ce], never saw the read complete,
+     so the read simply starts again. A write is never preempted. *)
   let cpu_read_inflight = busy_v &: ~:op_vid_v &: ~:op_wr_v in
   let preempt = (cpu_read_inflight &: vid_pending_v &: ~:phase_done) -- "preempt" in
   let half_cnt_init is_wr =
@@ -206,10 +183,8 @@ let create
       ; cnt <-- half_cnt_init i.wr
       ]
   in
-  (* the drain: an ordinary write transaction sourced from FIFO slot 0 (the oldest store)
-     instead of the live CPU pins (which have long since moved on). [op_wb] keeps it out
-     of the CPU's [ce]; [op_wr]=1 keeps it out of video preemption (writes are never
-     preempted). *)
+  (* the drain: an ordinary write whose source is FIFO slot 0 instead of the CPU's pins.
+     [op_wb] keeps it out of the CPU's [ce], and being a write it is not preempted. *)
   let launch_wb =
     Always.
       [ busy <--. 1
@@ -264,13 +239,11 @@ let create
        @
        if write_buffer
        then (
-         (* FIFO maintenance. A completing drain shifts the queue down one; an accepted
-            store lands at the tail — position [wb_cnt], or [wb_cnt - 1] when a drain
-            completes the same cycle (the queue is about to shift under it). Both can fire
-            together (slot freed and refilled in one edge); all right-hand sides read
-            pre-edge values, so the shift copies the OLD tail even as the new store
-            overwrites it. Per slot the accept has priority over the shift (the [if_] arms
-            are exclusive), which is exactly the [pos = wb_cnt - 1] case. *)
+         (* An accepted store lands at the tail: position [wb_cnt], or [wb_cnt - 1] when a
+            drain completes in the same cycle and the queue is about to shift under it.
+            Every right-hand side reads the value before the edge, so the shift copies the
+            old tail even as the new store overwrites it; within a slot the accept wins
+            over the shift. *)
          let pos = mux2 drain_complete (wb_cnt_v -:. 1) wb_cnt_v in
          let slot_stmts k =
            let capture =
@@ -304,9 +277,8 @@ let create
                  -: uresize drain_complete ~width:wb_cnt_w
            ])
        else []));
-  (* ── PSRAM pins ── address [{req_word, half}]; data the current half of the store word;
-     control active during [busy]: CE always, OE on reads, WE pulsed on writes (high at
-     [cnt_zero] so it rises before the address moves), byte enables per word/byte store. *)
+  (* ── PSRAM pins ── WE# is high in the last clock of a write phase, so that it rises
+     before the address moves. *)
   let mem_adr = req_word_v @: half_v in
   (* {22-bit word address, halfword select} = the full 23-bit halfword address = 16 MiB *)
   let mem_dq_o =
@@ -345,14 +317,9 @@ let create
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   controller is exercised against the behavioural chip ({!Cellram_model}) wired to its
-   pins — a closed loop. [Tb] mimics the CPU handshake: present an access (hold
-   [mem_pend] + [adr]/[wr]/…), and the access "retires" on the cycle [ce] rises. We use
-   small wait counts here (the model answers at once; only the FSM control flow is under
-   test). The waveform freezes the two-halfword read/write timing + the [ce] pulse; the
-   qcheck proves 32-bit round-trips (word + byte stores) against a plain-array model;
-   further tests cover the video read and the on-chip fast path. *)
+(* ── Tests ── The controller in a closed loop with the chip model ({!Cellram_model}) on
+   its pins. The bench plays the CPU: it holds a request until [ce] retires it. The phases
+   are short here, the model answering at once. *)
 
 (* aliases so the testbench can still name the controller's own interface after shadowing
    [I] *)
@@ -392,9 +359,8 @@ module Tb = struct
     [@@deriving hardcaml]
   end
 
-  (* [addr_bits] defaults to a tiny 2^12-halfword model: every default-size test below
-     confines its stimulus under byte 0x200, and the faithful 1 MB model cost seconds of
-     runtest across these ~30 sims (the himem tests pass [~addr_bits:22] explicitly) *)
+  (* a small model by default: the tests stay under byte 0x200, and 1 MiB for each of some
+     thirty sims would cost seconds *)
   let create
     ?read_cycles
     ?write_cycles
@@ -461,11 +427,10 @@ end
 let b1 v = Bits.of_unsigned_int ~width:1 (if v then 1 else 0)
 
 (* The bench the tests below start from: one sim, its handles, and the few moves they are
-   built from. Every input starts at zero (Cyclesim's initial value), which is the idle
-   level of every line — a fresh bench has no request pending and no video. [clock_edge]
-   picks the side the outputs are sampled on: the write buffer's accept [ce] is driven
-   straight from the inputs, so the write-buffer tests sample [Before] the edge (the
-   Phase-10d harness lesson). *)
+   built from. Every input starts at zero, which is the idle level of every line.
+   [clock_edge] picks the side the outputs are sampled on: the write buffer's accept [ce]
+   is driven straight from the inputs, so the write-buffer tests must sample [Before] the
+   edge. *)
 module Bench = struct
   module Sim = Cyclesim.With_interface (Tb.I) (Tb.O)
 
@@ -760,11 +725,8 @@ let%expect_test "cellram — a video request preempts an in-flight CPU read" =
     {| video word = 0x11112222   CPU advanced before video done: false   CPU read after = 0xAAAABBBB |}]
 ;;
 
-(* ── P2: the wait-state latency itself ────────────────────────────────────────── The
-   functional round-trips above prove the data is right but never assert *how long* an
-   access takes — yet faithful wait-state insertion is the whole point of the controller
-   (the .mli contract; the board's video-flicker margin rides on it). [measure_latency]
-   counts the clocks from a request to the [ce] that retires it. *)
+(* ── Latency ── The round trips above show that the data is right, not how long an access
+   takes. [measure_latency] counts the clocks from a request to the [ce] that retires it. *)
 
 let measure_latency ?(read_cycles = 2) ?(write_cycles = 2) ~wr () =
   let tb = Bench.create ~read_cycles ~write_cycles () in
@@ -811,8 +773,7 @@ let%expect_test "cellram — wait-state latency scales with read/write cycles, \
 ;;
 
 let%expect_test "cellram — 32-bit round-trip with asymmetric read/write cycles [qcheck]" =
-  (* one sim per config (hoisted out of the property — rebuilding the model per case is
-     the dominant cost), then the same word+byte-store round-trip the symmetric test runs. *)
+  (* one sim per configuration, outside the property *)
   let run_config (rc, wc) =
     roundtrip_qcheck
       ~count:80
@@ -867,12 +828,11 @@ let%expect_test "cellram — what the pin timing provides: read access, write pu
     |}]
 ;;
 
-(* ── P3: documented invariants & the chip-pin contract ──────────────────────────── *)
+(* ── Invariants, and the pins ── *)
 
 let%expect_test "cellram — a video request does NOT preempt an in-flight CPU write" =
-  (* The mirror of the preempt-read test: writes are never preempted (a half-written word
-     would corrupt RAM, .mli / [cpu_read_inflight] excludes [op_wr]). A video request
-     arriving mid-write must wait until the write retires, then go. *)
+  (* The mirror of the test above: a video request arriving during a write waits until the
+     write has retired. *)
   let tb = Bench.create ~read_cycles:4 ~write_cycles:4 () in
   (* seed the video word (byte 0x100 = word 0x40) *)
   Bench.store tb ~adr:0x100 ~wdata:0x1357_9BDF;
@@ -911,13 +871,9 @@ let%expect_test "cellram — a video request does NOT preempt an in-flight CPU w
 let%expect_test "cellram — preempt-guard boundary: a video request near a read's end \
                  does not abort it once it is retiring"
   =
-  (* preempt is gated by [~:(cnt_zero &: half1)]: a video request that only becomes
-     pending once the read has reached its final cycle cannot abort it — the read retires
-     on time; an earlier one preempts (the read aborts and restarts much later). We sweep
-     the clk at which a one-cycle [vidreq] pulse arrives and tabulate when the read still
-     makes its original deadline. The read returns the right data either way — an aborted
-     read just restarts, reads being idempotent — so this is purely about the timing
-     guard. *)
+  (* A sweep of the clock on which a one-cycle [vidreq] arrives. One that becomes pending
+     only on the read's last cycle changes nothing; an earlier one aborts the read, which
+     starts again after the video fetch and returns the right data much later. *)
   let rc = 4
   and wc = 4 in
   let c = measure_latency ~read_cycles:rc ~write_cycles:wc ~wr:false () in
@@ -965,10 +921,9 @@ let%expect_test "cellram — preempt-guard boundary: a video request near a read
 
 let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n, per lane)"
   =
-  (* The byte-lane contract straight at the chip pins (not just transitively through the
-     model round-trip): a byte store to byte address b drives its write strobe in halfword
-     phase b[1] (mem_adr[0]), enabling the LB lane when b[0]=0 and the UB lane when
-     b[0]=1. The other phase enables neither (no spurious write). *)
+  (* At the pins, not through the model: a byte store to byte address b pulses WE# in
+     phase b[1], with the lower-byte enable when b[0] = 0 and the upper when b[0] = 1, and
+     enables neither lane in the other phase. *)
   let tb = Bench.create ~read_cycles:2 ~write_cycles:2 () in
   (* probe one byte store: report which (phase, lane) carries the write strobe *)
   let probe ~adr =
@@ -1007,13 +962,9 @@ let%expect_test "cellram — byte-store lane enables at the chip pins (ub_n/lb_n
     |}]
 ;;
 
-(* ── Write-buffer tests (Phase-10d, [?write_buffer]) ────────────────────────── Same
-   closed loop against {!Cellram_model}. The contract under test: a PSRAM store retires in
-   ONE ce cycle (the accept), the write drains in the background, and every later read
-   still returns the drained data — the qcheck reuses [Bench.store] / [Bench.load], and
-   because it issues loads right after stores it hammers the drain-before-read wait
-   continuously. The waveform freezes the shape: accept-ce with the port idle, the drain
-   transaction behind it, and a read waiting out the slot. *)
+(* ── Write buffer ── A store retires in one [ce] cycle, the write drains in the
+   background, and every later read returns the drained data. The round-trip property
+   loads right after each store, so it leans on the wait before a read all the time. *)
 
 let%expect_test "cellram/wbuf — a store retires in one ce cycle; the write drains behind \
                  it; a read waits for the slot [waveform]"
@@ -1150,11 +1101,8 @@ let%expect_test "cellram/wbuf — a store is accepted 0-stall even while the por
     |}]
 ;;
 
-(* ── Depth-2 FIFO tests ([?wbuf_depth]) ────────────────────────────────────── The
-   depth-1 contract is pinned above (and depth 1 is cycle-identical to the proven
-   Phase-10d slot — the frozen expects there did not move when the slot became a FIFO).
-   Here: a burst of two stores retires back-to-back 0-stall, the third waits; same-address
-   stores land in FIFO order (the younger wins); and the depth-2 qcheck round-trip. *)
+(* ── Depth 2 ── Two stores retire back-to-back and the third waits; two stores to one
+   address land in order. *)
 
 let%expect_test "cellram/wbuf depth-2 — two stores retire back-to-back, the third waits; \
                  same-address order preserved"
@@ -1326,23 +1274,19 @@ let%expect_test "cellram — elaboration guards fail loudly" =
     |}]
 ;;
 
-(* ── 2a: himem addressing ([1 MB, 16 MB) reachable) ─────────────────────────── DOOM.md §3:
-   the core already emits 24-bit byte addresses; 2a widened the controller's word address
-   from 18 bits (1 MB) to 22 bits (16 MiB) so the DOOM blob/zone/WAD in himem are real
-   locations, distinct from their former low-1 MB aliases. Oberon is untouched (still a 1 MB
-   machine); only anything driving a high [adr] sees the difference. *)
+(* ── The whole 16 MiB ── The word address is 22 bits, so memory above 1 MiB is real, and
+   distinct from low memory. Oberon stays within 1 MiB; a program that drives a high
+   address reaches the rest. *)
 
 let%expect_test "cellram/2a — himem [1 MB, 16 MB) is addressable and distinct from low \
                  memory"
   =
-  (* back 4 MiB so a few himem words round-trip (the real chip is 16 MiB); the small
-     default model can't hold them. *)
+  (* 4 MiB of model, so that a few high words can round-trip *)
   let tb = Bench.create ~read_cycles:2 ~write_cycles:2 ~addr_bits:22 () in
   let store adr wdata = Bench.store tb ~adr ~wdata
   and load adr = Bench.load tb ~adr in
-  (* the crux of 2a: under the old 18-bit mask (adr[19:2] drops bit 20+) byte 0x100000 and
-     byte 0 shared one word address, so a himem store clobbered low memory. Widened to
-     adr[23:2] they are distinct. 0x300000 sets word-address bits 20 and 21 together. *)
+  (* with an 18-bit word address, byte 0x100000 and byte 0 would be one word; 0x300000
+     sets word-address bits 20 and 21 together *)
   store 0x000000 0x11111111;
   store 0x100000 0x22222222;
   store 0x300000 0x33333333;
@@ -1358,8 +1302,7 @@ let%expect_test "cellram/2a — himem [1 MB, 16 MB) is addressable and distinct 
 ;;
 
 let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM pins" =
-  (* pins only — the small default model is fine (a high store aliases in it harmlessly);
-     mem_adr carries the true 22-bit word address to the (16 MiB) chip regardless. *)
+  (* only the pins are observed, so the small model will do *)
   let tb = Bench.create ~read_cycles:2 ~write_cycles:2 () in
   (* the phase-0 word address the controller drives for a store to [adr]: capture mem_adr
      while WE is asserted in the low halfword phase (mem_adr[0] = 0), then drop the half. *)
@@ -1378,8 +1321,8 @@ let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM p
     Bench.cycle tb;
     !seen
   in
-  (* addresses exercising each formerly-masked bit up to adr[23]; 0xFFBFFC is the top RAM
-     word just below the ROM region (adr[23:14] = 0x3FF). *)
+  (* one address for each bit up to adr[23]; 0xFFBFFC is the last RAM word below the ROM
+     region *)
   List.iter [ 0x000004; 0x100000; 0x800000; 0xE00000; 0xFFBFFC ] ~f:(fun a ->
     let w = pin_word a in
     Stdlib.Printf.printf
@@ -1401,9 +1344,8 @@ let%expect_test "cellram/2a — the full 22-bit word address reaches the PSRAM p
 let%expect_test "cellram/wbuf 2a — himem round-trip through the shipped write buffer \
                  (depth 2)"
   =
-  (* the board's shipped memory config — write_buffer, depth 2 — over a 4 MiB model, so a
-     himem store captured into the FIFO and drained back exercises the [wb_word] 22-bit
-     widening on the exact path the board runs. *)
+  (* the shipped memory configuration, a write buffer of depth 2, over 4 MiB: a high store
+     is captured by the FIFO and drained back *)
   let tb =
     Bench.create
       ~clock_edge:Before
@@ -1416,9 +1358,7 @@ let%expect_test "cellram/wbuf 2a — himem round-trip through the shipped write 
   in
   let store adr wdata = Bench.store tb ~adr ~wdata
   and load adr = Bench.load tb ~adr in
-  (* a low word and two himem words drain through the FIFO and read back distinct —
-     0x100000 is word 0's alias under the old 18-bit mask, 0x2AAAA8 sets a scattered high
-     bit pattern *)
+  (* a low word and two high words drain through the FIFO and read back distinct *)
   store 0x000000 0x0000000F;
   store 0x100000 0xCAFEBABE;
   store 0x2AAAA8 0x5A5A5A5A;

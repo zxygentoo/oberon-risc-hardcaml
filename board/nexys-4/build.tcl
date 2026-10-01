@@ -39,28 +39,21 @@ report_utilization -file $build/util_synth.rpt
 
 # ── Implementation ──────────────────────────────────────────────────────────────────
 opt_design
-# Explore-class directives (Phase-10d): the default effort left the RamUBn output missing
-# its 6.7 ns PSRAM I/O budget by 0.163 ns — pure placement (3.3 ns of route to the pad,
-# the byte-enable cone itself is unchanged); Explore recovers it (WNS +0.130). If this
-# margin ever flakes again, the structural fix is registering the byte-enable pins (or
-# re-splitting the 6.7/6.6 out/in budget against the measured input-path use), not more
-# placer effort.
-# feat/clock-push: placement Explore -> ExtraTimingOpt for the 64 MHz close — Explore
-# plateaus at WNS -0.071 there (8 recovery passes flat) while ExtraTimingOpt routes to
-# -0.006 and recovers to +0.004. At 60/62.4 either directive closes. If a future design
-# change makes 64 refuse under both, the structural relief is registering the icache
-# fill path (the critical cone), or stepping back a rung (see emit_verilog.ml).
+# The directives. Under default effort the PSRAM I/O budget was once missed by placement
+# alone (a long route to a pad, no change in logic); Explore-class effort recovers that.
+# At 64 MHz, placement under Explore plateaus just short (WNS -0.071) where ExtraTimingOpt
+# closes. If a design change makes 64 MHz refuse under both, the structural relief is a
+# register on the instruction cache's fill path (the critical cone), or a slower clock
+# (build_config.ml) — not more placer effort.
 place_design -directive ExtraTimingOpt
 phys_opt_design -directive AggressiveExplore
 route_design -directive Explore
 
-# Post-route recovery loop (feat/more-cache): the 16 KiB icache (4096-line LUTRAM, 4x the
-# shipped 1024) lengthens the combinational hit path — the 60 MHz critical cone — so the
-# Explore route lands just short (measured -0.017 ns / 2 endpoints, placement noise on the
-# deeper distributed-RAM output mux, not a design gap). Iterated post-route phys_opt closes
-# it (same lever the 75 MHz spike used for its own near-miss). Bounded at 8 passes; a design
-# that still misses after that has a real problem the gate below catches. No-op when routing
-# already met timing.
+# Post-route recovery. The instruction cache's combinational hit path (a 4096-line LUTRAM
+# and its output mux) is the critical cone, and routing can land a few picoseconds short of
+# it on placement noise. Repeated post-route phys_opt closes that. It is bounded at 8
+# passes: a design that still misses has a real problem, which the gate below catches. When
+# routing met timing, the loop does nothing.
 set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
 for {set i 1} {$i <= 8 && $wns < 0} {incr i} {
   phys_opt_design -directive AggressiveExplore

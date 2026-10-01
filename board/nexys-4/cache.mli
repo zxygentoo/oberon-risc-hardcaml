@@ -1,53 +1,38 @@
-(** [Cache] — Phase-10a: a direct-mapped, write-through instruction/read cache in front of
-    {!Cellram} (AGENT.md §5). The Phase-9 benchmark showed the machine is memory-bound —
-    the running OS fetches every instruction from PSRAM — so this cuts fetch/load latency:
-    a hit is served combinationally from on-chip distributed RAM instead of a multi-cycle
-    PSRAM read (measured ~6x on running-OS code, 93% hit-rate;
-    test/board/nexys-4/bench_boot.ml).
+(** A direct-mapped, write-through read cache in front of {!Cellram}. The running OS
+    fetches every instruction from the PSRAM, a multi-cycle read; a hit here is served
+    combinationally from distributed RAM on the FPGA.
 
-    {1 Placement & the 0-stall hit}
+    {1 Placement, and why a hit costs nothing}
 
-    The cache lives in the board layer, never [lib/], so the core stays byte-identical and
-    its Phase-8 equivalence to [RISC5.v] is untouched (§2/§3); the latency it fights is a
-    board phenomenon (the [lib/] sim has single-cycle memory). {!Soc} wires it between the
-    core's memory port and {!Cellram}: on a hit it drops [mem_pend] to Cellram, whose [ce]
-    is [~mem_pend | …], so [ce] rises the same cycle — a {b 0-stall} hit — and the word is
-    muxed from here in place of [Cellram.rdata]. Misses and stores flow through Cellram
-    unchanged. The read is {b asynchronous} (combinational): that is what makes the hit
-    0-stall and what forces the tag/data arrays to synthesise as {b distributed RAM}
-    (LUTRAM — BRAM cannot read combinationally), the same [multiport_memory] async-read
-    idiom as the register file (§8). On the Nexys 4 this closes 60 MHz with the fill path
-    as the critical path.
+    {!Soc} puts the cache between the core's memory port and {!Cellram}. On a hit it
+    withholds [mem_pend] from Cellram, whose [ce] is [~mem_pend | …], so [ce] is high in
+    the same cycle, and the word is taken from here. Misses and stores go through Cellram
+    unchanged. The read is asynchronous, which is what makes the hit free, and what makes
+    the arrays distributed RAM: block RAM cannot be read combinationally.
 
-    {1 Coherence — transparent by construction, no flush instruction}
+    {1 Coherence}
 
-    The real machine has no cache, so Oberon has no cache-flush op — coherence must be
-    automatic. It rests on one invariant: {b a valid line's data always equals PSRAM},
-    because
-    (a) fills copy PSRAM and (b) the cache issues no memory writes of its own —
-        [Cellram]'s write path is unchanged (write-through) — so the only way a line could
-        go stale is a write to its address, which we {e snoop}: a CPU store to a cached
-        line invalidates it. The three cases (§5):
-        - {b CPU→CPU}, incl. the module loader writing code then jumping into it —
-          snoop-invalidate, so the later fetch cannot read stale code (the case that would
-          otherwise trap the OS);
-        - {b CPU→video} (framebuffer) — write-through keeps PSRAM current, so the video
-          DMA (its own Cellram read port, never cached) always sees live pixels;
-        - {b video→CPU} — video only reads; nothing to snoop.
+    The original machine has no cache, so Oberon has no instruction to flush one:
+    coherence has to be automatic. It rests on one invariant, that
+    {b a valid line always equals the PSRAM}. A fill copies the PSRAM, and the cache
+    writes nothing to memory itself, so a line can only go stale through a store to its
+    address — and every store is watched: a store to a cached line drops the line, or
+    refreshes it (see [write_update]). The cases:
+    - CPU after CPU, including the module loader writing code and then jumping into it:
+      the store is seen, so the later fetch cannot read stale code;
+    - video after CPU: stores still go to the PSRAM, which video reads through its own
+      port;
+    - CPU after video: video only reads.
 
-    Because the invariant holds {e continuously}, {b no reset-invalidate is needed}: the
-    distributed RAM powers up [INIT=0] (all lines invalid) at configuration, and across a
-    warm reset the retained lines still equal PSRAM (the CPU is the sole writer, every
-    store is snooped, and external PSRAM persists). Verified on silicon (boots clean) and
-    in sim by the board visual golden — byte-identical desktop with the cache on
-    (test/board/nexys-4/test_visual_golden_board.ml) — and the running-OS lockstep bench.
+    The invariant holds at all times, so no reset is needed: the distributed RAM comes up
+    as zeros, every line invalid, and across a warm reset the lines kept still equal the
+    PSRAM.
 
     {1 Geometry}
 
-    Direct-mapped, one 32-bit word per line, over the full 16 MiB space: [adr[23:2]] is
-    the 22-bit word address, its low [lines_log2] bits the index, the rest the tag. A
-    store and a read never occur in the same core cycle (single-issue), so one write port
-    serves both fill (read-miss retire) and invalidate (snooped store). *)
+    One 32-bit word per line, over the whole 16 MiB: [adr[23:2]] is the word address, its
+    low [lines_log2] bits the index and the rest the tag. The core never stores and reads
+    in one cycle, so one write port serves both the fill and the store. *)
 
 open Hardcaml
 
@@ -79,17 +64,14 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create ?lines_log2 ?write_update i] builds the cache. [lines_log2] (default 10 = 1024
-    lines = 4 KiB of data) is log2 of the number of direct-mapped lines, valid 1..21
-    (checked; 22 would need a degenerate 0-bit tag); the tag is [22 - lines_log2] bits.
+(** [lines_log2] (default 10: 1024 lines, 4 KiB of data) must be in 1..21; the tag is
+    [22 - lines_log2] bits.
 
-    [write_update] (default [false] = the proven Phase-10a snoop-invalidate) switches the
-    store-hit snoop from {e invalidate} to {e update-in-place} for {b word} stores: the
-    line is rewritten with the store data through the same single write port, in the same
-    write-through transaction that lands the word in PSRAM — so the coherence invariant (a
-    valid line equals PSRAM) is untouched. Byte stores still invalidate (merging one lane
-    needs read-modify). Why: the Phase-10b miss autopsy (test/board/nexys-4/bench_boot.ml)
-    measured {b 96.1% of running-OS load misses} to be snoop-invalidate self-inflicted —
-    Oberon's store-then-load stack discipline kills the hot lines — capping load hit-rate
-    at ~59% no matter the capacity; update-in-place lifts it to ~98%. *)
+    [write_update] (default [false]) changes what a {b word} store does to a line it hits:
+    instead of dropping the line it rewrites it with the store data, in the same
+    transaction that puts the word in the PSRAM, so the invariant is untouched. A byte
+    store still drops the line, since merging one byte would need a read. It matters
+    because Oberon stores to a stack slot and loads it straight back: with lines dropped,
+    almost all load misses were on lines a store had just dropped, whatever the size of
+    the cache. *)
 val create : ?lines_log2:int -> ?write_update:bool -> Signal.t I.t -> Signal.t O.t

@@ -1,24 +1,22 @@
-(** [Cellram_model] — a behavioural model of the external cellular PSRAM, for
-    {b simulation only} (it is never instantiated in the board design; the real chip is
-    off-FPGA pins).
+(** A behavioural model of the PSRAM chip, for simulation only: the real chip is outside
+    the FPGA.
 
-    Wired to {!Cellram}'s chip-side pins, it closes the loop in a Cyclesim testbench. Two
-    8-bit lanes share the halfword address (named [cram_lo] / [cram_hi]) so a byte store
-    touches only its lane — the same shape as [Ram] (lib/). Backs [2^addr_bits] halfwords
-    starting zeroed (default 2^19 = the faithful 1 MB window; raise toward the chip's 2^23
-    = 16 MiB for himem tests — DOOM.md §3).
+    Wired to {!Cellram}'s pins it closes the loop in a testbench. Two 8-bit lanes
+    ([cram_lo], [cram_hi]) share the halfword address, so that a byte store touches only
+    its lane. It backs [2^addr_bits] halfwords, initially zero: 2^19 by default, which is
+    Oberon's 1 MiB; the chip has 2^23.
 
     It answers only what a real chip would. A lane of [mem_dq_i] carries the stored byte
     only while the chip is selected for a read ([ce_n] and [oe_n] low, [we_n] high), that
-    lane is enabled, the controller has released the data pins ([mem_dq_t] high), and the
+    lane is enabled, the controller has released the data pins ([mem_dq_t] high) and the
     address has been held for the access time; otherwise it carries a poison byte. A write
     commits only with [ce_n] and [we_n] low for the pulse width and the address held for
     the write access time, and stores poison if the controller is not driving the pins.
 
-    The three timing figures are in clock cycles and default to 1 — an instantly
-    responding chip, for tests of the controller's control flow. A caller that knows the
-    clock period passes the datasheet figures rounded up to cycles (the -70 part: 70 ns
-    address/CE/byte-select access for both reads and writes, 45 ns write pulse). *)
+    The three timing figures are in clocks and default to 1: a chip that answers at once,
+    for tests of the controller's control flow. A caller that knows the clock period
+    passes the datasheet's figures rounded up (the -70 part: 70 ns from address, CE# or
+    byte enable, for reads and for writes, and a 45 ns write pulse). *)
 
 open Hardcaml
 
