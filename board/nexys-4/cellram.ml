@@ -58,14 +58,16 @@ let create
   =
   if wbuf_depth < 1 || wbuf_depth > 4
   then failwith (Printf.sprintf "Cellram: wbuf_depth must be in 1..4, got %d" wbuf_depth);
-  (* the 4-bit phase counter loads [cycles - 1], so a phase is 1..16 cycles; out of range
-     would previously die as an opaque width error nowhere near the knob *)
-  if read_cycles < 1 || read_cycles > 16 || write_cycles < 1 || write_cycles > 16
+  (* the 4-bit phase counter loads [cycles - 1], so a phase is at most 16 cycles; out of
+     range would previously die as an opaque width error nowhere near the knob. A write
+     phase needs at least 2: WE# is low for all but the phase's last cycle, so a 1-cycle
+     phase would never pulse it and every store would be lost in silence. *)
+  if read_cycles < 1 || read_cycles > 16 || write_cycles < 2 || write_cycles > 16
   then
     failwith
       (Printf.sprintf
-         "Cellram: read_cycles/write_cycles must be in 1..16 (the 4-bit phase counter), \
-          got %d/%d"
+         "Cellram: read_cycles must be in 1..16 and write_cycles in 2..16 (the 4-bit \
+          phase counter; WE# is low for all but a write phase's last cycle), got %d/%d"
          read_cycles
          write_cycles);
   let spec = Reg_spec.create () ~clock:i.clock in
@@ -1148,10 +1150,10 @@ let%expect_test "cellram/wbuf — 32-bit round-trip through the write buffer: wo
 
 (* cycles from presenting a store to its retiring ce (inclusive) — the write-buffer
    retire-cost probe, shared by the depth-1 and depth-2 tests *)
-let store_cost sim (inp : _ Tb.I.t) (outp : _ Tb.O.t) ~adr ~wdata =
+let store_cost ?(ben = false) sim (inp : _ Tb.I.t) (outp : _ Tb.O.t) ~adr ~wdata =
   inp.mem_pend := b1 true;
   inp.wr := b1 true;
-  inp.ben := b1 false;
+  inp.ben := b1 ben;
   inp.adr := Bits.of_unsigned_int ~width:24 adr;
   inp.wdata := Bits.of_unsigned_int ~width:32 wdata;
   let k = ref 0
@@ -1321,6 +1323,131 @@ let%expect_test "cellram/wbuf depth-2 — 32-bit round-trip: word + byte stores 
   in
   roundtrip_qcheck ~clock_edge:Before ~name:"cellram-wbuf2-roundtrip" sim;
   [%expect {| |}]
+;;
+
+(* ── Every depth ───────────────────────────────────────────────────────────── Depths 3
+   and 4 elaborate too, so all four are held to one contract: a burst of [depth] stores
+   retires back-to-back and the next one waits; and any run of stores with no load between
+   them — back-to-back or a few idle clocks apart, so that the FIFO fills and wraps and a
+   store can arrive on the very clock a drain completes, as the store-then-load property
+   above never arranges — leaves memory as if the stores had been written in order. *)
+
+let%expect_test "cellram/wbuf — every depth: [depth] stores retire back-to-back, the \
+                 next ones wait, all land"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  for depth = 1 to 4 do
+    let sim =
+      Sim.create
+        (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:depth)
+    in
+    let inp = Cyclesim.inputs sim in
+    let outp = Cyclesim.outputs ~clock_edge:Before sim in
+    inp.cpu_internal := b1 false;
+    inp.vidreq := b1 false;
+    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+    let n = depth + 2 in
+    let adr k = 0x40 + (4 * k)
+    and data k = 0x1111_1111 * (k + 1) in
+    (* an explicit loop: the stores must go out in address order *)
+    let costs = Array.create ~len:n 0 in
+    for k = 0 to n - 1 do
+      costs.(k) <- store_cost sim inp outp ~adr:(adr k) ~wdata:(data k)
+    done;
+    let landed =
+      List.for_all (List.range 0 n) ~f:(fun k ->
+        cpu_access sim inp outp ~internal:false ~adr:(adr k) ~wr:false ~ben:false ~wdata:0
+        = data k)
+    in
+    Stdlib.Printf.printf
+      "depth %d: store costs %s   all %d read back: %b\n"
+      depth
+      (String.concat ~sep:" " (Array.to_list (Array.map costs ~f:Int.to_string)))
+      n
+      landed
+  done;
+  [%expect
+    {|
+    depth 1: store costs 1 6 6   all 3 read back: true
+    depth 2: store costs 1 1 5 5   all 4 read back: true
+    depth 3: store costs 1 1 1 4 5   all 5 read back: true
+    depth 4: store costs 1 1 1 1 3 5   all 6 read back: true
+    |}]
+;;
+
+let%expect_test "cellram/wbuf — every depth: store bursts with random gaps land in order \
+                 [qcheck]"
+  =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let win = 16 in
+  let run_depth depth =
+    let sim =
+      Sim.create
+        (Tb.create ~read_cycles:2 ~write_cycles:2 ~write_buffer:true ~wbuf_depth:depth)
+    in
+    let inp = Cyclesim.inputs sim in
+    let outp = Cyclesim.outputs ~clock_edge:Before sim in
+    inp.cpu_internal := b1 false;
+    inp.vidreq := b1 false;
+    inp.vidadr := Bits.of_unsigned_int ~width:18 0;
+    let burst ops =
+      let model = Array.create ~len:win 0 in
+      for w = 0 to win - 1 do
+        ignore (store_cost sim inp outp ~adr:(w * 4) ~wdata:0 : int)
+      done;
+      List.iter ops ~f:(fun (gap, ben, adr, wdata) ->
+        inp.mem_pend := b1 false;
+        for _ = 1 to gap do
+          Cyclesim.cycle sim
+        done;
+        ignore (store_cost ~ben sim inp outp ~adr ~wdata : int);
+        let w = adr lsr 2
+        and l = adr land 3 in
+        if ben
+        then (
+          let byte = (wdata lsr (8 * l)) land 0xFF in
+          model.(w) <- model.(w) land lnot (0xFF lsl (8 * l)) lor (byte lsl (8 * l)))
+        else model.(w) <- wdata);
+      List.for_all (List.range 0 win) ~f:(fun w ->
+        cpu_access sim inp outp ~internal:false ~adr:(w * 4) ~wr:false ~ben:false ~wdata:0
+        = model.(w))
+    in
+    Risc5.Test_gen.check_exn
+      (QCheck.Test.make
+         ~count:60
+         ~name:(Stdlib.Printf.sprintf "cellram-wbuf%d-burst" depth)
+         QCheck.(
+           list_size
+             (Gen.int_range 1 24)
+             (quad
+                (int_range 0 7)
+                bool
+                (int_range 0 ((win * 4) - 1))
+                (int_bound 0xFFFF_FFFF)))
+         burst)
+  in
+  List.iter [ 1; 2; 3; 4 ] ~f:run_depth;
+  [%expect {| |}]
+;;
+
+let%expect_test "cellram — elaboration guards fail loudly" =
+  let module Sim = Cyclesim.With_interface (Tb.I) (Tb.O) in
+  let try_create f =
+    match Sim.create f with
+    | (_ : Sim.t) -> Stdlib.print_endline "elaborated"
+    | exception Failure msg -> Stdlib.print_endline msg
+  in
+  try_create (Tb.create ~write_cycles:1);
+  try_create (Tb.create ~read_cycles:17);
+  try_create (Tb.create ~write_buffer:true ~wbuf_depth:5);
+  try_create (Tb.create ~read_cycles:1 ~write_cycles:2);
+  [%expect
+    {|
+    Cellram: read_cycles must be in 1..16 and write_cycles in 2..16 (the 4-bit phase counter; WE# is low for all but a write phase's last cycle), got 2/1
+    Cellram: read_cycles must be in 1..16 and write_cycles in 2..16 (the 4-bit phase counter; WE# is low for all but a write phase's last cycle), got 17/2
+    Cellram: wbuf_depth must be in 1..4, got 5
+    elaborated
+    |}]
 ;;
 
 (* ── 2a: himem addressing ([1 MB, 16 MB) reachable) ─────────────────────────── DOOM.md §3:

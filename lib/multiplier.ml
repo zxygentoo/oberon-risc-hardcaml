@@ -95,6 +95,13 @@ let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
    qcheck). [stages = 0] would be the combinational case, but that is {!create_opt}; use
    [stages >= 1] here. *)
 let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
+  (* the run counter below is 4 bits and must reach [stages] *)
+  if stages < 1 || stages > 15
+  then
+    failwith
+      (Printf.sprintf
+         "Multiplier.create_opt_pipelined: stages must be in 1..15, got %d"
+         stages);
   let spec = Reg_spec.create () ~clock:i.clock in
   let x' = mux2 i.u (sresize i.x ~width:33) (uresize i.x ~width:33) in
   let y' = sresize i.y ~width:33 in
@@ -295,4 +302,17 @@ let%expect_test "MUL timing — signed -3*5: stall envelope head/tail + product"
     |}];
   Stdlib.Printf.printf "signed -3 * 5  ->  z = 0x%016Lx  (= %Ld)\n" z z;
   [%expect {| signed -3 * 5  ->  z = 0xfffffffffffffff1  (= -15) |}]
+;;
+
+let%expect_test "MUL create_opt_pipelined — stages outside 1..15 fail at elaboration" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  List.iter [ 0; 16 ] ~f:(fun stages ->
+    match Sim.create (create_opt_pipelined ~stages) with
+    | (_ : Sim.t) -> Stdlib.print_endline "elaborated"
+    | exception Failure msg -> Stdlib.print_endline msg);
+  [%expect
+    {|
+    Multiplier.create_opt_pipelined: stages must be in 1..15, got 0
+    Multiplier.create_opt_pipelined: stages must be in 1..15, got 16
+    |}]
 ;;

@@ -12,21 +12,6 @@
 
 open Hardcaml
 
-(** The MMIO word map (RISC5Top's [iowadr] decode) — one exported name per word; the write
-    strobes, writable registers and read-mux slots inside all share these, and an SoC's
-    extra slots must avoid them. *)
-
-val w_ms_timer : int
-val w_switches_leds : int
-val w_uart_data : int
-val w_uart_status : int
-val w_spi_data : int
-val w_spi_ctrl : int
-val w_mouse_kbd : int
-val w_kbd_data : int
-val w_gpio : int
-val w_gpio_dir : int
-
 module I : sig
   type 'a t =
     { clock : 'a
@@ -82,8 +67,8 @@ end
 
     [?extra_read_slots] maps SoC-specific read words (the board's Halftone status word at
     slot 10) into the otherwise-zero part of the 16-word window; a slot colliding with the
-    faithful map, out of range, or not 32 bits wide fails at elaboration. Write-side
-    extensions need no hook: an SoC derives its own strobe from
+    faithful map or with another extra slot, out of range, or not 32 bits wide fails at
+    elaboration. Write-side extensions need no hook: an SoC derives its own strobe from
     [wr &: ioenb &: (iowadr ==:. word)] beside its extra logic. *)
 val create
   :  ?clocks_per_ms:int

@@ -11,8 +11,10 @@
   (:standard \ emit_verilog))
  (libraries risc5 hardcaml hardcaml_waveterm qcheck-core)
  ; -source-tree-root override: same ppx_expect >= 130.100 path skew as lib/dune.
+ ; build_config.ml's test reads the two hand-written files that restate its clock.
  (inline_tests
-  (flags -source-tree-root .))
+  (flags -source-tree-root .)
+  (deps nexys4_top.v nexys4.xdc))
  (preprocess
   (pps ppx_hardcaml ppx_expect)))
 

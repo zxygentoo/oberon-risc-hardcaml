@@ -67,5 +67,6 @@ val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
     DSP48's MREG/PREG, so no single hop spans the multiply. Multi-cycle again — [stall]
     holds for [stages] cycles via a run-gated counter, the core's normal protocol — but
     still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
-    pipeline (board clock-enable, default [vdd]). *)
+    pipeline (board clock-enable, default [vdd]). [stages] must be in 1..15 (the run
+    counter is 4 bits); anything else fails at elaboration. *)
 val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

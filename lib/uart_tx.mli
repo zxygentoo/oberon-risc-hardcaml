@@ -38,8 +38,8 @@ end
     rates (default {!default_baud_slow}/{!default_baud_fast}); the 60 MHz board passes
 
     [521]/[521] (both settings ~115200; see emit_verilog.ml) so the wire stays at a
-    standard baud. Must match the receiver ({!Uart_rx.create}) and fit the 12-bit [tick]
-    (< 4096; enforced at elaboration). *)
+    standard baud. Must match the receiver ({!Uart_rx.create}) and be in 1..4095 (the
+    12-bit [tick]; enforced at elaboration). *)
 val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t
 
 (** [RS232T.v]'s 25 MHz constants — [1302] (19200 baud) and [217] (115200).

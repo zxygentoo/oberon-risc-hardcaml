@@ -206,6 +206,8 @@ let create
     if List.Assoc.mem base_read_map word ~equal:Int.equal
     then failwith "Peripherals: extra read slot collides with the faithful map";
     if width s <> 32 then failwith "Peripherals: extra read slot must be 32 bits wide");
+  if List.contains_dup extra_read_slots ~compare:(fun (a, _) (b, _) -> Int.compare a b)
+  then failwith "Peripherals: two extra read slots claim the same word";
   let io_read_map = base_read_map @ extra_read_slots in
   let io_data =
     mux
@@ -292,12 +294,18 @@ let%expect_test "peripherals — elaboration guards fail loudly" =
   try_create (create ~clocks_per_ms:100_000);
   try_create (create ~extra_read_slots:[ 5, Signal.zero 32 ]);
   try_create (create ~extra_read_slots:[ 10, Signal.zero 8 ]);
+  try_create (create ~extra_read_slots:[ 10, Signal.zero 32; 10, Signal.zero 32 ]);
+  try_create (create ~baud_slow:0);
+  try_create (create ~baud_fast:4096);
   try_create (create ~extra_read_slots:[ 10, Signal.zero 32 ]);
   [%expect
     {|
     Peripherals: clocks_per_ms must fit the 16-bit cnt0 prescaler (1..65536)
     Peripherals: extra read slot collides with the faithful map
     Peripherals: extra read slot must be 32 bits wide
+    Peripherals: two extra read slots claim the same word
+    Uart_rx: baud_slow must be in 1..4095 clocks (the 12-bit tick), got 0
+    Uart_rx: baud_fast must be in 1..4095 clocks (the 12-bit tick), got 4096
     elaborated
     |}]
 ;;

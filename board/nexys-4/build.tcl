@@ -14,6 +14,19 @@ file mkdir $build
 # it's fresh. (The .bit is regenerable in ~2 min; staleness is the worse failure.)
 file delete -force $build/oberon.bit
 
+# Refuse a stale soc_board.v. It is emitted from the OCaml design, and one older than its
+# sources would be yesterday's machine built under today's name. Regenerating takes a few
+# seconds, so any design source newer than the emitted file stops the build.
+if {![file exists $gen/soc_board.v]} {
+  error "no $gen/soc_board.v - run board/nexys-4/gen_verilog.sh first"
+}
+set emitted [file mtime $gen/soc_board.v]
+foreach src [glob -nocomplain $here/../../lib/*.ml $here/*.ml] {
+  if {[file mtime $src] > $emitted} {
+    error "soc_board.v is older than [file normalize $src] - run board/nexys-4/gen_verilog.sh"
+  }
+}
+
 # ── Read sources ────────────────────────────────────────────────────────────────────
 read_verilog $gen/soc_board.v
 read_verilog $here/nexys4_top.v

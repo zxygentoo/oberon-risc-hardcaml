@@ -73,6 +73,16 @@ let create
      directions); the board passes clock-scaled values so the wire stays at a standard
      rate (feat/fast-clock: 60 MHz ⇒ 521/521, both ~115200), like {!Spi}'s
      [slow_div_log2]. *)
+  List.iter
+    [ "baud_slow", baud_slow; "baud_fast", baud_fast ]
+    ~f:(fun (name, v) ->
+      if v < 1 || v > 4095
+      then
+        failwith
+          (Printf.sprintf
+             "Uart_rx: %s must be in 1..4095 clocks (the 12-bit tick), got %d"
+             name
+             v));
   let limit =
     mux2
       i.fsel

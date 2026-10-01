@@ -126,6 +126,13 @@ let create_opt ?(ce = vdd) (i : _ I.t) : _ O.t =
    unit; operands are held stable across the run, so it stays bit-identical to {!create}/
    {!create_opt} (differential qcheck). *)
 let create_opt_pipelined ?(ce = vdd) ?(stages = 2) (i : _ I.t) : _ O.t =
+  (* the run counter below is 4 bits and must reach [stages] *)
+  if stages < 1 || stages > 15
+  then
+    failwith
+      (Printf.sprintf
+         "Fp_multiplier.create_opt_pipelined: stages must be in 1..15, got %d"
+         stages);
   let spec = Reg_spec.create () ~clock:i.clock in
   let xm = vdd @: select i.x ~high:22 ~low:0 in
   let ym = vdd @: select i.y ~high:22 ~low:0 in
@@ -287,4 +294,17 @@ let%expect_test "FPMultiplier timing — stall envelope (S 0->25) + FML 2.0 * 2.
     |}];
   Stdlib.Printf.printf "FML 2.0 * 2.0  ->  z = 0x%08X\n" z_result;
   [%expect {| FML 2.0 * 2.0  ->  z = 0x40800000 |}]
+;;
+
+let%expect_test "FML create_opt_pipelined — stages outside 1..15 fail at elaboration" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  List.iter [ 0; 16 ] ~f:(fun stages ->
+    match Sim.create (create_opt_pipelined ~stages) with
+    | (_ : Sim.t) -> Stdlib.print_endline "elaborated"
+    | exception Failure msg -> Stdlib.print_endline msg);
+  [%expect
+    {|
+    Fp_multiplier.create_opt_pipelined: stages must be in 1..15, got 0
+    Fp_multiplier.create_opt_pipelined: stages must be in 1..15, got 16
+    |}]
 ;;

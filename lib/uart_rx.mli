@@ -40,5 +40,6 @@ end
     the system clock so the wire stays at a standard baud — the 60 MHz board passes
 
     [521]/[521] (both settings ~115200; see emit_verilog.ml); the default keeps the
-    faithful, Phase-8-proven 25 MHz unit. Must fit the 12-bit [tick] (< 4096). *)
+    faithful, Phase-8-proven 25 MHz unit. Each must be in 1..4095 (the 12-bit [tick]);
+    enforced at elaboration. *)
 val create : ?baud_slow:int -> ?baud_fast:int -> Signal.t I.t -> Signal.t O.t

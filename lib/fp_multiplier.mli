@@ -67,5 +67,6 @@ val create_opt : ?ce:Signal.t -> Signal.t I.t -> Signal.t O.t
     exponent/round [pack] (a private [.ml] helper) land in separate cycles, keeping the
     DSP off the critical path above ~52 MHz. Multi-cycle via a run-gated counter/[stall],
     still bit-identical to {!create}/{!create_opt} (differential qcheck). [?ce] gates the
-    pipeline (default [vdd]). *)
+    pipeline (default [vdd]). [stages] must be in 1..15 (the run counter is 4 bits);
+    anything else fails at elaboration. *)
 val create_opt_pipelined : ?ce:Signal.t -> ?stages:int -> Signal.t I.t -> Signal.t O.t

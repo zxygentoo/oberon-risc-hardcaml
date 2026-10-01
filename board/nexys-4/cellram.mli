@@ -98,12 +98,14 @@ module O : sig
 end
 
 (** [create ?read_cycles ?write_cycles ?write_buffer i] builds the controller. The cycle
-    counts are the cycles each 16-bit phase holds the async pins. The default 2 is the
-    {e sim/test} value (the behavioural model responds at once — only the FSM control flow
-    is under test); the board synthesizes read 6 / write 5 (100 / 83 ns at 60 MHz — the
-    read phase is deliberately one over the 70 ns chip's minimum to give the FPGA I/O
-    round trip a 30 ns budget instead of a knife-edge 13.3; see emit_verilog.ml and the
-    PSRAM I/O budget in nexys4.xdc).
+    counts are the cycles each 16-bit phase holds the async pins: a read phase 1..16, a
+    write phase 2..16 (WE# is low for all but a write phase's last cycle, so a 1-cycle
+    phase would never write), enforced at elaboration. The default 2 is the {e sim/test}
+    value (the behavioural model responds at once — only the FSM control flow is under
+    test); the board synthesizes read 6 / write 5 (100 / 83 ns at 60 MHz — the read phase
+    is deliberately one over the 70 ns chip's minimum to give the FPGA I/O round trip a 30
+    ns budget instead of a knife-edge 13.3; see emit_verilog.ml and the PSRAM I/O budget
+    in nexys4.xdc).
 
     [write_buffer] (Phase-10d, default [false] = the proven synchronous write path) adds a
     {b 1-entry write buffer}: a PSRAM-bound store retires in a {e single} [ce] cycle — the
