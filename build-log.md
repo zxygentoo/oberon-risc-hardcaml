@@ -588,6 +588,9 @@ board layer:
   (`0xFFFFE8`) — vblank *detected as a request gap* (Video gates `req0` with `~vblank`,
   so blanking = no requests; found by the first cross-repo `-hw` sim claiming 0/24576
   words).
+- v1 in simulation, before silicon: 3.38 M cycles per DOOM tick, 17.8 fps, against 7.20 M
+  and 8.3 fps with the software dither; the scanned-out frame bit-identical to the host
+  golden.
 - Compose FSM: **2 px/clock**, 21 clk/word at any scale. (The 4 px/clock first build
   failed timing at WNS −1.382 on the DDA→pixel-BRAM address chain; halved,
   behaviour-identical, the rebuild closes at **+0.003** — the known icache LUTRAM cone,
@@ -666,8 +669,20 @@ The lottery cuts both ways, so the clock got pushed instead. The ladder, all tim
 pixel clocks stay exact), PSRAM I/O groups tightened 12.0 → 11.7 ns (the rc=6 read phase
 leaves 23.75 ns at 64 MHz; measured MemDB-in use ~8–10.3 ns), and placement Explore →
 **ExtraTimingOpt** (Explore plateaus at −0.071 there). Constants retuned in
-`emit_verilog.ml` with per-rung revert recipes: clocks_per_ms 64000, UART 555/555
-(115,107 baud — hosts stay at 115200), SPI-init 250 kHz.
+`build_config.ml`: clocks_per_ms 64000, UART 555/555 (115,108 baud — hosts stay at
+115200), SPI-init 250 kHz.
+
+Stepping back a rung, should a rebuild ever refuse to close (the recipes once kept in
+`emit_verilog.ml`'s header):
+
+| Clock | `clocks_per_ms` | UART divisors | MMCM | `nexys4.xdc` PSRAM groups | Other |
+|---|---|---|---|---|---|
+| 62.4 MHz | 62400 | 541/541 | VCO 780 (`MULT_F` 39.000), `CLKOUT0` 12.500, `CLKOUT1` 12 | 12.0 ns | — |
+| 60 MHz | 60000 | 521/521 | as 62.4, `CLKOUT0` 13.000 | 12.0 ns | — |
+| 50 MHz | 50000 | — | VCO 650 (`DIVCLK` 1, `MULT` 6.5), `CLKOUT1_DIVIDE` 10 | — | read/write cycles 4, `spi_slow_div_log2` 7 |
+
+The baud divisors follow the clock because a mismatch was found the hard way, over the
+real serial link with the agent.
 
 **On silicon (the §5 final gate):** boots SD → desktop; DOOM `timedemo demo1` runs
 **15.0 fps with 5026 gametics exact** — vs 14.1 at 60 MHz, +6.4% against a +6.67% clock
@@ -677,3 +692,34 @@ rc=7 (the read phase would leave 22.3 ns, below any sane I/O split, ~0.5% CPI) *
 ~0.4 ns of fabric — the structural lever for that and beyond is **registering the icache
 fill path** (+1 cycle per miss ≈ ~0.1–0.2% CPI), which halves the critical cone; not
 worth it for +1.6%.
+
+---
+
+## Postscript — release preparation (2026-10)
+
+A review before the first public release went looking for claims the gates did not
+actually check, and for places where the design leaned on something unstated. What it
+changed is in the commit log; what it measured is here.
+
+**The write phase against the datasheet.** A test that measures the controller's pin
+timing against the chip model put address, CE# and byte enables at 4 clocks = **62.5 ns**
+before the end of a write at 64 MHz. The datasheet (Micron MT45W8MW16BGX rev. H, table
+16) asks 70 ns for tAW, tCW and tBW; the 45 ns write pulse and everything on the read
+side are met. `write_cycles` 6 meets all of it and was tried on silicon: both settings
+pass an 11 MiB write/read-back test, and 6 costs **6% in DOOM** (15.1 → 14.2 fps), about
+2% compiling, and 15–18% in a store-saturated loop. 5 stays, as a documented deviation;
+the 60 MHz and 50 MHz builds had been short by the same measure (66.7 and 60 ns). The
+board gates now hold the chip model to 62 ns there, so a shorter phase cannot slip in.
+
+**What the shipped machine measures.** The bench had been measuring the machine of the
+memory arc (4 KiB cache, iterative multipliers, 25 MHz constants). On the configuration
+the bitstream is built from, the running-OS window costs **1.30 clocks per
+instruction** with **1.6% of clocks frozen** on the PSRAM (fetch hit 99.97%, load hit
+99.64%); the PSRAM alone costs 27.8, and the whole stack is 17.7× over the same work.
+The window is the OS coming up and, at the shipped SPI divider, mostly SD-card polling;
+with the gates' fast divider it is 1.38 and 2.9%. `test/bench/README.md` has the table.
+
+**The boot image.** The ROM is the emulators' `risc-boot.inc`, not the `prom.mem` of the
+2018 OberonStation archive: the two agree in their first 338 words and differ in 45
+after (how SP and SB are initialised, and every call displacement behind that).
+

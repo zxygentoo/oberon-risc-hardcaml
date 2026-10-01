@@ -1,22 +1,13 @@
-(* Public API and behaviour spec live in [cpu.mli].
+(* The RISC5 core, a port of RISC5.v. The contract is in [cpu.mli].
 
-   Implementation note. This is the CPU core — the port of Wirth's RISC5.v, the module
-   AGENT.md §2 calls the crown jewel. The whole processor is a handful of registers
-   updated in a single clocked block (the [Always.compile] near the end of [create]),
-   wrapped in a cloud of combinational logic that computes their next values. Per §2 we
-   port the *behaviour*, not the surface syntax: we mirror the sequential skeleton exactly
-   — which signals are registered, the stall and interrupt timing — because that is what
-   the oracle checks and synthesis preserves; the combinational web around it is idiomatic
-   Hardcaml.
+   The processor is thirteen registers updated in one clocked block (the [Always.compile]
+   at the end of [create_with_units]) and the combinational logic that computes their next
+   values. The registers and their stall and interrupt timing mirror the RTL exactly; the
+   combinational part is ordinary Hardcaml. [create_with_units] reads top to bottom as the
+   loop: decode, fetch operands, execute, memory, control, writeback, commit.
 
-   [create] reads top-to-bottom as the loop — decode -> fetch operands -> execute ->
-   memory -> control -> writeback -> commit — with the [decode]/[execute]/[memory] stages
-   factored out above it.
-
-   Verification note: the OCaml oracle is interrupt-free, so the interrupt FSM has no
-   lockstep counterpart — it is checked by a co-located behavioural waveform against the
-   RISC5.v spec and (exhaustively) by the Phase-8 RTL co-sim; the instruction lockstep
-   steers RTI/STI/CLI out (§8). *)
+   The oracle models no interrupts, so the lockstep cannot check the interrupt logic: the
+   waveform test at the end of this file and the formal core proof do. *)
 
 open Hardcaml
 open Signal
@@ -24,33 +15,28 @@ open Signal
 module I = struct
   type 'a t =
     { clock : 'a
-    ; rst_n : 'a [@bits 1] (* reset, active LOW; [_n] suffix: see .mli *)
-    ; irq : 'a [@bits 1] (* interrupt request *)
-    ; stall_x : 'a [@bits 1] (* external video-DMA stall *)
-    ; inbus : 'a [@bits 32] (* data read bus *)
-    ; codebus : 'a [@bits 32] (* instruction fetch bus = Mem[adr] *)
+    ; rst_n : 'a [@bits 1]
+    ; irq : 'a [@bits 1]
+    ; stall_x : 'a [@bits 1]
+    ; inbus : 'a [@bits 32]
+    ; codebus : 'a [@bits 32]
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { adr : 'a [@bits 24] (* byte address: fetch, or load/store data *)
+    { adr : 'a [@bits 24]
     ; rd : 'a [@bits 1]
     ; wr : 'a [@bits 1]
-    ; ben : 'a [@bits 1] (* byte enable *)
-    ; outbus : 'a [@bits 32] (* data write bus — store data *)
+    ; ben : 'a [@bits 1]
+    ; outbus : 'a [@bits 32]
     ; mem_pend : 'a [@bits 1]
-    (* board seam: core needs the bus this cycle (fetch / data) — see [create_with_units] *)
     }
   [@@deriving hardcaml]
 end
 
-(* The decoded instruction: every signal derived purely from the IR word — the mode bits
-   p/q/u/v, the register-op fields, the branch (cc/neg/disp) and load/store (off) fields,
-   and the op-classes (ldr/str/br, the rti/sti_cli interrupt instructions, mul..fdv
-   multi-cycle ops). Bundled so [create]'s datapath isn't fronted by 30 lines of
-   bit-slicing. *)
+(* everything that follows from the IR word alone *)
 type decoded =
   { p : Signal.t
   ; q : Signal.t
@@ -64,18 +50,18 @@ type decoded =
   ; cc : Signal.t
   ; neg : Signal.t
   ; disp : Signal.t
-  ; off : Signal.t (* 20-bit signed load/store offset *)
+  ; off : Signal.t (* the load/store offset, 20 bits signed *)
   ; ldr : Signal.t
   ; str : Signal.t
   ; br : Signal.t
-  ; rti : Signal.t (* BR & ~u & ~v & IR[4] — return from interrupt *)
-  ; sti_cli : Signal.t (* BR & ~u & ~v & IR[5] — writes intEnb := IR[0] *)
-  ; mul : Signal.t
+  ; rti : Signal.t (* return from interrupt *)
+  ; sti_cli : Signal.t (* intEnb := IR[0] *)
+  ; mul : Signal.t (* op 10..15: the multi-cycle operations *)
   ; div : Signal.t
   ; fad : Signal.t
   ; fsb : Signal.t
   ; fml : Signal.t
-  ; fdv : Signal.t (* op = 10..15, the multi-cycle op-classes *)
+  ; fdv : Signal.t
   }
 
 let decode ir : decoded =
@@ -113,14 +99,6 @@ let decode ir : decoded =
   }
 ;;
 
-(* The eight submodule constructors, made injectable so the Phase-8 in-situ core proof
-   (test/formal) can swap the real units for black-box Instantiation stubs and prove
-   the *glue* (decode, the inline ALU, control, flags, the 13 state registers) with the
-   units assumed-equivalent — sound because each is proven separately (§6). These are
-   exactly the modules RISC5.v instantiates (the ALU's [aluRes] is inline there, so it
-   stays inline here too — and gets proven as part of the glue). [create] uses
-   [Units.with_ce] (= [Units.default] at the default [ce = vdd], the real units inlined),
-   so sim / lockstep / boot are byte-for-byte unchanged. *)
 module Units = struct
   type t =
     { left_shifter : Signal.t Left_shifter.I.t -> Signal.t Left_shifter.O.t
@@ -133,11 +111,9 @@ module Units = struct
     ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
     }
 
-  (* Phase 7: [with_ce ce] binds the board clock-enable into the five iterative units, so
-     they freeze with the ce-gated core during a PSRAM wait. The shifters are
-     combinational and the register file's write is ce-gated in the glue, so neither takes
-     [ce]. [default] is the [ce = vdd] case — [~enable:vdd] no-ops, so it is
-     byte-identical to the bare units. *)
+  (* The five iterative units freeze with the core under [ce]. The shifters are
+     combinational and the register file's write is gated in the core, so neither takes
+     it. *)
   let with_ce ce =
     { left_shifter = Left_shifter.create
     ; right_shifter = Right_shifter.create
@@ -153,10 +129,6 @@ module Units = struct
   let default = with_ce vdd
 end
 
-(* [execute]'s results (unique field names — Hardcaml interfaces collide on
-   [res]/[stall]/…, and warning 42 is an error here): the selected datapath result, the
-   ALU's add/sub carry/overflow (for C/OV), the MUL high word and DIV remainder (for H),
-   and the OR of the five iterative units' stalls. *)
 type execute_out =
   { result : Signal.t
   ; alu_c : Signal.t
@@ -166,12 +138,9 @@ type execute_out =
   ; unit_stall : Signal.t
   }
 
-(* Execute: B/C1 fan out to the combinational shifters and the ALU (MOV/logic/ADD-SUB),
-   and B/C1/C0 to the five iterative units (MUL/DIV/FP); [op] selects one result. MUL/DIV
-   take the *inverted* u-bit ([~u]: signed is u=1); the FP units are register-register
-   (operand 2 is C0), and FSB reuses the adder with operand 2's sign bit flipped. Each
-   iterative unit asserts stall until its counter ends. The current flags N/Z/C/OV feed
-   the ALU (the add/sub carry-in and the MOV' flags read). *)
+(* Every unit computes every cycle and [op] selects one result. MUL and DIV take the
+   inverted u bit (their [u] means signed). The FP units' second operand is the register
+   C0, never the immediate, and FSB is FAD with that operand's sign flipped. *)
 let execute ~(units : Units.t) ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~z ~c ~ov
   : execute_out
   =
@@ -225,7 +194,7 @@ let execute ~(units : Units.t) ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~
       ; alu.res (* 7 XOR *)
       ; alu.res (* 8 ADD *)
       ; alu.res (* 9 SUB *)
-      ; sel_bottom mul.z ~width:32 (* 10 MUL — product[31:0] *)
+      ; sel_bottom mul.z ~width:32 (* 10 MUL *)
       ; div.quot (* 11 DIV *)
       ; fpa.z (* 12 FAD *)
       ; fpa.z (* 13 FSB *)
@@ -242,9 +211,6 @@ let execute ~(units : Units.t) ~clock ~(dec : decoded) ~b ~c1 ~c0 ~shamt ~h ~n ~
   }
 ;;
 
-(* [memory]'s results (unique field names, as above): the load data, the data address (for
-   the bus [adr]), the rd/wr/ben strobes, the first load/store stall cycle, and store
-   data. *)
 type memory_out =
   { load_data : Signal.t
   ; data_adr : Signal.t
@@ -255,22 +221,17 @@ type memory_out =
   ; store_data : Signal.t
   }
 
-(* Memory access: the data address B+sign-extend(off), the byte enable, the load byte-lane
-   select (a byte load picks the lane at adr[1:0] and zero-extends; a word load passes
-   inbus through), the store byte replicate, and the rd/wr strobes. [stall_l0] is the
-   first of the two load/store stall cycles. *)
+(* The data address is B plus the sign-extended offset. A byte access selects the lane at
+   adr[1:0]: a load zero-extends it, a store lifts A's low byte into it. A load or store
+   takes two cycles, and [stall_l0] is the first. *)
 let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
-  (* (LDR|STR) & ~stallL1 (RISC5.v:168) — the OR bound first by name: &:/|: are
-     equal-precedence left-assoc, so the bare mix parses right but READS wrong under
-     Verilog/C intuition (ocamlformat strips clarifying parens as redundant) *)
+  (* named before it is and-ed: [&:] and [|:] have equal precedence *)
   let ld_or_st = dec.ldr |: dec.str in
   let stall_l0 = ld_or_st &: ~:stall_l1 in
   let not_stalled = ~:stall_x &: ~:stall_l1 in
   let data_adr = sel_bottom b ~width:24 +: sresize dec.off ~width:24 in
   let ben = ld_or_st &: dec.v &: not_stalled in
   let byte_lane = sel_bottom data_adr ~width:2 in
-  (* byte load: pick the addressed lane (zero-extended below); byte store: lift a's low
-     byte into that lane, zeros elsewhere *)
   let load_byte = mux byte_lane (split_lsb inbus ~part_width:8) in
   let inbus1 = mux2 ben (zero 24 @: load_byte) inbus in
   let a8 = sel_bottom a ~width:8 in
@@ -290,19 +251,14 @@ let memory ~(dec : decoded) ~a ~b ~inbus ~stall_x ~stall_l1 : memory_out =
   }
 ;;
 
-(* the reset vector ([RISC5.v]'s [StartAdr]), a word address. Exported so the SoC's ROM
-   window derives from the same constant (its adr[23:14] tag = [start_adr lsr 12]) instead
-   of a second copy. *)
+(* RISC5.v's StartAdr, a word address *)
 let start_adr = 0x3F_F800
 
 let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* ── State registers ── the loop's carried state: PC, IR, the stallL1 flop, the
-     condition flags N/Z/C/OV, the aux register H (MUL high word / DIV remainder), and the
-     interrupt state. Faithful no-reset registers (no clear port); [rst_n] (active low)
-     reaches the datapath as ordinary logic (the [pcmux] below), as the RTL does it.
-     [pc]/[ir]/[stall]/[regmux], the flags and [h] are named (--) so the waveform and
-     lockstep tests can watch and poke them. *)
+  (* ── State ── Registers without reset, as in the RTL: [rst_n] reaches them as ordinary
+     logic, through [pcmux] and the interrupt next-state. They carry the RTL's names: the
+     tests and the proofs reach them by name. *)
   let pc = Always.Variable.reg spec ~enable:ce ~width:22 in
   let ir = Always.Variable.reg spec ~enable:ce ~width:32 in
   let stall_l1 = Always.Variable.reg spec ~enable:ce ~width:1 in
@@ -311,12 +267,11 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let c = Always.Variable.reg spec ~enable:ce ~width:1 in
   let ov = Always.Variable.reg spec ~enable:ce ~width:1 in
   let h = Always.Variable.reg spec ~enable:ce ~width:32 in
-  (* The interrupt state: the IRQ edge-detect flop, the enable / pending / in-handler
-     flags, and SPC = [{saved flags, saved PC}] (4 + 22 = 26 bits). *)
   let irq1 = Always.Variable.reg spec ~enable:ce ~width:1 in
   let int_enb = Always.Variable.reg spec ~enable:ce ~width:1 in
   let int_pnd = Always.Variable.reg spec ~enable:ce ~width:1 in
   let int_md = Always.Variable.reg spec ~enable:ce ~width:1 in
+  (* {saved flags, saved PC}: 4 + 22 bits *)
   let spc = Always.Variable.reg spec ~enable:ce ~width:26 in
   let pc_v = pc.value -- "pc" in
   let ir_v = ir.value -- "ir" in
@@ -331,15 +286,11 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let int_pnd_v = int_pnd.value -- "int_pnd" in
   let int_md_v = int_md.value -- "int_md" in
   let spc_v = spc.value -- "spc" in
-  (* ── Decode ── slice the IR word into its fields; see [decode] above. *)
   let dec = decode ir_v in
-  (* ── Fetch operands ── the register file's three async reads A/B/C0 (A is the store
-     data); the write port commits [regmux] to R[ira0] at the edge. That
-     read->compute->write is a loop the sequential write breaks, so [din]/[wr] are forward
-     [wire]s, assigned once [regmux]/[regwr] exist below. C1 is operand 2 (the v-extended
-     immediate, or C0). *)
+  (* ── Fetch operands ── The register file reads combinationally and writes at the edge.
+     What it writes is computed from what it reads, so its [din]/[wr] are wires, closed in
+     the writeback below. A is the store data; a branch links through R15. *)
   let ira0 = mux2 dec.br (of_unsigned_int ~width:4 15) dec.ira in
-  (* a branch links PC+1 to R15 *)
   let regmux_w = wire 32 in
   let regwr_w = wire 1 in
   let regs =
@@ -355,10 +306,9 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let a = regs.dout0 in
   let b = regs.dout1 in
   let c0 = regs.dout2 in
+  (* operand 2: the immediate extended with sixteen v bits, or C0 *)
   let c1 = mux2 dec.q (repeat dec.v ~count:16 @: dec.imm) c0 in
   let shamt = sel_bottom c1 ~width:5 in
-  (* ── Execute ── run B/C1/C0 through the shifters, ALU and the five iterative units;
-     [op] picks the result. See [execute] above. *)
   let exe =
     execute
       ~units
@@ -374,13 +324,9 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
       ~c:c_v
       ~ov:ov_v
   in
-  (* ── Memory access ── data address, byte-lane load select, byte store replicate, and
-     the rd/wr/ben strobes. See [memory] above. *)
   let mem = memory ~dec ~a ~b ~inbus:i.inbus ~stall_x:i.stall_x ~stall_l1:stall_l1_v in
-  (* ── Control ── [stall] freezes the loop (load/store + external + the iterative units);
-     [cond]/[pcmux0] are the branch (the §7 cc table, negated by IR[27]; a taken branch
-     targets PC+1+disp or R.c>>2); [int_ack] fires for an enabled, pending interrupt when
-     not already in a handler and not stalling. *)
+  (* ── Control ── An interrupt is acknowledged when it is pending and enabled, outside a
+     handler, on a cycle that is not stalled. *)
   let stall = (mem.stall_l0 |: i.stall_x |: exe.unit_stall) -- "stall" in
   let int_ack = int_pnd_v &: int_enb_v &: ~:int_md_v &: ~:stall in
   let nxpc = pc_v +:. 1 in
@@ -402,11 +348,9 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   let pcmux0 =
     mux2 (dec.br &: cond) (mux2 dec.u (nxpc +: dec.disp) (select c0 ~high:23 ~low:2)) nxpc
   in
-  (* ── Writeback ── [regmux] writes a load's data, a linking branch's return address,
-     else the result; [regwr] is its enable; the flags take their next values (but RTI
-     restores all four from SPC); H takes the MUL high word / DIV remainder. *)
+  (* ── Writeback ── *)
+  (* the return address, in bytes *)
   let link = zero 8 @: nxpc @: zero 2 in
-  (* the return byte address {PC+1, 2'b0} *)
   let regmux =
     mux2 dec.ldr mem.load_data (mux2 (dec.br &: dec.v) link exe.result) -- "regmux"
   in
@@ -417,30 +361,25 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
     |: (dec.br &: cond &: dec.v &: ~:(i.stall_x))
     |: (dec.ldr &: ~:(i.stall_x) &: ~:stall_l1_v)
   in
-  (* fires for a register op (not stalled), a taken linking branch, or a load — and only
-     when [ce] is high, so a memory wait can't let the write commit (the board freeze). *)
+  (* a register operation that is not stalled, a taken linking branch, or a load; gated by
+     [ce] so that nothing commits during a memory wait *)
   assign regwr_w (regwr &: ce);
-  (* N/Z from the written value, C/OV from the ALU — except RTI restores all four from SPC *)
+  (* N and Z follow the written value, C and OV the ALU; RTI restores all four *)
   let nn = mux2 dec.rti (bit spc_v ~pos:25) (mux2 regwr (msb regmux) n_v) in
   let zz = mux2 dec.rti (bit spc_v ~pos:24) (mux2 regwr (regmux ==:. 0) z_v) in
   let cx = mux2 dec.rti (bit spc_v ~pos:23) exe.alu_c in
   let vv = mux2 dec.rti (bit spc_v ~pos:22) exe.alu_ov in
   let h_next = mux2 dec.mul exe.product_hi (mux2 dec.div exe.remainder h_v) in
-  (* ── Interrupt next-state ── on intAck, SPC latches [{flags, return PC}]; intPnd sets
-     on a rising IRQ edge and clears on intAck; intMd marks "in handler" (set on intAck,
-     cleared by RTI); intEnb is reset-cleared and written by STI/CLI (its enable bit is
-     IR[0]). *)
+  (* ── Interrupt state ── A request is pending from a rising edge of [irq] until it is
+     acknowledged; [int_md] marks the handler, from the acknowledge to RTI. *)
   let spc_next = mux2 int_ack (nn @: zz @: cx @: vv @: pcmux0) spc_v in
   let int_pnd_next = i.rst_n &: ~:int_ack &: (~:irq1_v &: i.irq |: int_pnd_v) in
   let int_md_next = i.rst_n &: ~:(dec.rti) &: (int_ack |: int_md_v) in
   let int_enb_next = mux2 ~:(i.rst_n) (zero 1) (mux2 dec.sti_cli (lsb ir_v) int_enb_v) in
-  (* ── Next PC ── priority reset > stall > intAck (the interrupt vector, address 1) > RTI
-     (restore SPC[21:0]) > branch/step; intAck is [~stall]-gated so it never collides with
-     the stall term above it. *)
+  (* ── Next PC ── In priority order: reset, stall, an acknowledged interrupt (the vector
+     is address 1), RTI, then the branch or the next instruction. *)
   let start_pc = of_unsigned_int ~width:22 start_adr in
-  (* the reset vector, StartAdr *)
   let spc_pc = select spc_v ~high:21 ~low:0 in
-  (* the return PC lives in SPC[21:0] *)
   let pcmux =
     mux2
       ~:(i.rst_n)
@@ -450,8 +389,7 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
          pc_v
          (mux2 int_ack (of_unsigned_int ~width:22 1) (mux2 dec.rti spc_pc pcmux0)))
   in
-  (* ── Commit ── the one clocked update: PC/IR/stallL1 + flags + H + the interrupt state,
-     all latched at the edge (and frozen by [stall]). *)
+  (* ── Commit ── *)
   Always.(
     compile
       [ pc <-- pcmux
@@ -468,13 +406,9 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
       ; int_enb <-- int_enb_next
       ; spc <-- spc_next
       ]);
-  (* ── Memory bus out ── [adr] is the data address while stalling for a load/store, else
-     the fetch address. *)
+  (* ── Bus ── the data address in the first load/store cycle, else the fetch address *)
   let adr = mux2 mem.stall_l0 mem.data_adr (pcmux @: zero 2) in
-  (* [mem_pend]: the core drives a real bus access this cycle — a fetch ([~stall]) or a
-     load/store data access ([stall_l0]); low ⟺ a pure compute stall (an iterative unit
-     grinding, needing no memory). The board's PSRAM arbiter reads it to time its accesses
-     and hold [ce] low until the word is ready (the sim SoC ignores it). *)
+  (* a fetch or a data access: every cycle but a pure compute stall *)
   let mem_pend = mem.stall_l0 |: ~:stall in
   { O.adr
   ; rd = mem.read
@@ -485,19 +419,12 @@ let create_with_units ?(ce = vdd) ~(units : Units.t) (i : _ I.t) : _ O.t =
   }
 ;;
 
-(* The synthesizable core: the real units, inlined exactly as before. [?ce] (default
-   [vdd]) is the board clock-enable — driven low it freezes every state register, the
-   register-file write and all five iterative units together for a multi-cycle PSRAM wait,
-   so the slow memory looks single-cycle to the core (AGENT.md §3). [vdd] ⇒ byte-identical
-   to the bare RTL port. *)
 type multipliers =
   | Iterative
   | Dsp of { stages : int }
 
 let create ?(ce = vdd) ?(multipliers = Iterative) i =
-  (* The two multiplies — the integer [Multiplier] (33 cycles) and the FP [Fp_multiplier]
-     mantissa engine (25) — are swapped together through the units seam; everything else,
-     and the default [create], stays the faithful port. *)
+  (* the integer and the FP multiply are swapped together *)
   let units = Units.with_ce ce in
   let units =
     match multipliers with
@@ -516,19 +443,14 @@ let create ?(ce = vdd) ?(multipliers = Iterative) i =
   create_with_units ~ce ~units i
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ── behaviour waveforms; the architectural lockstep
-   against the oracle lives in test/. First the fetch/stall spine: reset loads StartAdr,
-   PC marches through fetched instructions, a load asserts a one-cycle stall (PC/IR
-   freeze, rd pulses, the 2-cycle access), and the external stall_x freezes the core the
-   same way. The internal pc/ir/stall are traced (Cyclesim.Config.trace_all + the (--)
-   names above). *)
+(* ── Tests ── Waveforms of the core's timing. Its results are checked against the oracle
+   by the lockstep in test/. *)
 
-(* shared by the waveform tests below: the input poke and the fail-loud lookup unwrap *)
 let set r v w = r := Bits.of_unsigned_int ~width:w v
 
 let some = function
   | Some x -> x
-  | None -> failwith "lookup"
+  | None -> failwith "cpu test: a traced signal was not found by name"
 ;;
 
 let%expect_test "fetch spine — reset, PC march, load stall, external stall [waveform]" =
@@ -544,13 +466,9 @@ let%expect_test "fetch spine — reset, PC march, load stall, external stall [wa
     set inp.codebus codebus 32;
     Cyclesim.cycle sim
   in
-  (* one reset cycle (rst_n=0), then fetch register ops (p=0, no stall); a LDR
-     (p=1,q=0,u=0 -> 0x8000_0000) shows the 2-cycle access — stall+rd for a cycle while
-     PC/IR freeze — and a stall_x pulse shows the external freeze. The codebus payloads
-     are arbitrary: this waveform watches only the fetch/stall spine, not the datapath
-     result. (In the real machine codebus = Mem[adr], so the frozen adr re-fetches the
-     same word during a stall; here it is free-driven, so the stalled payloads are not
-     latched.) *)
+  (* One reset cycle, register operations, a load (0x8000_0000: [stall] and [rd] for one
+     cycle while PC and IR hold), then a [stall_x] pulse. Only the fetch and stall timing
+     is under test: [codebus] is driven freely here, where in the machine it is Mem[adr]. *)
   step ~rst_n:0 ~stall_x:0 ~codebus:0x0000_0000;
   step ~rst_n:1 ~stall_x:0 ~codebus:0x1111_1111;
   step ~rst_n:1 ~stall_x:0 ~codebus:0x8000_0000;
@@ -600,13 +518,8 @@ let%expect_test "fetch spine — reset, PC march, load stall, external stall [wa
     |}]
 ;;
 
-(* The register-op datapath computes and writes back. Not lockstep (that is the oracle's
-   job, test/), but a visible check that MOV/ADD/SUB flow through the register file,
-   result mux, and flags. A tiny straight-line program, each instruction fed on codebus
-   and executing the next cycle (no stalls), reading back what the prior ones wrote (async
-   read / sync write, no hazard). regmux is the writeback value; the flags
-   are *registered*, so N/Z/C/OV land the cycle after the result they reflect. *)
-
+(* [regmux] is the value written back. The flags are registered, so they show one cycle
+   after the result they describe. *)
 let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.Waveform in
@@ -620,9 +533,8 @@ let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [wa
     set inp.codebus codebus 32;
     Cyclesim.cycle sim
   in
-  (* MOV R1,#5 ; MOV R2,#3 ; ADD R3,R1,R2 (=8) ; SUB R4,R2,R1 (=-2). The SUB's negative
-     result sets N=1, and its borrow sets C=1 (which then holds, since only ADD/SUB touch
-     C/OV); the two trailing NOPs let those registered flags become visible. *)
+  (* MOV R1,#5; MOV R2,#3; ADD R3,R1,R2 (8); SUB R4,R2,R1 (-2: N and the borrow C set);
+     two NOPs so the registered flags show *)
   step ~rst_n:0 ~codebus:0x0000_0000;
   step ~rst_n:1 ~codebus:0x4100_0005;
   step ~rst_n:1 ~codebus:0x4200_0003;
@@ -664,14 +576,10 @@ let%expect_test "register ops — MOV/ADD/SUB compute, write back, set flags [wa
     |}]
 ;;
 
-(* A multi-cycle op (MUL) freezes the whole core. We poke operands + a signed MUL R3,R1,R2
-   (7*6=42) and run it to completion: the multiplier asserts [stall], which holds PC and
-   IR frozen for 33 cycles (the unit's state counter running), then on the cycle [stall]
-   drops the result mux's product[31:0] writes back (regmux) and product[63:32] lands
-   in H. DIV/FP work identically through the same stall path. The product is too wide for
-   a tight window, so we show the head (stall onset, PC/IR frozen) and the tail (stall
-   drops, the writeback). *)
+(* MUL R3,R1,R2 with 7 and 6. The multiplier holds [stall] for 33 cycles with PC and IR
+   frozen; on the cycle it drops, the low word is written back and the high word lands in
 
+   H. The run is too long to print whole, so the head and the tail are shown. *)
 let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write back \
                  [waveform]"
   =
@@ -705,7 +613,7 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
       ; port_name_is ~wave_format:Wave_format.Hex "h"
       ]
   in
-  (* head: IR latched with the MUL, stall asserts, PC frozen at 0x100 *)
+  (* head: the MUL in IR, [stall] up, PC held at 0x100 *)
   Waveform.print ~display_rules:rules ~start_cycle:0 ~wave_width:4 ~display_width:70 waves;
   [%expect
     {|
@@ -726,7 +634,7 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
     │               ││──────────────────────────────┴─────────┴─────────┴│
     └───────────────┘└───────────────────────────────────────────────────┘
     |}];
-  (* tail: stall drops, regmux = product[31:0] = 42 (0x2A), H = product[63:32] = 0, PC++ *)
+  (* tail: [stall] drops, regmux = 42 (0x2A), H = 0, PC advances *)
   Waveform.print
     ~display_rules:rules
     ~start_cycle:31
@@ -754,12 +662,8 @@ let%expect_test "MUL — the core stalls, PC/IR freeze, then product + H write b
     |}]
 ;;
 
-(* A branch changes PC instead of writing a register. We poke a taken relative
-   branch-and-link (BL) and a not-taken conditional, each run two cycles so the PC
-   register shows the post-branch value: the BL's regmux is the return byte-address
-   [{PC+1,2'b0}] (the link, written to R15) and PC jumps to nxpc+disp; the not-taken
-   branch's regmux is the unwritten ALU result and PC simply falls through to nxpc. *)
-
+(* A taken branch-and-link and a conditional branch not taken, two cycles each so that the
+   PC register shows the outcome. *)
 let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through) [waveform]"
   =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -779,8 +683,8 @@ let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through)
     Cyclesim.cycle sim;
     Cyclesim.cycle sim
   in
-  (* BL T relative disp=+3 (cc=7=T, v=1 link): pc 0x100 -> nxpc(0x101)+3 = 0x104, regmux =
-     link = 0x101<<2 = 0x404. Then B EQ disp=8 with Z=0 (not taken): pc -> nxpc 0x101. *)
+  (* BL +3 from 0x100: PC = 0x101 + 3 = 0x104, and regmux is the link, 0x101 << 2 = 0x404.
+     Then BEQ +8 with Z = 0: PC falls through to 0x101. *)
   branch ~z:0 ~instr:0xF700_0003;
   branch ~z:0 ~instr:0xE100_0008;
   Waveform.print
@@ -809,12 +713,8 @@ let%expect_test "branches — taken BL (jump + link) vs not-taken (fall-through)
     |}]
 ;;
 
-(* A load/store is a 2-cycle access: the stallL0 cycle drives the data address B+off and
-   the rd/wr strobe (PC/IR frozen), then a bubble cycle. We poke a word load (R1 <- inbus,
-   the byte-lane select gives the whole word) and a byte store (outbus = R1[7:0]
-   replicated into the addressed lane). regmux is the load writeback; outbus the store
-   data. *)
-
+(* A load and a store, two cycles each: the first drives the data address and the strobe
+   with PC and IR held, the second is a bubble. *)
 let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [waveform]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let module Waveform = Hardcaml_waveterm.Waveform in
@@ -836,8 +736,8 @@ let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [wave
     Cyclesim.cycle sim;
     Cyclesim.cycle sim
   in
-  (* LDR word R1,[R2+0] (R2=0x1000, inbus=0xDEADBEEF); STR byte R1,[R2+2] (R1=0xAB,
-     R2=0x2000 -> outbus = 0xAB in lane 2 = 0x00AB0000) *)
+  (* load word R1,[R2] with R2 = 0x1000; store byte R1,[R2+2] with R1 = 0xAB, R2 = 0x2000:
+     outbus carries 0xAB in lane 2 *)
   access ~r1:0 ~r2:0x1000 ~inbus:0xDEAD_BEEF ~instr:0x8120_0000;
   access ~r1:0xAB ~r2:0x2000 ~inbus:0 ~instr:0xB120_0002;
   Waveform.print
@@ -879,18 +779,12 @@ let%expect_test "load/store — 2-cycle access: data adr, rd/wr, byte lane [wave
     |}]
 ;;
 
-(* The interrupt handshake. The OCaml oracle is instruction-level and models no
-   interrupts, so (unlike every other slice) this is checked against the RISC5.v FSM
-   directly rather than by lockstep. The full cycle: STI enables (intEnb := IR[0]); a
-   one-cycle IRQ pulse latches a pending request on its rising edge (intPnd); with nothing
-   stalling and not already in a handler, intAck fires — PC jumps to the vector (address
-   1), intMd marks "in handler", and SPC saves [{flags, return PC}]; the handler runs;
-   then RTI restores PC from SPC[21:0] and the flags from SPC[25:22] and clears intMd. We
-   start from a legible PC (0x100) with C=1, so the saved SPC = 0x800103 visibly carries
-   the flag (bit 23) alongside the return PC 0x103. All driver instructions are
-   never-taken branches (cc=7 negated): NOP=0xCF000000, STI=0xCF000021 (IR[5], IR[0]=e),
-   RTI=0xCF000010 (IR[4]). *)
-
+(* The interrupt handshake, the one part of the core the oracle cannot check. STI enables;
+   a one-cycle [irq] pulse becomes pending on its rising edge; the acknowledge sends PC to
+   the vector (address 1), sets [int_md] and saves the flags and the return PC in SPC; RTI
+   restores both and clears [int_md]. The run starts at PC 0x100 with C = 1, so the saved
+   SPC, 0x800103, shows the flag (bit 23) beside the return PC. Every instruction driven
+   is a never-taken branch: NOP 0xCF000000, STI 0xCF000021, RTI 0xCF000010. *)
 let%expect_test "interrupts — STI enable, IRQ to intAck (vector 1), RTI restore \
                  [waveform]"
   =
@@ -904,8 +798,6 @@ let%expect_test "interrupts — STI enable, IRQ to intAck (vector 1), RTI restor
   inp.rst_n := Bits.of_unsigned_int ~width:1 1;
   inp.stall_x := Bits.of_unsigned_int ~width:1 0;
   inp.codebus := Bits.of_unsigned_int ~width:32 0;
-  (* the interrupt registers power up to 0 (sim init = post-reset); start from a legible
-     PC and C=1 in place of the reset StartAdr *)
   Cyclesim.Reg.of_int (reg "pc") 0x100;
   Cyclesim.Reg.of_int (reg "c") 1;
   let step ~ir ~irq =

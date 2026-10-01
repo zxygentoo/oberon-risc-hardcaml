@@ -1,38 +1,30 @@
-(** [Cpu] — the RISC5 CPU core ([RISC5.v]): the single-issue, mostly-one-cycle processor
-    at the heart of the machine (AGENT.md §2's "crown jewel").
+(** The RISC5 CPU core, a port of [RISC5.v].
 
-    The whole CPU is a handful of registers — [PC], [IR], the flags [N]/[Z]/[C]/[OV], the
-    aux register [H], the load/store [stallL1], and the interrupt state — updated in a
-    single [always @(posedge clk)] block, wrapped in a cloud of combinational logic that
-    computes their next values. Per AGENT.md §2 we mirror that sequential skeleton exactly
-    (the registers and their stall/interrupt timing are the spec the oracle pins to and
-    synthesis preserves) and are idiomatic Hardcaml in the combinational datapath.
+    The processor is a handful of registers — [PC], [IR], the flags [N]/[Z]/[C]/[OV], the
+    auxiliary register [H], the load/store flop [stallL1] and the interrupt state —
+    updated in one clocked block, and the combinational logic that computes their next
+    values. The registers and their stall and interrupt timing mirror the RTL exactly:
+    that is what the equivalence proof and the cycle-level co-simulation hold the core to.
+    The combinational datapath is free to be idiomatic.
 
-    The datapath is the classic "compute everything, then mux": operands [B]/[C1] fan out
-    to all the arithmetic units ({!Alu}, the shifters, {!Multiplier}/{!Divider}, the FP
-    units) every cycle, and the result mux selects one by the [op] field. A multi-cycle
-    unit holds the core by asserting [stall], which freezes [PC] and [IR] (re-presenting
-    the same instruction) and gates the register write until the final cycle.
-
-    The core is assembled across Phase 4 in vertical slices, each ending at a green
-    instruction-lockstep milestone against [Emu.Risc] (AGENT.md §6): the fetch/decode
-    spine, then register ALU ops, the multi-cycle units, branches, load/store, and
-    interrupts. The ports below are the final SoC-facing interface throughout. *)
+    The datapath computes everything and then selects: the operands fan out to the ALU,
+    the shifters, the multiplier, the divider and the FP units every cycle, and the [op]
+    field picks one result. A multi-cycle unit holds the core by asserting [stall], which
+    freezes [PC] and [IR] and gates the register write until its last cycle. *)
 
 open Hardcaml
 
 module I : sig
   type 'a t =
-    { clock : 'a (** clock; the core's state registers update on each rising edge *)
+    { clock : 'a
     ; rst_n : 'a
-    (** reset ([RISC5.v]'s [rst]), active LOW — pulls [PC] to [StartAdr] while held at 0.
-        The [_n] spelling is also load-bearing: a port named exactly [rst]/[reset]/[clear]
-        is reserved by the simulation's clock/reset domain, which silently mis-traces it
-        in waveforms (the logic is unaffected; the rendered row lies). *)
-    ; irq : 'a (** interrupt request (level; edge-detected internally) *)
-    ; stall_x : 'a (** external stall ([stallX]) — the video controller's DMA hold *)
-    ; inbus : 'a (** data read bus — [Mem]/MMIO read data for loads *)
-    ; codebus : 'a (** instruction fetch bus (= [Mem[adr]]) *)
+    (** reset ([RISC5.v]'s [rst]), active low: holds [PC] at {!start_adr}. It is not
+        called [rst] because the simulator reserves a port named exactly [rst], [reset] or
+        [clear] and renders it wrongly in waveforms. *)
+    ; irq : 'a (** interrupt request, a level; the core detects its rising edge *)
+    ; stall_x : 'a (** external stall ([stallX]): the video controller's DMA hold *)
+    ; inbus : 'a (** read data for loads, from memory or a peripheral *)
+    ; codebus : 'a (** the instruction at [adr] *)
     }
   [@@deriving hardcaml]
 end
@@ -40,62 +32,52 @@ end
 module O : sig
   type 'a t =
     { adr : 'a
-    (** 24-bit byte address: the instruction fetch address, or a load/store data address
-        while [stallL0] *)
-    ; rd : 'a (** read strobe (load cycle) *)
-    ; wr : 'a (** write strobe (store cycle) *)
-    ; ben : 'a (** byte enable — byte vs word access *)
-    ; outbus : 'a (** data write bus — store data *)
+    (** 24-bit byte address: the fetch address, or the data address in the first cycle of
+        a load or store *)
+    ; rd : 'a (** read strobe (a load) *)
+    ; wr : 'a (** write strobe (a store) *)
+    ; ben : 'a (** the access is a byte, not a word *)
+    ; outbus : 'a (** store data *)
     ; mem_pend : 'a
-    (** board seam: high when the core needs the bus this cycle (a fetch, or a load/store
-        data access); low ⟺ a pure compute stall (an iterative unit grinding). The board's
-        PSRAM arbiter reads it to time its accesses and the [ce] freeze; the sim SoC
-        ignores it. *)
+    (** the core needs the bus this cycle, for a fetch or a data access; low only while an
+        iterative unit computes. Not in the RTL: a memory controller that stretches
+        accesses with [?ce] reads it to know when to. *)
     }
   [@@deriving hardcaml]
 end
 
-(** The implementation behind both multiplies — the integer {!Multiplier} and the FP
-    {!Fp_multiplier} mantissa engine. Every choice computes the same results (each DSP
-    variant is checked bit-identical by its differential qcheck); they differ in cycles
-    and in what the synthesizer builds. *)
+(** The units behind MUL and FML — the integer {!Multiplier} and the FP {!Fp_multiplier}.
+    Every choice computes the same results (the DSP variants are checked against the
+    iterative units by differential property tests); they differ in cycles and in what the
+    synthesizer builds. *)
 type multipliers =
   | Iterative
-  (** the shift-add units of [Multiplier.v] / [FPMultiplier.v]: 33 / 25 cycles, proven
+  (** the shift-add units of [Multiplier.v] and [FPMultiplier.v], 33 and 25 cycles, proven
       equivalent to the RTL *)
   | Dsp of { stages : int }
-  (** DSP-block products. [stages = 0] is the combinational [create_opt]; [stages = n > 0]
-      is [create_opt_pipelined], with [n] product registers the synthesizer retimes into
-      the DSP48 so the multiply leaves the critical path (it takes [n] cycles again,
-      through the core's stall path). *)
+  (** DSP-block products. With [stages = 0] they are combinational; with [stages = n > 0]
+      the product passes through [n] registers, which the synthesizer retimes into the
+      DSP48 so that the multiply leaves the critical path, and takes [n] cycles through
+      the core's stall. *)
 
-(** [create] builds the CPU core: the state registers updated in one synchronous block,
-    and the combinational decode / datapath / control logic that feeds them. The real
-    synthesizable core, with the submodules inlined.
+(** [create i] is the synthesizable core.
 
-    [?ce] is the board clock-enable (default [vdd]). Driven low it freezes every state
-    register, the register-file write and all five iterative units together, so a
-    multi-cycle PSRAM access looks single-cycle to the core (the board memory seam;
-    AGENT.md §3). The default leaves the core byte-identical to the bare RTL port — the
-    sim SoC never drives it.
+    [?ce] (default [vdd]) is a clock enable for the whole core: held low it freezes every
+    state register, the register-file write and the five iterative units together, so that
+    a multi-cycle memory access looks like a single cycle to the core. With the default
+    the core is exactly the port of the RTL.
 
-    [?multipliers] (default {!Iterative}) picks the units behind MUL and FML through the
-    {!Units} seam — see {!multipliers}. The default keeps the faithful, proven units;
-    everything else is unchanged either way. *)
+    [?multipliers] defaults to {!Iterative}. *)
 val create : ?ce:Signal.t -> ?multipliers:multipliers -> Signal.t I.t -> Signal.t O.t
 
-(** the reset vector ([RISC5.v]'s [StartAdr]) as a word address — [pc] is pulled here
-    while [rst_n] is low. Exported so the SoC's ROM-window decode
-    ([adr[23:14] == start_adr lsr 12]) derives from the same constant instead of keeping a
-    second copy. *)
+(** the reset vector ([RISC5.v]'s [StartAdr]) as a word address. A SoC derives its ROM
+    window from it ([adr[23:14] = start_adr lsr 12]). *)
 val start_adr : int
 
-(** The eight submodule constructors the core wires up — the modules [RISC5.v]
-    instantiates (the ALU's [aluRes] is inline there, so it is {e not} here and is proven
-    as part of the glue). Made injectable so the Phase-8 in-situ core proof (test/formal)
-    can swap the real units for black-box stubs and prove the glue — decode, the inline
-    ALU, control, flags, the 13 state registers — with the units assumed-equivalent (each
-    proven separately, §6). *)
+(** The eight submodules the core instantiates — the ones [RISC5.v] instantiates; the ALU
+    is inline there, and so is part of the core here. They are injectable so that the
+    formal core proof can replace them with black boxes and prove everything else against
+    [RISC5.v], each unit being proven on its own. *)
 module Units : sig
   type t =
     { left_shifter : Signal.t Left_shifter.I.t -> Signal.t Left_shifter.O.t
@@ -108,14 +90,11 @@ module Units : sig
     ; registers : Signal.t Registers.I.t -> Signal.t Registers.O.t
     }
 
-  (** the real synthesizable units (each module's own [create]), at the default
-      [ce = vdd]. *)
+  (** the real units, with no clock enable *)
   val default : t
 end
 
-(** [create_with_units ?ce ~units] is [create] parameterized over the submodules — for the
-    formal black-box assembly, which passes [Instantiation] stubs (and leaves [?ce] =
-    [vdd]). [?ce] gates the core's own state registers and the register-file write; the
-    iterative [units] passed in are expected to already carry [ce] (the synthesizable
-    {!create} threads it into both). *)
+(** [create_with_units ~units i] is {!create} over the given submodules. [?ce] gates the
+    core's own registers and the register-file write; the iterative units passed in must
+    already carry it. *)
 val create_with_units : ?ce:Signal.t -> units:Units.t -> Signal.t I.t -> Signal.t O.t
