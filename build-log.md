@@ -1,11 +1,15 @@
 # Build log — Oberon RISC5 → Hardcaml
 
-The phase-by-phase build log, moved out of `AGENT.md` (2026-07-22) once the build was
-complete. `AGENT.md` is the working manual; this file is the record — what each phase
+The phase-by-phase build log, moved out of the manual (2026-07-22) once the build was
+complete. `AGENTS.md` holds the working rules; this file is the record — what each phase
 delivered, how it was proven, what was measured, and the design narratives of the three
 optimization arcs (compute, memory, display).
 
-Section references like §2/§6/§8 point into `AGENT.md`. Deeper detail lives next to the
+Section references like §2/§6/§8 point into the manual as it stood while the log was
+written (`AGENTS.md` up to commit 458a8ee). That material now lives in `AGENTS.md` (§2,
+§3 and §9: the rules, the layout, the conventions), `docs/reference.md` (§1, §7, §8: the
+sources, the ISA, the divergences), `docs/verification.md` (§6) and
+`board/nexys-4/README.md` (§4). Deeper detail lives next to the
 code: `board/nexys-4/README.md` (board bring-up log), `test/formal/README.md` (proof
 inventory), `test/bench/README.md` (measurement gauges), `test/cosim/README.md`, and the
 DOOM repo's `ABI.md`/`DOOM.md`.
@@ -722,4 +726,23 @@ with the gates' fast divider it is 1.38 and 2.9%. `test/bench/README.md` has the
 **The boot image.** The ROM is the emulators' `risc-boot.inc`, not the `prom.mem` of the
 2018 OberonStation archive: the two agree in their first 338 words and differ in 45
 after (how SP and SB are initialised, and every call displacement behind that).
+
+**Toolchain notes, moved here from the manual.**
+
+- *The simulator.* The gates run the plain Cyclesim interpreter, about 0.39 M cycles a
+  second on the simulation SoC. The compiled backends were measured and rejected:
+  `hardcaml_c` gave about 3.5× for a compile of several minutes (a 63 MB `eval.c`);
+  `hardcaml_verilator` gave 4–10× (re-measured 2026-06-26, Verilator 5.048) but costs a
+  30 s cold start and loses the lookup of internal signals by name, which every harness
+  here lives on. The boot gates turned out to be bound by waiting on the SD card, not by
+  the interpreter (the fast-boot postscript above).
+- *The proof stack.* `hardcaml_of_verilog` and `hardcaml_verify` install from plain
+  upstream. The preview once needed a forked `jsonaf` pin (its tarball carried
+  `@@ portable` annotations the compiler could not satisfy); that became unnecessary at
+  `130.100+614`, and the pin was dropped in 2026-07 on the roll-forward to
+  `130.106+341`, with all gates re-run.
+- *Waveforms.* Since preview `130.106`, waveform capture is in core Hardcaml
+  (`Cyclesim.Waveform.create`; `Hardcaml_waveterm.For_cyclesim` is gone), and signals
+  render in the order the interface declares them, where they used to be alphabetical:
+  a one-time reflow of every frozen waveform.
 

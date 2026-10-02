@@ -45,10 +45,12 @@ on the board: memory latency is entirely a board-layer concern.
 
 ## Cellram — the PSRAM controller
 
-The Nexys 4's main memory is a Micron cellular PSRAM: a **16-bit-wide asynchronous SRAM**
+The Nexys 4's main memory is a Micron cellular PSRAM (16 MiB): a **16-bit-wide asynchronous SRAM**
 interface, ~70 ns/access, that auto-refreshes itself — so it needs only a simple SRAM-style
-controller, no DDR/MIG. `Cellram` adapts it to the 32-bit word interface the CPU and video DMA
-expect:
+controller, no DDR/MIG. Main memory has to live there: the FPGA's block RAM is about 607 KB,
+less than Oberon's 1 MB map, so block RAM is spent where it pays (the framebuffer shadow,
+Halftone's RAMs). The chip also has a synchronous burst mode (104 MHz), which is not used.
+`Cellram` adapts the chip to the 32-bit word interface the CPU and video DMA expect:
 
 - **Width (16 ↔ 32):** each 32-bit word is two 16-bit halfword phases (low half, high half);
   each phase holds the async pins for `read_cycles` / `write_cycles` clocks (sized for the 70 ns
