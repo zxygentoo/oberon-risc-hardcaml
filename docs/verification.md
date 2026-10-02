@@ -149,6 +149,8 @@ Things to know when running them:
 - **Video's co-simulation** feeds both sides an 18-bit address as the framebuffer word,
   so the upper 14 bits of a fetched word are zero there. The visual goldens are what
   carry real pixels through all 32.
+- **A co-simulation harness compares what its dumper produced.** It prints the number
+  of stimuli, but an empty dump would pass.
 - **The SD card model** reads the SPI master's shift register by name, not the `mosi`
   pin. The pin is checked by SPI's co-simulation and its proof.
 - **The emulator has no interrupts**, so no boot compares interrupt behaviour with it.
