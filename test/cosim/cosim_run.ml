@@ -1,40 +1,22 @@
-(* Parallel RTL-fidelity co-sim runner (replaces the old run.sh + run-core.sh).
+(* The co-simulation runner: each Hardcaml unit against its reference Verilog under
+   Verilator, bit for bit and cycle for cycle. The reference RTL is fetched and the
+   dumpers are built once, then each unit runs in its own forked worker, its output in
+   test/_work/cosim/<unit>/run.log. A PASS/FAIL summary is printed at the end and the exit
+   code is nonzero if any unit failed.
 
-   Asserts each Hardcaml unit is bit- and cycle-exact to its reference Verilog via
-   Verilator, over every unit at once: the shared prep (RTL fetch + dumper/exe builds)
-   runs once up front, then each unit runs in its own forked worker — output captured to
-   test/_work/cosim/<unit>/ run.log — throttled to a bounded pool. A PASS/FAIL summary
-   (with the tail of any failing log) prints at the end; exit is nonzero iff any unit
-   failed.
+   Two shapes of unit:
+   - a stimulus unit (the three FP units, SPI, the two UART directions, the PS/2 keyboard,
+     video, the mouse): a dumper drives the port over a set of stimuli and writes what it
+     saw; a C++ harness replays the stimuli through the reference .v and compares values
+     and timing;
+   - the core: its inputs and outputs are captured over a real Oberon boot (core_dump: the
+     boot ROM, the handoff, then OS initialisation) and replayed through RISC5.v. The
+     trace is captured afresh on every run: it is the port's own recorded behaviour, and a
+     reused one would vouch for a core that has since changed.
 
-   Two unit shapes, one runner:
-   - Stimulus units (FP x3, SPI, RS232 T/R, PS2, VID, mouse): dump the port's outputs over
-     a stimulus set, verilate the reference .v + harness, cross-check (value AND timing).
-     The .cpp self-asserts (exits nonzero on mismatch).
-   - The CPU core: a whole-boot capture-and-replay — capture the core's per-cycle I/O over
-     a real Oberon boot (test/risc_core_dump.exe; ~2 M cycles by default, ~10 s, cached as
-     a ~33 MiB trace) and replay it through RISC5.v + submodules, reporting the first
-     cycle our port diverges (skips the 2-cycle reset transient; see core.cpp).
-
-   OPT-IN — not part of [dune runtest]. Needs [verilator] on PATH. The reference Verilog
-   is fetched + checksum-verified on demand by ../fetch-rtl.sh (toolchain-free). Front
-   door: [dune build @cosim] runs every unit (the 9 + the core) in parallel;
-   [dune exec test/cosim/cosim_run.exe -- <unit>] runs one live (uncaptured) for
-   debugging; a trailing count ([-- all 4]) caps the job pool. *)
-
-(* Resolve and cd to the repo root so every path below is repo-root-relative no matter
-   where we're launched (directly, via dune exec, or as the @cosim dune action). Called
-   once at the top of the only [let ()]. *)
-let cd_to_repo_root () =
-  let rec up d =
-    if Sys.file_exists (Filename.concat d "dune-project")
-    then d
-    else (
-      let p = Filename.dirname d in
-      if String.equal p d then failwith "cosim_run: no dune-project above cwd" else up p)
-  in
-  Sys.chdir (up (Sys.getcwd ()))
-;;
+   Needs [verilator]. [dune build @cosim] runs every unit;
+   [dune exec test/cosim/cosim_run.exe -- <unit>] runs one, with its output on the
+   terminal; a trailing number ([-- all 4]) caps the pool. *)
 
 let rtl_dir = "test/_po/verilog/src"
 let cosim_dir = "test/cosim"
@@ -56,7 +38,6 @@ type kind =
       ; extra_v : string list (* .v in cosim_dir: ram16x1d.v (the inferred primitive) *)
       ; cpp : string
       ; top : string
-      ; skip : int (* leading reset-transient cycles to compared-skip *)
       }
 
 type spec =
@@ -101,7 +82,6 @@ let units =
           ; extra_v = [ "ram16x1d.v" ]
           ; cpp = "core.cpp"
           ; top = "RISC5"
-          ; skip = 2
           }
     }
   ]
@@ -122,9 +102,8 @@ let sh cmd =
 
 let mkdir_p d = ignore (sh (Printf.sprintf "mkdir -p %s" (quote d)) : int)
 
-(* verilate sources -> <objdir>/cosim; self-healing: on failure nuke obj_dir and retry
-   once on a clean tree (recovers a stale/partial obj_dir or a verilator flake). Returns 0
-   on success. *)
+(* verilate into <objdir>/cosim. On a failure the object directory is removed and the
+   build tried once more, which recovers from a stale or partial one. *)
 let verilate ~top ~objdir ~sources ~vlog =
   let cmd =
     Printf.sprintf
@@ -184,22 +163,17 @@ let run_stimulus name ~rtl ~top ~cpp ~dumper ~extra =
       sh (Printf.sprintf "%s %s" (quote (Filename.concat objdir "cosim")) (quote port))))
 ;;
 
-let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
+let run_core name ~rtls ~extra_v ~cpp ~top =
   let work = Filename.concat work_root name in
   mkdir_p work;
   let trace = Filename.concat work "core_boot.trace" in
+  Printf.printf "[1/3] capturing core boot I/O -> %s ...\n%!" trace;
   let cap_ok =
-    if Sys.file_exists trace && (Unix.stat trace).st_size > 0
-    then (
-      Printf.printf "[1/3] reusing cached trace %s (delete it to recapture)\n" trace;
-      true)
-    else (
-      Printf.printf "[1/3] capturing core boot I/O -> %s (~10 s) ...\n" trace;
-      sh
-        (Printf.sprintf
-           "CORE_TRACE=%s _build/default/test/risc_core_dump.exe"
-           (quote trace))
-      = 0)
+    sh
+      (Printf.sprintf
+         "CORE_TRACE=%s _build/default/test/cosim/core_dump.exe"
+         (quote trace))
+    = 0
   in
   if not cap_ok
   then (
@@ -219,46 +193,33 @@ let run_core name ~rtls ~extra_v ~cpp ~top ~skip =
     else (
       ignore (sh (Printf.sprintf "tail -3 %s" (quote vlog)) : int);
       Printf.printf "[3/3] replaying the boot trace through RISC5.v ...\n";
-      sh
-        (Printf.sprintf
-           "%s %s %d"
-           (quote (Filename.concat objdir "cosim"))
-           (quote trace)
-           skip)))
+      sh (Printf.sprintf "%s %s" (quote (Filename.concat objdir "cosim")) (quote trace))))
 ;;
 
 let run_unit spec =
   match spec.kind with
   | Stimulus { rtl; top; cpp; dumper; extra } ->
     run_stimulus spec.name ~rtl ~top ~cpp ~dumper ~extra
-  | Core { rtls; extra_v; cpp; top; skip } ->
-    run_core spec.name ~rtls ~extra_v ~cpp ~top ~skip
+  | Core { rtls; extra_v; cpp; top } -> run_core spec.name ~rtls ~extra_v ~cpp ~top
 ;;
 
-(* The parallel pool + PASS/FAIL summary live in the shared [Fork_pool] (fork_pool.mli),
-   used by both this runner and test/formal. *)
-
-(* build only the dumper/capture exes that are missing — so @cosim (which declares them as
-   deps, pre-building them) never triggers a nested `dune build` inside the dune action. *)
+(* Bring the dumpers up to date. Run by hand, only the runner itself is rebuilt, so a
+   dumper may be older than the design it dumps. Under @cosim the rule lists them as
+   dependencies and sets [COSIM_EXES_PREBUILT]: they are fresh, and a nested [dune build]
+   would wait on the build lock for ever. *)
 let ensure_exes selected =
   let targets =
-    List.filter_map
+    List.map
       (fun spec ->
         match spec.kind with
-        | Stimulus { dumper; _ } ->
-          if Sys.file_exists (Printf.sprintf "_build/default/test/cosim/%s.exe" dumper)
-          then None
-          else Some (Printf.sprintf "test/cosim/%s.exe" dumper)
-        | Core _ ->
-          if Sys.file_exists "_build/default/test/risc_core_dump.exe"
-          then None
-          else Some "test/risc_core_dump.exe")
+        | Stimulus { dumper; _ } -> Printf.sprintf "test/cosim/%s.exe" dumper
+        | Core _ -> "test/cosim/core_dump.exe")
       selected
     |> List.sort_uniq String.compare
   in
-  match targets with
-  | [] -> ()
-  | _ ->
+  match Sys.getenv_opt "COSIM_EXES_PREBUILT" with
+  | Some _ -> ()
+  | None ->
     Printf.printf "[cosim] building: %s\n%!" (String.concat " " targets);
     if sh (Printf.sprintf "dune build %s" (String.concat " " (List.map quote targets)))
        <> 0
@@ -268,7 +229,8 @@ let ensure_exes selected =
 ;;
 
 let () =
-  cd_to_repo_root ();
+  (* repo-root-relative paths throughout, wherever we're launched from *)
+  Fork_pool.cd_to_repo_root ();
   let argv = Sys.argv in
   let sel = if Array.length argv >= 2 then argv.(1) else "all" in
   let selected =

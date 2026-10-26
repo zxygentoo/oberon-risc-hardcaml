@@ -1,4 +1,4 @@
-# In-situ core-glue equivalence (AGENT.md §6, README). Proves our whole core's glue (decode,
+# In-situ core-glue equivalence (see ../README.md). Proves our whole core's glue (decode,
 # the inline ALU, control, flags, the 13 state registers) ≡ RISC5.v with the 8 submodules
 # black-boxed and assumed-equivalent (each proven separately). Driven by Yosys_equiv.run_proof.
 # Placeholders (named WITHOUT braces here — substitution is blind): stubs = core_stubs.v (the
@@ -15,6 +15,10 @@ proc
 {renames}
 opt
 equiv_make {top} {gate} equiv
+# keep: cutpoint removes the black boxes, which are the only readers of the unit-INPUT
+# $equiv cells; unmarked, opt_clean deletes those cells before they are ever proven and
+# the glue-to-unit wiring goes unchecked.
+setattr -set keep 1 t:$equiv
 hierarchy -top equiv
 cutpoint -blackbox
 opt -full

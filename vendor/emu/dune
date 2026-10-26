@@ -1,7 +1,7 @@
-; Re-expose the vendored OCaml emulator's core as a library in OUR project.
-; The submodule's own `risc_core` is private and lives behind its own
-; dune-project boundary, so we compile its lib/ sources here instead. This is
-; reproducible (lives in this repo) and keeps the submodule pristine.
+; Re-expose the vendored OCaml emulator's core (upstream's `oberon-risc` library) as a
+; library in OUR project. The submodule is data here (see ../dune), so we compile its
+; lib/ sources instead. This is reproducible (lives in this repo) and keeps the
+; submodule pristine.
 ;
 ; Warnings are silenced (-w -a): this is third-party code we don't lint.
 ; Only dependency is unix (matching the emulator's own lib/dune).

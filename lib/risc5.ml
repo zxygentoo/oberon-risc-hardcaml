@@ -1,9 +1,11 @@
-(** Oberon RISC5 — Hardcaml design library.
+(** The Oberon RISC5 machine as a Hardcaml library: the modules that consumers outside it
+    reach — the test harnesses and the board layer.
 
-    Curated index of the hardware modules, each a port of the corresponding Oberon Verilog
-    source and verified in lockstep against the [risc_core] oracle. Modules land here one
-    at a time from Phase 1 onward (shifters, ALU + flags, iterative MUL/DIV, the FP units,
-    the register file, the CPU core, the SoC). *)
+    Most of them port one reference Verilog file each, named in the header of the .ml: the
+    shifters, the multiplier and divider, the FP units, the register file, the core, and
+    the peripherals. Two are compositions of this project's own: {!Peripherals}, the MMIO
+    cluster both SoCs share, and {!Soc}, the simulation SoC over flat single-cycle RAM.
+    The inline ALU and the simulation RAM are internal and are not exported. *)
 
 module Left_shifter = Left_shifter
 module Right_shifter = Right_shifter
@@ -21,4 +23,8 @@ module Ps2 = Ps2
 module Video = Video
 module Mouse = Mouse
 module Rom = Rom
+module Peripherals = Peripherals
 module Soc = Soc
+
+(** test scaffolding: the QCheck seed and corner-reaching generators *)
+module Test_gen = Test_gen

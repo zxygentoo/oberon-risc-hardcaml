@@ -1,25 +1,18 @@
-(* Phase 3b — FPAdder value-correctness, over the domain the compiler actually emits (the
-   always-on, Verilator-free behavioural layer; the RTL-fidelity co-sim in test/cosim/ is
-   the separate, opt-in fidelity oracle — AGENT.md §6). Shares the sim-drive/loader with
-   the mul/div replays via [Fp_replay], but keeps its own steering: unlike FML/FDV, the
-   adder has a real emulator-vs-RTL divergence, so it cannot use
-   [Fp_replay.simple_value_test].
+(* The FP adder's values, over the domain the compiler emits.
 
-   The oracle is the frozen fp_vectors.txt (C-generated; Emu.Fp is bit-identical to it).
-   Each [A x y u v result] line is one FAD/FSB/FLT/FLOOR case. We verify over the
-   COMPILER-REACHABLE domain:
-   - FAD/FSB (u=0, v=0): any operands.
-   - FLT (u=1) / FLOOR (v=1): the compiler (ORG.Mod, Float/Floor) fixes the second operand
-     to RH = 0x4B000000 (2^23, the round-to-integer magic constant; exponent 150).
+   The reference is the frozen fp_vectors.txt, generated from the C emulator, which
+   [Emu.Fp] reproduces exactly. Each line [A x y u v result] is one FAD, FSB, FLT or FLOOR
+   case. What the compiler can emit:
+   - FAD and FSB (u = v = 0): any operands;
+   - FLT (u = 1) and FLOOR (v = 1): the second operand is always 0x4B000000 (2^23), the
+     constant that makes the alignment shift round to an integer (ORG.Mod, Float and
+     Floor).
 
-   FPAdder.v and the oracle diverge ONLY outside that domain — FLT/FLOOR paired with any
-   other second operand, plus the impossible u=v=1 op — via the denormalize sign-fill.
-   Those inputs are unreachable, confirmed three ways: ORG.Mod source; a bucketed replay
-   (every reachable bucket 100% pass); and a Verilator co-sim of FPAdder.v (the Hardcaml
-   port is bit-exact to the RTL, agreeing with it AND disagreeing with the oracle on the
-   junk). So we replay the reachable frozen vectors, steer around the unreachable forms,
-   and additionally fuzz the reachable FLT/FLOOR domain against Emu.Fp for depth the
-   ~24-each frozen sample lacks. See the [[fp-flt-floor-magic-operand]] memory. *)
+   FPAdder.v and the emulator differ only outside that domain — FLT or FLOOR with another
+   second operand, and the impossible u = v = 1 — in how the alignment shift fills. The
+   port follows the RTL there (the co-simulation shows it bit-exact), so those vectors are
+   skipped. The reachable ones are replayed, and the reachable FLT and FLOOR domain is
+   fuzzed against [Emu.Fp], the frozen file holding only a couple of dozen of each. *)
 
 open Hardcaml
 module Fp = Risc5.Fp_adder
@@ -102,7 +95,8 @@ let replay_reachable run =
               v
               got
               want)))
-    | _ -> ());
+    | fields -> Fp_replay.malformed ~tag:"A" fields);
+  if !replayed = 0 then failwith "fp-adder: no reachable A-vectors replayed";
   Printf.printf
     "fp-adder frozen: %d/%d reachable A-vectors pass (%d unreachable skipped: FLT/FLOOR \
      y<>magic + u=v=1)\n"
@@ -112,10 +106,9 @@ let replay_reachable run =
   !fails
 ;;
 
-(* fuzz the reachable FLT/FLOOR domain (y=magic) against Emu.Fp — the frozen set samples
-   only ~24 x each, and FLT's real domain is 32-bit integers. The [edges] run
-   deterministically; the random pass is QCheck, each x checked as both FLT and FLOOR.
-   Prints a summary; returns the edge mismatch count (the QCheck pass raises on failure). *)
+(* The reachable FLT and FLOOR domain against [Emu.Fp]: the edge list first, then random
+   integers, each checked as FLT and as FLOOR. Returns the edge mismatches; the random
+   pass raises on a failure. *)
 let fuzz_conversions run =
   let conv_fails = ref 0
   and conv_n = ref 0 in
@@ -135,15 +128,14 @@ let fuzz_conversions run =
       check_conv ~u:1 ~v:0 x;
       check_conv ~u:0 ~v:1 x)
     edges;
-  QCheck.Test.check_exn
+  Risc5.Test_gen.check_exn
     (QCheck.Test.make
        ~count:5000
        ~name:"fp-adder FLT/FLOOR fuzz"
-       (QCheck.set_print (fun x -> Printf.sprintf "x=%08lx" x) QCheck.int32)
-       (fun x32 ->
-         let x = Fp_replay.u32 x32 in
-         run ~u:1 ~v:0 ~x ~y:magic = Emu.Fp.fp_add x magic true false
-         && run ~u:0 ~v:1 ~x ~y:magic = Emu.Fp.fp_add x magic false true));
+       Risc5.Test_gen.word32
+       (fun x ->
+          run ~u:1 ~v:0 ~x ~y:magic = Emu.Fp.fp_add x magic true false
+          && run ~u:0 ~v:1 ~x ~y:magic = Emu.Fp.fp_add x magic false true));
   Printf.printf
     "fp-adder fuzz: %d edge + 5000 QCheck FLT/FLOOR cases vs Emu.Fp, %d edge fail\n"
     !conv_n

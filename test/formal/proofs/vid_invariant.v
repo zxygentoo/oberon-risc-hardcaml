@@ -1,6 +1,6 @@
-// CDC fetch-invariant proof for VID's pulse synchroniser (AGENT.md §6, README Tier 2).
+// CDC fetch-invariant proof for VID's pulse synchroniser (see ../README.md).
 //
-// The equiv proof (check_vid) proves VID's raster + pixel datapath ≡ VID60.v but CUTS the
+// The equiv proof (the vid check) proves VID's raster + pixel datapath ≡ VID60.v but CUTS the
 // fetch CDC (our toggle synchroniser vs the RTL async-set req1 — a deliberate departure, not
 // a cycle-equivalence). This proof closes that gap differently: it proves the synchroniser's
 // *protocol* — every req0 yields exactly one req, no loss, no duplication — for ALL
@@ -9,8 +9,8 @@
 // It wraps the REAL emitted synchroniser (pulse_sync_ours = lib/video.ml's pulse_sync, the DUT)
 // with a req0 generator + a clock-fairness assumption + a balance monitor, and is discharged
 // by yosys-smtbmc (the engine SymbiYosys wraps) over z3: clk2fflogic models the two clocks,
-// BMC explores every fair phase relationship to the configured depth. See
-// Yosys_equiv.check_bmc / run_vid_invariant.
+// and k-induction covers every fair phase relationship — a BMC base case from the initial
+// state plus the induction step. See Yosys_equiv.run_proof (?smtbmc) / run_vid_invariant.
 
 module vid_invariant(input clk, input pclk);
   // req0 generator: a clean 1-pclk pulse every K pclk, like VID's hcnt[4:0]==0. K=8 is a

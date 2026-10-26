@@ -1,12 +1,10 @@
-(* Guard test (AGENT.md §8 pattern, e.g. the oracle's mov_flags_read_0x53): the design's
-   boot ROM — [Risc5.Rom], shipped with the [risc5] library — must equal the oracle's own
-   transcription ([Emu.Boot_rom], from the C [risc-boot.inc]). Both are immutable, so this
-   pins them: hardware-under-test and oracle can never boot different ROM images, which is
-   what makes the boot-checkpoint / visual-golden comparisons meaningful. *)
+(* The design's boot ROM ([Risc5.Rom.bootloader]) must equal the emulator's own copy
+   ([Emu.Boot_rom]): otherwise the design and its oracle would boot different images, and
+   the boot gates would compare nothing. *)
 
 let () =
   let ours = Risc5.Rom.bootloader
-  and oracle = Emu.Boot_rom.bootloader in
+  and oracle = Emu.Boot_rom.bootloader () in
   if Array.length ours <> Array.length oracle
   then (
     Printf.printf

@@ -1,18 +1,12 @@
-(* Public API and behaviour spec live in [divider.mli].
+(* A port of Divider.v; the contract is in [divider.mli].
 
-   Implementation note. Sequential unit → mirror RISC5.v's skeleton exactly (AGENT.md §2);
-   this is the Multiplier's twin — identical 6-bit [S] counter, [stall = run & ~(S==33)],
-   run-gated with no reset, 33 cycles, and a dual-role 64-bit register [RQ]. Original RTL
-   is [test/_po/verilog/src/Divider.v] (28 lines).
-
-   [RQ] holds [remainder | quotient] (high 32 | low 32). Load (S=0) puts [|x|] in the low
-   half and 0 in the high. Each step is one round of *restoring division*: shift [{R,Q}]
-   left one bit (the remainder grabs the quotient's top bit → [RQ[62:31]]), trial-subtract
-   the divisor, and either keep the difference (quotient bit 1) or restore the old
-   remainder (quotient bit 0), with the quotient bit shifting into the LSB. After 32 steps
-   [RQ] = [rem | quot] of [|x|/y]. Negative signed dividends divide [|x|] then
-   sign-correct the outputs to floored division with a non-negative remainder — note
-   [-q-1 = ~q] in two's complement (see the .mli). *)
+   The multiplier's twin: the same counter [S], the same stall, 33 cycles, and a 64-bit
+   register [RQ] holding remainder and quotient. [S] = 0 loads [|x|] into the low half.
+   Each step is one round of restoring division: shift left by one, so that the remainder
+   takes the quotient's top bit; subtract the divisor on trial; then keep the difference
+   and shift in a 1, or keep the old remainder and shift in a 0. A negative signed
+   dividend is divided as [|x|] and the outputs are corrected afterwards; note that
+   [-q - 1 = ~q]. *)
 
 open! Base
 open Hardcaml
@@ -40,22 +34,16 @@ end
 
 let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* Phase 7 (board memory): ce-gates the unit's state so MUL/DIV/FP freeze in lockstep
-     with the ce-gated core through a multi-cycle PSRAM wait. Without it, during the
-     fetch-wait right after the op completes [S] runs past its terminal count, [stall]
-     re-asserts and the divide restarts forever (the first-boot hang, root-caused in sim).
-     [ce = vdd] (the default) ⇒ [~enable:vdd] is a no-op ⇒ byte-identical to the bare
-     port. *)
+  (* The state freezes with the core under [ce]. Without that, [S] runs past 33 during the
+     memory wait that follows the operation, [stall] rises again, and the division
+     restarts for ever. *)
   let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
-  (* S : 6-bit counter; run is enable + synchronous clear (no reset) — twin of Multiplier. *)
-  (* Registers named to match the RTL ([S]/[RQ]) so the Phase-8 formal harness can pair
-     the flip-flops with Divider.v's (yosys [equiv_make] matches FFs by name —
-     test/formal), exactly as the Multiplier names its [S]/[P]. *)
+  (* [run] is the enable and the synchronous clear. The registers carry the RTL's names,
+     [S] and [RQ]: the equivalence proof pairs registers by name. *)
   let s = reg_fb spec ~width:6 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 6)) -- "S" in
   (* a negative signed dividend — divide [|x|], then sign-correct the outputs below *)
   let sign = msb i.x &: i.u in
   let x0 = mux2 sign (negate i.x) i.x in
-  (* RQ : 64-bit [remainder | quotient]; one restoring-division round per step. *)
   let rq =
     reg_fb spec ~width:64 ~f:(fun rq ->
       (* shift [{R,Q}] left one, then trial-subtract the divisor *)
@@ -77,16 +65,10 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall = i.run &: ~:(s ==:. 33); quot; rem }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness oracle is pure OCaml (3a — no fp_vectors, no emulator). [reference] is the
-   floored/unsigned spec (unsigned = x/y, x mod y; signed = truncate toward zero then
-   floor-correct to a non-negative remainder, exactly like the emulator). [run_div] drives
-   one full divide on a shared sim — it ends when stall drops, then run is dropped one
-   cycle to clear S=0. Two correctness tests share them: explicit edge vectors (divider
-   corners random sampling won't reliably hit — INT_MIN, by-1, by-self, x<y, …) and a
-   2000-case qcheck with the divisor restricted to [1, 2^31-1] (the hardware
-   precondition). Behaviour: a head/tail stall-envelope waveform of signed −7/2 = −4 rem
-   1, quot/rem printed. *)
+(* ── Tests ── Against a plain-OCaml reference of floored and unsigned division: the
+   corners a random draw will not reliably hit (the most negative dividend, division by 1
+   and by itself, x < y), a property test with the divisor in 1 .. 2^31 - 1, and a
+   waveform of signed -7 / 2 = -4 remainder 1. *)
 
 let reference ~u ~x ~y =
   let mask32 v = Int.bit_and v 0xFFFF_FFFF in
@@ -101,10 +83,11 @@ let reference ~u ~x ~y =
   else mask32 (x / y), mask32 (x - (x / y * y))
 ;;
 
+let set r v w = r := Bits.of_unsigned_int ~width:w v
+
 let run_div sim ~u ~x ~y =
   let inp = (Cyclesim.inputs sim : _ I.t) in
   let outp = (Cyclesim.outputs sim : _ O.t) in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
   set inp.u u 1;
   set inp.x x 32;
   set inp.y y 32;
@@ -164,11 +147,11 @@ let%expect_test "DIV edge vectors — corners random sampling won't reliably hit
 let%expect_test "DIV = floored/unsigned reference [qcheck, 2000 cases]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
-  QCheck.Test.check_exn
+  Test_gen.check_exn
     (QCheck.Test.make
        ~count:2000
        ~name:"div"
-       QCheck.(triple (int_bound 1) (int_bound 0xFFFF_FFFF) (int_range 1 0x7FFF_FFFF))
+       QCheck.(triple (int_bound 1) Test_gen.word32 Test_gen.divisor)
        (fun (u, x, y) ->
          let qh, rh = run_div sim ~u ~x ~y in
          let qr, rr = reference ~u ~x ~y in
@@ -178,17 +161,14 @@ let%expect_test "DIV = floored/unsigned reference [qcheck, 2000 cases]" =
 
 let%expect_test "DIV timing — signed -7/2 = -4 rem 1: stall envelope + outputs" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
-  let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* one idle cycle so the run/stall edges show, then signed −7 / 2 → quot −4, rem 1
-     (floored, non-negative remainder); run releases the cycle stall clears, as the core
-     sequences it. quot/rem are 32-bit so they render fully; the .mli covers the
-     sign-correction math. *)
+  (* one idle cycle, then signed -7 / 2; [run] is released on the cycle [stall] clears, as
+     the core does *)
   set inp.u 1 1;
   set inp.x 0xFFFF_FFF9 32;
   set inp.y 0x0000_0002 32;

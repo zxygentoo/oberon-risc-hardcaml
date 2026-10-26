@@ -1,27 +1,19 @@
-(* Public API and behaviour spec live in [uart_rx.mli].
+(* A port of RS232R.v; the contract is in [uart_rx.mli].
 
-   Port of [RS232R.v]. The receiver's job, and its three ideas beyond the transmitter:
+   Three things beyond the transmitter:
+   - A synchroniser. [rxd] is asynchronous, so two flip-flops [Q0]/[Q1] sample it before
+     any logic sees it; [Q1 & ~Q0] is a one-cycle pulse on its falling edge, the start
+     bit, and sets [run].
+   - Sampling at mid-bit. The divider [tick] counts a bit window and the line is sampled
+     at its centre ([midtick], half the limit), so that drift between the two clocks
+     cannot pick up the neighbouring bit. Each sample enters [shreg] at the top.
+   - Nine windows. [bitcnt] counts the start bit and eight data bits. The start bit enters
+     [shreg] first and is pushed off the end of the 8-bit register by the data, leaving
+     the byte.
 
-   - SYNCHRONIZER + edge detect. [rxd] is asynchronous to our clock, so a 2-FF chain
-     [Q0]/[Q1] samples it before any logic looks at it (metastability hygiene); [Q1 & ~Q0]
-     is a one-cycle pulse on [rxd]'s falling edge — the UART start bit — which arms the
-     receiver ([run]).
-   - SAMPLE AT MID-BIT. Once running, the baud divider [tick] counts a bit-window; the
-     line is sampled not at the edge but at the window CENTRE ([midtick],
-     [tick = limit/2]), the point furthest from both bit boundaries, so clock-vs-baud
-     drift can't catch the wrong bit. Each sample shifts [Q1] into [shreg] from the top.
-   - NINE windows, start bit discarded. [bitcnt] counts to 8 ([endbit]): the start bit
-     (window 0) plus 8 data bits (windows 1..8). The start bit enters [shreg] first and is
-     pushed off the 8-bit register by the 8 data samples, so [shreg] ends holding the byte
-     LSbit-first ([data = shreg]).
-
-   [run]/[stat] frame the receive: the start edge sets [run]; [endtick & endbit] clears it
-   and sets [stat] ([rdy]); [done_] (or reset) clears [stat]. [fsel] picks the [limit]
-   (clk/1302 = 19200 or clk/217 = 115200 at 25 MHz); [midtick] is [limit/2].
-
-   [rst] is active-low and synchronous; per the RTL only [run] and [stat] carry a reset
-   term (the datapath regs follow from [run]=0), so a plain clock-only [Reg_spec] like
-   [Spi] / [Uart_tx]. *)
+   The start edge sets [run]; the end of the ninth window clears it and sets [stat], which
+   is [rdy]; [done_] or reset clears [stat]. Only [run] and [stat] have a reset term, as
+   in the RTL. *)
 
 open! Base
 open Hardcaml
@@ -46,7 +38,12 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
+let create
+  ?(baud_slow = Uart_tx.default_baud_slow)
+  ?(baud_fast = Uart_tx.default_baud_fast)
+  (i : _ I.t)
+  : _ O.t
+  =
   let spec = Reg_spec.create () ~clock:i.clock in
   let reset = ~:(i.rst_n) in
   let q0 = Always.Variable.reg spec ~width:1 in
@@ -63,12 +60,16 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   let tick_v = tick.value -- "tick" in
   let bitcnt_v = bitcnt.value -- "bitcnt" in
   let shreg_v = shreg.value -- "shreg" in
-  (* baud divider thresholds; [midtick] (window centre) = limit/2 =
-     {1 'b0, limit[11:1]}
-     . [baud_fast]/[baud_slow] default to RS232R.v's 25 MHz constants (115200 = clk/217,
-     19200 = clk/1302); the board passes clock-scaled values so the wire stays at a
-     standard rate (feat/fast-clock: 60 MHz ⇒ 521/521, both ~115200), like {!Spi}'s
-     [slow_div_log2]. *)
+  List.iter
+    [ "baud_slow", baud_slow; "baud_fast", baud_fast ]
+    ~f:(fun (name, v) ->
+      if v < 1 || v > 4095
+      then
+        failwith
+          (Printf.sprintf
+             "Uart_rx: %s must be in 1..4095 clocks (the 12-bit tick), got %d"
+             name
+             v));
   let limit =
     mux2
       i.fsel
@@ -76,12 +77,10 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
       (of_unsigned_int ~width:12 baud_slow)
   in
   let endtick = (tick_v ==: limit) -- "endtick" in
-  let midtick =
-    (tick_v ==: concat_msb [ gnd; select limit ~high:11 ~low:1 ]) -- "midtick"
-  in
+  let midtick = (tick_v ==: srl limit ~by:1) -- "midtick" in
   let endbit = bitcnt_v ==:. 8 in
-  (* end of the 9th window (start + 8 data) = the frame is complete; bound by name so the
-     mixed &:/|: uses below stay unambiguous (equal precedence, left-assoc) *)
+  (* the end of the ninth window; named so that the mixed [&:] and [|:] below are
+     unambiguous (they have equal precedence) *)
   let frame_done = endtick &: endbit in
   let start_edge = (q1_v &: ~:q0_v) -- "start_edge" in
   Always.(
@@ -102,16 +101,13 @@ let create ?(baud_slow = 1302) ?(baud_fast = 217) (i : _ I.t) : _ O.t =
   { O.rdy = stat_v; data = shreg_v }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   receiver is input-driven, so the testbench plays the sender: drive a UART frame on
-   [rxd] at the baud timing and check the recovered [data] + the [rdy]/[done_] handshake.
-   As with [Uart_tx] a whole frame is too long for a frozen waveform (clk/217 per bit), so
-   the living doc is a functional decode + qcheck round-trip, plus a tight waveform of the
-   distinctive front end (synchronizer + start-edge → [run]). The exhaustive bit-for-bit
-   fidelity check vs [RS232R.v] is the Verilator co-sim (layer 3). *)
+(* ── Tests ── The testbench plays the sender: it drives a frame on [rxd] at the bit rate
+   and checks the recovered byte and the [rdy]/[done_] handshake, for chosen bytes and in
+   a round-trip test. One waveform shows the front end: the synchroniser, the start edge,
+   [run]. Fidelity to RS232R.v is the co-simulation's and the proof's job. *)
 
-let lo = Bits.of_unsigned_int ~width:1 0
-let hi = Bits.of_unsigned_int ~width:1 1
+let lo = Bits.gnd
+let hi = Bits.vdd
 let bit b = if b then hi else lo
 
 let reset_idle sim (inp : _ I.t) =
@@ -187,21 +183,18 @@ let%expect_test "rs232r — both baud rates recover the byte" =
   [%expect {| fast=0xC3  slow=0x3C |}]
 ;;
 
-let%expect_test "rs232r — random byte round-trips [qcheck]" =
+let%expect_test "rs232r — every byte round-trips" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   reset_idle sim inp;
-  QCheck.Test.check_exn
-    (QCheck.Test.make
-       ~count:64
-       ~name:"rs232r-roundtrip"
-       (QCheck.int_bound 0xFF)
-       (fun data ->
-          let rdy, got = recv_frame sim inp outp ~fast:true ~data in
-          ack sim inp;
-          rdy = 1 && got = data));
+  for data = 0 to 255 do
+    let rdy, got = recv_frame sim inp outp ~fast:true ~data in
+    ack sim inp;
+    if not (rdy = 1 && got = data)
+    then Stdlib.Printf.printf "sent 0x%02X: rdy=%d data=0x%02X\n" data rdy got
+  done;
   [%expect {| |}]
 ;;
 
@@ -210,10 +203,10 @@ let%expect_test "rs232r — random byte round-trips [qcheck]" =
    frame. (The mid-bit sample is ~limit/2 cycles later, past a tight window.) *)
 let%expect_test "rs232r — start detect [waveform: rxd↓ → q0/q1 → start_edge → run]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
   inp.fsel := hi;

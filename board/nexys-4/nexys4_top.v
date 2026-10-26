@@ -1,0 +1,273 @@
+`timescale 1ns / 1ps
+`default_nettype none
+//
+// The board top for the original Digilent Nexys 4 (XC7A100T, Cellular RAM): the
+// hand-written vendor wrapper around the Hardcaml-generated `soc_board`
+// (board/_generated/nexys-4/soc_board.v). It holds what the synthesizable design cannot
+// express: clock generation (one MMCM, 100 -> 64 and 65 MHz), the power-on reset, and the
+// IOBUFs and pin mapping. See board/nexys-4/README.md.
+//
+// PS/2: a genuine 3-button PS/2 MOUSE sits on the Digilent Pmod PS/2 in JA's top row
+// (msClk/msDat — open-drain and bidirectional through IOBUFs, because the Mouse module
+// transmits its initialisation commands), and a USB KEYBOARD on the onboard port
+// (PS2Clk/PS2Data — the USB-HID PIC bridges it to PS/2; our side only receives, so two
+// plain inputs). The direction machinery follows the device's ROLE, not the connector.
+// LD9-14 show the state of the two PS/2 links (the status-LED block at the bottom).
+//
+module nexys4_top (
+  input  wire        CLK100MHZ,     // E3, 100 MHz
+  input  wire        btnCpuReset,   // C12, active-low reset button
+
+  input  wire [7:0]  sw,            // SW0..7 (logical/active-high; sw[7] = video invert)
+  input  wire        btnU,          // nav buttons -> soc_board.btn[3:0]
+  input  wire        btnD,
+  input  wire        btnL,
+  input  wire        btnR,
+  output wire [15:0] led,           // LD0..7 = Oberon LEDs; LD8 heartbeat, LD9-14 mouse, LD15 MMCM lock
+
+  input  wire        RsRx,          // C4  USB-UART, host->FPGA
+  output wire        RsTx,          // D4  USB-UART, FPGA->host
+
+  output wire [3:0]  vgaRed,        // VGA 4-4-4; we drive 1 bpp mono onto all 12
+  output wire [3:0]  vgaGreen,
+  output wire [3:0]  vgaBlue,
+  output wire        Hsync,         // B11
+  output wire        Vsync,         // B12
+
+  input  wire        PS2Clk,        // F4  onboard PS/2 (USB-HID PIC) — the KEYBOARD, receive-only
+  input  wire        PS2Data,       // B2
+
+  inout  wire        msClk,         // D17 Pmod JA3 — PS/2 MOUSE clock (open-drain, bidirectional)
+  inout  wire        msDat,         // B13 Pmod JA1 — PS/2 MOUSE data  (Pmod PS/2: pin 3 = CLK, pin 1 = DATA)
+
+  output wire        sd_sck,        // B1  microSD in SPI mode
+  output wire        sd_cmd,        // C1  (MOSI)
+  input  wire        sd_dat0,       // C2  (MISO)
+  output wire        sd_dat3,       // D2  (CS, active-low)
+  output wire        sd_reset,      // E2
+
+  // Cellular RAM (async SRAM interface)
+  output wire [22:0] MemAdr,
+  inout  wire [15:0] MemDB,
+  output wire        RamOEn,
+  output wire        RamWEn,
+  output wire        RamCEn,
+  output wire        RamLBn,
+  output wire        RamUBn,
+  output wire        RamCRE,
+  output wire        RamADVn,
+  output wire        RamCLK
+);
+
+  // ── Clocking: one MMCM, 100 MHz -> 64 MHz (system) + 65 MHz (pixel) ──────────────
+  // VCO = 100/5 * 52 = 1040 MHz; 1040/16.25 = 64 MHz, and 1040/16 = 65 MHz, the pixel
+  // clock of 1024x768@60. Both outputs are exact (CLKOUT0 fractional, CLKOUT1 integer).
+  // What sets the system clock: at 64 MHz the six-clock PSRAM read phase is 93.75 ns, which
+  // leaves 23.75 ns for the FPGA's I/O after the chip's 70 ns (the budget in nexys4.xdc,
+  // which splits 23.4 of it). 65 MHz would leave 22.3 ns: that step needs a seventh clock.
+  // Everything in the design that counts system clocks is in build_config.ml, whose test
+  // checks the MMCM parameters below against it.
+  // The names clk25 and bufg_25 date from the original 25 MHz system clock. They are kept
+  // because the .xdc selects the system clock by the pin bufg_25/O.
+  wire clk25, clk65, clkfb, clkfb_bufg, mmcm_locked;
+  wire clk25_raw, clk65_raw;
+
+  MMCME2_BASE #(
+    .CLKIN1_PERIOD   (10.000),   // 100 MHz
+    .DIVCLK_DIVIDE   (5),        // PFD = 100/5 = 20 MHz
+    .CLKFBOUT_MULT_F (52.000),   // VCO = 20 * 52 = 1040 MHz
+    .CLKOUT0_DIVIDE_F(16.250),   // 64 MHz (1040/16.25)
+    .CLKOUT1_DIVIDE  (16),       // 65 MHz (1040/16)
+    .STARTUP_WAIT    ("FALSE")
+  ) mmcm (
+    .CLKIN1   (CLK100MHZ),
+    .CLKFBIN  (clkfb_bufg),
+    .CLKFBOUT (clkfb),
+    .CLKFBOUTB(),
+    .CLKOUT0  (clk25_raw),
+    .CLKOUT0B (),
+    .CLKOUT1  (clk65_raw),
+    .CLKOUT1B (),
+    .CLKOUT2  (), .CLKOUT2B(),
+    .CLKOUT3  (), .CLKOUT3B(),
+    .CLKOUT4  (),
+    .CLKOUT5  (),
+    .CLKOUT6  (),
+    .LOCKED   (mmcm_locked),
+    .PWRDWN   (1'b0),
+    .RST      (1'b0)
+  );
+
+  BUFG bufg_fb (.I(clkfb),     .O(clkfb_bufg));
+  BUFG bufg_25 (.I(clk25_raw), .O(clk25));
+  BUFG bufg_65 (.I(clk65_raw), .O(clk65));
+
+  // ── Power-on / button reset (active-low rst_n to the SoC) ────────────────────────
+  // Held low until the MMCM locks and a counter elapses, and whenever the reset button is
+  // pressed (btnCpuReset is active-low). The counter gives about a second (26 bits at
+  // 64 MHz), which covers two hazards. The PS/2 mouse on the Pmod must finish its power-on
+  // self-test (BAT, ~500 ms) before the Mouse module's one-shot initialisation fires and
+  // latches `run`: fired early, streaming never starts until a manual reset. And the
+  // USB-HID PIC gets time to enumerate the USB keyboard (receive-only, so too short a
+  // delay would only lose keystrokes typed before enumeration). The delay is small against
+  // Oberon's boot from the SD card; raise it if a slower mouse needs it.
+  reg  [25:0] por_cnt = 26'h3FFFFFF;   // ~1 s at 64 MHz
+  wire        por_done = (por_cnt == 26'd0);
+  always @(posedge clk25) begin
+    if (!mmcm_locked)   por_cnt <= 26'h3FFFFFF;
+    else if (!por_done) por_cnt <= por_cnt - 26'd1;
+  end
+  // Deassert rst_n synchronously: btnCpuReset and mmcm_locked change asynchronously to
+  // the system clock, and rst_n fans out to every synchronous clear in the SoC — a
+  // marginal mid-run button release could exit reset a cycle apart across that tree.
+  // Two flops give a clean edge (cold start is unchanged: por_done, a clk25 flop, is
+  // still the last term to rise; the 2-cycle assert delay is immaterial).
+  (* ASYNC_REG = "TRUE" *) reg [1:0] rstn_sync = 2'b00;
+  always @(posedge clk25)
+    rstn_sync <= {rstn_sync[0], mmcm_locked & por_done & btnCpuReset};
+  wire rst_n = rstn_sync[1];
+
+  // ── Cellular RAM bidirectional data bus (16 IOBUFs) ──────────────────────────────
+  wire [15:0] mem_dq_o, mem_dq_i;
+  wire        mem_dq_t;
+  genvar gi;
+  generate
+    for (gi = 0; gi < 16; gi = gi + 1) begin : memdb_iob
+      IOBUF iob (.I(mem_dq_o[gi]), .O(mem_dq_i[gi]), .IO(MemDB[gi]), .T(mem_dq_t));
+    end
+  endgenerate
+
+  // async-SRAM mode tie-offs (no burst/sync, no config register)
+  assign RamCLK  = 1'b0;
+  assign RamADVn = 1'b0;   // address always valid (async)
+  assign RamCRE  = 1'b0;   // memory array, not config register
+
+  // ── PS/2 mouse, open-drain bidirectional (Pmod PS/2 in JA) ────────────────────────
+  // Drive the line low when the SoC requests it (msX_oe=1), else release to hi-Z — the
+  // XDC pullup + the device pullup hold it high. A genuine PS/2 mouse hangs off the Pmod;
+  // the Mouse module sends enable / sample-rate init by pulling the lines low
+  // (request-to-send), then receives the device's report stream.
+  wire        msclk_oe, msdat_oe;   // mouse open-drain pull-low requests (from the SoC)
+  wire        ps2c_in, ps2d_in;     // resolved PS/2 lines into the mouse module
+  wire [27:0] mouse_dbg;            // {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]} for the LEDs
+  IOBUF ps2c_iobuf (.I(1'b0), .O(ps2c_in), .IO(msClk), .T(~msclk_oe));
+  IOBUF ps2d_iobuf (.I(1'b0), .O(ps2d_in), .IO(msDat), .T(~msdat_oe));
+
+  // ── The Hardcaml SoC ─────────────────────────────────────────────────────────────
+  wire [5:0] rgb;
+  wire       hsync, vsync;
+
+  soc_board soc (
+    .clock    (clk25),
+    .pclk     (clk65),
+    .rst_n    (rst_n),
+
+    // SD-card SPI master
+    .miso     (sd_dat0),
+    .mosi     (sd_cmd),
+    .sclk     (sd_sck),
+    .sd_cs    (sd_dat3),
+
+    // UART
+    .rxd      (RsRx),
+    .txd      (RsTx),
+
+    // buttons / switches (active-high; word-1 read)
+    .btn      ({btnU, btnD, btnL, btnR}),
+    .sw       (sw),
+
+    // GPIO — idled (not wired to a Pmod in this build)
+    .gpio_in  (8'b0),
+    .gpio_out (),
+    .gpio_oe  (),
+
+    // PS/2 keyboard — the onboard port (USB-HID PIC bridging a USB keyboard to PS/2).
+    // Receive-only (PS2.v never transmits), so the raw pads go straight in: the
+    // controller's own Q0/Q1 flop chain (faithful to PS2.v) synchronises ps2c, and ps2d
+    // is sampled ~2 clocks after the detected falling edge, well inside PS/2's >=5 us
+    // data-hold window.
+    .ps2c     (PS2Clk),
+    .ps2d     (PS2Data),
+
+    // PS/2 mouse — the Pmod PS/2, open-drain bidirectional via the IOBUFs above
+    .msclk    (ps2c_in),
+    .msdat    (ps2d_in),
+    .msclk_oe (msclk_oe),
+    .msdat_oe (msdat_oe),
+    .mouse_dbg(mouse_dbg),
+
+    // LEDs / video
+    .leds     (led[7:0]),
+    .hsync    (hsync),
+    .vsync    (vsync),
+    .rgb      (rgb),
+
+    // Cellular RAM controller pins
+    .mem_dq_i (mem_dq_i),
+    .mem_adr  (MemAdr),
+    .mem_dq_o (mem_dq_o),
+    .mem_dq_t (mem_dq_t),
+    .ram_ce_n (RamCEn),
+    .ram_oe_n (RamOEn),
+    .ram_we_n (RamWEn),
+    .ram_ub_n (RamUBn),
+    .ram_lb_n (RamLBn)
+  );
+
+  // ── VGA: 1 bpp mono replicated across the 12-bit DAC ─────────────────────────────
+  wire pixel = rgb[0];
+  assign vgaRed   = {4{pixel}};
+  assign vgaGreen = {4{pixel}};
+  assign vgaBlue  = {4{pixel}};
+  assign Hsync    = hsync;   // soc_board sync outputs are already active-low (VGA -h/-v)
+  assign Vsync    = vsync;
+
+  // ── microSD housekeeping ─────────────────────────────────────────────────────────
+  assign sd_reset = 1'b0;    // low keeps the card slot powered (high would cut its supply)
+
+  // ── Status / PS/2-mouse-diagnostic LEDs (upper bank) ─────────────────────────────
+  // LD8 = system-clock heartbeat, LD15 = MMCM locked. LD9-14 diagnose the mouse bring-up.
+  reg [24:0] heartbeat = 25'd0;
+  always @(posedge clk25) heartbeat <= heartbeat + 25'd1;
+
+  localparam [24:0] HOLD = 25'd2_500_000;   // ~39 ms persistence at 64 MHz
+
+  // Decoded mouse state from the SoC debug word {run, btns[2:0], 2'b0, y[9:0], 2'b0, x[9:0]}.
+  wire        ms_run  = mouse_dbg[27];
+  wire [9:0]  ms_y    = mouse_dbg[21:12];
+  wire [9:0]  ms_x    = mouse_dbg[9:0];
+
+  // Sticky "has the module EVER decoded movement?" latches — the decisive bring-up
+  // signal. Move the mouse, then read them: x/y_ever lit => the report decode works
+  // (so a dead cursor is Oberon-side); dark => the decode/done path is failing.
+  // Cleared by reset (btnCpuReset / POR).
+  reg x_ever = 1'b0, y_ever = 1'b0;
+  // Retriggerable activity one-shots (on = happening now, off ~40 ms after it stops).
+  reg [24:0] hold_ps2c = 0, hold_host = 0, hold_kbdc = 0;
+  reg        ps2c_d = 0, kbdc_d = 0;
+  always @(posedge clk25) begin
+    ps2c_d <= ps2c_in;
+    kbdc_d <= PS2Clk;
+    if (!rst_n) begin
+      x_ever <= 1'b0; y_ever <= 1'b0;
+    end else begin
+      if (ms_x != 10'd0) x_ever <= 1'b1;
+      if (ms_y != 10'd0) y_ever <= 1'b1;
+    end
+    hold_ps2c <= (ps2c_d ^ ps2c_in)    ? HOLD : (hold_ps2c != 0 ? hold_ps2c - 25'd1 : 25'd0);
+    hold_host <= (msclk_oe | msdat_oe) ? HOLD : (hold_host != 0 ? hold_host - 25'd1 : 25'd0);
+    hold_kbdc <= (kbdc_d ^ PS2Clk)     ? HOLD : (hold_kbdc != 0 ? hold_kbdc - 25'd1 : 25'd0);
+  end
+
+  assign led[8]  = heartbeat[24];      // ~1.9 Hz blink: the system clock is alive
+  assign led[9]  = ms_run;             // mouse init completed (run=1, now streaming reports)
+  assign led[10] = x_ever;             // module's X accumulated away from 0 (X decode works)
+  assign led[11] = y_ever;             // module's Y accumulated away from 0 (Y decode works)
+  assign led[12] = (hold_kbdc != 0);   // KEYBOARD clock edges (keypress reaching the FPGA)
+  assign led[13] = (hold_ps2c != 0);   // mouse PS/2 clock edges (device clocking packets)
+  assign led[14] = (hold_host != 0);   // mouse module pulling lines low (sending commands)
+  assign led[15] = mmcm_locked;
+
+endmodule
+
+`default_nettype wire

@@ -1,36 +1,24 @@
-(* RTL-fidelity dumper for the video controller. Unlike the serial units, VID is two-clock
-   and largely autonomous (the raster free-runs), so the dumper runs the Hardcaml port
-   under By_input_clocks at the real 65:25 ratio (pclk period 5, clk period 13 — each
-   Cyclesim.cycle is one fine base tick) and records, per base tick, the inputs it drove
-   (inv, viddata) plus every output. The Verilator harness (test/cosim/vid.cpp) drives the
-   identical [inv] into vid_cosim.v (the real VID60.v with clk/pclk at the same 13:5
-   cadence) and asserts, every tick, RTL (hsync, vsync, RGB) == the port's; [req] is
-   checked by pulse COUNT, and [vidadr] is NOT compared (both are deliberate departures —
-   see below).
+(* The dumper for the video controller. Video has two clocks and runs by itself, so the
+   port is simulated under By_input_clocks at the real 65:25 ratio (pclk period 5, clk
+   period 13, one Cyclesim.cycle per base tick), and every base tick the inputs driven and
+   all outputs are recorded. vid.cpp drives the same [inv] into vid_cosim.v, which is
+   VID60.v with its two clocks at the same cadence, and requires the same hsync, vsync and
+   RGB every tick. [req] is compared by its number of pulses and [vidadr] not at all:
+   those are the port's two deliberate departures.
 
-   Identity-echo framebuffer. [viddata] is driven = the requested [vidadr] (mem[a] = a),
-   and the harness drives VID60.v's [viddata] from VID60.v's OWN [vidadr] the same way.
-   Two reasons this echo (not the old per-tick / per-group word):
-   - [vidadr] is stable across each 32-px group, so the value sampled is the same
-     regardless of WHEN within the group each side samples — which absorbs BOTH the
-     req-CDC sampling jitter (our toggle synchroniser fires req ~2 clk later than
-     VID60.v's async-set req1) AND lets the pixel path stay comparable despite the
-     prefetch's look-ahead address.
-   - The 2-group PREFETCH makes our [vidadr] lead VID60.v's by one group every tick, so a
-     single replayed [viddata] stream can't be correct for both sides at once. Echoing
-     each side's OWN address gives both the identical identity framebuffer — so they
-     render the same pixels (col's word in group col+1) even though each fetched on its
-     own schedule.
+   The framebuffer is an echo: each side's [viddata] is driven with its own [vidadr]. The
+   port requests a group's word one group earlier than VID60.v does, so no single replayed
+   stream of data could be right for both; with the echo both sides display the same
+   picture, each column showing its own address. And because [vidadr] is steady across a
+   group, it does not matter that the two sides sample it at slightly different moments.
 
-   Coverage: ~3 scanlines (4032 pclks) — visible pixels, the 32-word/line DMA, vidadr
-   across a line, hblank (hcnt>=1024) + the hsync pulse, the hcnt wrap + vcnt advance, and
-   an inv toggle. The harness skips RGB over the first scanline (the prefetch frame-top
-   gap — see vid.cpp). vblank/vsync (vcnt>=768) need a whole frame (~768 lines) to reach
-   and are the same comparator-free / SR-latch idiom as hblank/hsync, so they're left to a
-   full-frame run (the Phase-6 visual golden); here they're exercised in their inactive
-   state.
+   About three scan lines are covered: visible pixels, the 32 fetches of a line,
+   horizontal blanking and sync, the wrap of hcnt and the step of vcnt, and a toggle of
+   [inv]. RGB is not compared over the first line, whose first group the port has not yet
+   fetched. Vertical blanking and sync would need a whole frame; the visual goldens cover
+   them.
 
-   Line format (one per base tick): "inv viddata req vidadr hsync vsync rgb". *)
+   Line, one per base tick: "inv viddata req vidadr hsync vsync rgb". *)
 
 open Hardcaml
 open Cosim_dump
@@ -51,11 +39,8 @@ let () =
   let ticks = 3 * 1344 * 5 in
   for t = 0 to ticks - 1 do
     let inv = if t >= 8000 && t < 14000 then 1 else 0 in
-    (* identity-echo framebuffer: drive viddata = the word at the requested address
-       (mem[a] = a). Read the CURRENT vidadr (combinational from the raster counters,
-       stable across the 32-px group) and feed it back, then step — exactly the pattern
-       the co-located prefetch look-ahead test uses, and what the harness mirrors on
-       VID60.v. *)
+    (* the echo: drive [viddata] with the address requested, which is steady across the
+       group *)
     let vd = rd outp.vidadr in
     set inp.inv inv;
     set inp.viddata vd;

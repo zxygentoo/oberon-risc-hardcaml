@@ -1,15 +1,13 @@
-(** [Registers] — the RISC5 triple-port register file ([Registers.v]): three asynchronous
-    read ports and one synchronous write port over sixteen 32-bit registers.
+(** The register file ([Registers.v]): sixteen 32-bit registers, three asynchronous read
+    ports and one synchronous write port.
 
-    Wirth builds it from dual-port [RAM16X1D] distributed-RAM primitives (each gives one
-    read at the write address plus one read-only second port), duplicated to provide the
-    third read port. That duplication is {e structure}, not spec (AGENT.md §2/§3): we keep
-    only the behaviour — three async reads, one sync write — via [multiport_memory], and
-    let synthesis infer the distributed RAM.
+    The RTL builds it from [RAM16X1D] primitives, duplicated to provide the third read
+    port. Only the behaviour is kept here, as a [multiport_memory], and synthesis infers
+    the distributed RAM.
 
-    Timing (AGENT.md §8): [dout0/1/2] are combinational functions of [rno0/1/2] (no
-    clock); [din] is written to register [rno0] on the clock edge when [wr]. [rno0] is
-    both read port 0 and the write address. No reset — registers power up to 0. *)
+    [dout0]/[dout1]/[dout2] are combinational functions of [rno0]/[rno1]/[rno2]; [din] is
+    written to register [rno0] at the clock edge when [wr] is high. [rno0] is both read
+    address 0 and the write address. There is no reset; the registers power up as 0. *)
 
 open Hardcaml
 
@@ -36,6 +34,4 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create] instantiates the 16×32 array: one synchronous write port at [rno0], three
-    asynchronous read ports at [rno0/rno1/rno2]. *)
 val create : Signal.t I.t -> Signal.t O.t

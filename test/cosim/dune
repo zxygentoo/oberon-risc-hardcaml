@@ -2,7 +2,7 @@
 ; bit- and cycle-exact to its reference Verilog: <unit>_dump.ml dumps the port's outputs over a
 ; stimulus set, and the Verilator harness <unit>.cpp (+ shared cosim.h) replays them through the
 ; reference test/_po/verilog/src/<Unit>.v, checking value AND timing. The CPU core is a boot-stream
-; capture/replay instead (test/risc_core_dump.ml + core.cpp). cosim_run.ml is the parallel runner that
+; capture/replay instead (core_dump.ml + core.cpp). cosim_run.ml is the parallel runner that
 ; drives them all; the dumpers build under `dune build @check` so they can't silently rot.
 
 (executable
@@ -22,11 +22,20 @@
   mouse_dump)
  (libraries risc5 hardcaml))
 
+; The core's capture half: boots the sim SoC from the real disk through the boot harness
+; and records the core's per-cycle I/O, which core.cpp replays through RISC5.v.
+
+(executable
+ (name core_dump)
+ (modules core_dump)
+ (libraries risc5 emu hardcaml boot))
+
 ; Uniform front door: `dune build @cosim` runs every unit (the 9 peripherals/FP + the CPU core)
 ; in parallel via cosim_run. OPT-IN (verilator + network on first fetch), kept out of
 ; @runtest/@check. The exes are declared deps so dune pre-builds them — cosim_run then makes no
-; nested `dune build`. dune caches the result: re-run with `dune build @cosim --force`, or
-; `dune exec test/cosim/cosim_run.exe -- <unit>` for a single unit.
+; nested `dune build` (COSIM_EXES_PREBUILT tells it so). dune caches the result: re-run with
+; `dune build @cosim --force`, or `dune exec test/cosim/cosim_run.exe -- <unit>` for a single
+; unit. The env_var deps make a changed capture knob re-run the alias.
 
 (rule
  (alias cosim)
@@ -38,12 +47,18 @@
   ps2_dump.exe
   vid_dump.exe
   mouse_dump.exe
-  ../risc_core_dump.exe
+  core_dump.exe
   ../fetch-rtl.sh
   ../rtl-sources.txt
   cosim.h
   (glob_files *.cpp)
   (glob_files *.v)
-  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk)
+  ../../vendor/oberon-risc-emu-ocaml/DiskImage/Oberon-2020-08-18.dsk
+  (env_var CAP)
+  (env_var SPI_DIV_LOG2)
+  (env_var DISK_IMG))
  (action
-  (run %{exe:cosim_run.exe})))
+  (setenv
+   COSIM_EXES_PREBUILT
+   1
+   (run %{exe:cosim_run.exe}))))

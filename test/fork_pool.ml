@@ -1,13 +1,20 @@
-(* Bounded forked-worker pool with a PASS/FAIL summary — see fork_pool.mli.
-
-   Each job is forked into its own process whose stdout/stderr are redirected to its log,
-   so workers run truly concurrently and their output never interleaves. The parent keeps
-   at most [jobs] alive at once (launch until full, then reap one and launch the next),
-   collecting exit codes for the summary. Jobs are subprocess-bound (verilator / yosys /
-   z3), so fork + a fresh binary per job is both safe and the natural fit. *)
+(* See fork_pool.mli. *)
 
 let mkdir_p d =
   ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote d)) : int)
+;;
+
+let cd_to_repo_root () =
+  let rec up d =
+    if Sys.file_exists (Filename.concat d "dune-project")
+    then d
+    else (
+      let p = Filename.dirname d in
+      if String.equal p d
+      then failwith "cd_to_repo_root: no dune-project above cwd"
+      else up p)
+  in
+  Sys.chdir (up (Sys.getcwd ()))
 ;;
 
 (* a worker: redirect this process's stdout/stderr to the job's log, run it, exit with its
@@ -44,10 +51,8 @@ let run ~what ~jobs ~work_root job_list =
     jobs
     work_root;
   let t0 = Unix.gettimeofday () in
-  (* Live per-unit lines earn their keep only when stdout is a terminal (real-time
-     progress as jobs finish). Under `dune build` the action's stdout is captured and
-     flushed at the end, where they'd just duplicate the summary table — so gate them on a
-     TTY. *)
+  (* the per-job lines are worth printing only on a terminal: under dune the output is
+     captured and shown at the end, where they would repeat the summary *)
   let live =
     try Unix.isatty Unix.stdout with
     | _ -> false
@@ -55,11 +60,6 @@ let run ~what ~jobs ~work_root job_list =
   let queue = ref job_list in
   let running : (int, string * float) Hashtbl.t = Hashtbl.create 16 in
   let results = ref [] in
-  let nonempty r =
-    match !r with
-    | [] -> false
-    | _ -> true
-  in
   let launch (name, run) =
     flush stdout;
     flush stderr;
@@ -93,8 +93,8 @@ let run ~what ~jobs ~work_root job_list =
             dt
             (Filename.concat work_root name)
   in
-  while nonempty queue || Hashtbl.length running > 0 do
-    while Hashtbl.length running < jobs && nonempty queue do
+  while (not (List.is_empty !queue)) || Hashtbl.length running > 0 do
+    while Hashtbl.length running < jobs && not (List.is_empty !queue) do
       match !queue with
       | j :: rest ->
         queue := rest;
@@ -141,4 +141,72 @@ let run ~what ~jobs ~work_root job_list =
           ignore (Sys.command (Printf.sprintf "tail -20 %s" (Filename.quote log)) : int))
       job_list;
   !fail
+;;
+
+(* Each worker marshals its result to a temp file the parent reads back once the worker
+   has exited 0. The child leaves through [Unix._exit] so it never runs the parent's
+   [at_exit] handlers. *)
+let map ~jobs fs =
+  let fs = Array.of_list fs in
+  let files = Array.map (fun _ -> Filename.temp_file "fork_pool" ".bin") fs in
+  let running : (int, int) Hashtbl.t = Hashtbl.create 16 in
+  let failed = ref [] in
+  let launch k =
+    flush stdout;
+    flush stderr;
+    match Unix.fork () with
+    | 0 ->
+      let code =
+        try
+          let oc = open_out_bin files.(k) in
+          Marshal.to_channel oc (fs.(k) ()) [];
+          close_out oc;
+          0
+        with
+        | e ->
+          Printf.eprintf "fork_pool worker %d: %s\n" k (Printexc.to_string e);
+          1
+      in
+      flush stdout;
+      flush stderr;
+      Unix._exit code
+    | pid -> Hashtbl.replace running pid k
+  in
+  let reap () =
+    let pid, status = Unix.wait () in
+    match Hashtbl.find_opt running pid with
+    | None -> ()
+    | Some k ->
+      Hashtbl.remove running pid;
+      if status <> Unix.WEXITED 0 then failed := k :: !failed
+  in
+  let next = ref 0 in
+  while !next < Array.length fs || Hashtbl.length running > 0 do
+    while Hashtbl.length running < jobs && !next < Array.length fs do
+      launch !next;
+      incr next
+    done;
+    if Hashtbl.length running > 0 then reap ()
+  done;
+  let results =
+    if List.is_empty !failed
+    then
+      Array.to_list
+        (Array.map
+           (fun file ->
+             let ic = open_in_bin file in
+             let v = Marshal.from_channel ic in
+             close_in ic;
+             v)
+           files)
+    else []
+  in
+  Array.iter Sys.remove files;
+  match List.sort compare !failed with
+  | [] -> results
+  | ks ->
+    failwith
+      (Printf.sprintf
+         "Fork_pool.map: worker(s) %s failed"
+         (String.concat ", " (List.map string_of_int ks)))
 ;;

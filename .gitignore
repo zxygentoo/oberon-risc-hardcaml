@@ -4,8 +4,9 @@ _build/
 .merlin
 *.merlin
 
-# Local opam switch
-_opam/
+# Local opam switch (dir or `opam switch link` symlink — root-anchored, no
+# trailing slash: a dir-only `_opam/` pattern would not match the symlink)
+/_opam
 
 # Original Project Oberon sources (Verilog, PDFs, boot ROM): not vendored (licensing). The
 # co-sim fetches the reference Verilog on demand into test/_po/ and checksum-verifies it; see
@@ -16,15 +17,15 @@ _opam/
 # intermediates. Generated on demand by the opt-in cosim/formal runners; safe to delete.
 /test/_work/
 
-# Board (Phase 7) generated/build artifacts: the emitted soc_board.v and the Vivado runs +
+# Board generated/build artifacts: the emitted soc_board.v and the Vivado runs +
 # bitstream, keyed by board under these two trees (regenerate via gen_verilog.sh / build.tcl).
-# One entry each covers all boards; everything else under boards/ is tracked source.
-/boards/_generated/
-/boards/_build/
+# One entry each covers all boards; everything else under board/ is tracked source.
+/board/_generated/
+/board/_build/
 
 # Vivado batch-run scratch, dropped in whatever directory vivado is launched from (the repo
-# root, or boards/<target>/ when build/program/flash are run from there) — un-anchored so it
-# is ignored at any depth, keeping boards/<target>/ pure tracked source either way.
+# root, or board/<target>/ when build/program/flash are run from there) — un-anchored so it
+# is ignored at any depth, keeping board/<target>/ pure tracked source either way.
 .Xil/
 clockInfo.txt
 vivado*.jou

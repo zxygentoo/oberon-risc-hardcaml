@@ -38,7 +38,9 @@ static bool replay_spi(VSPI* dut, FILE* f, Serial_mismatches* m) {
   int fast, pcyc;
   unsigned int dataTx, pdataRx;
   char trace[1024];
-  if (fscanf(f, "%d %x %x %d %1023s", &fast, &dataTx, &pdataRx, &pcyc, trace) != 5) return false;
+  if (!record_read(f, fscanf(f, "%d %x %x %d %1023s", &fast, &dataTx, &pdataRx, &pcyc, trace), 5))
+    return false;
+  check_trace(f, trace, sizeof trace);
   int tracelen = (int)strlen(trace);
   // edge 0: start sampled.
   dut->start = 1;

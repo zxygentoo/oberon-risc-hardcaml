@@ -36,7 +36,8 @@ static bool replay_rs232t(VRS232T* dut, FILE* f, Serial_mismatches* m) {
   int fsel, pcyc;
   unsigned int data;
   char trace[16384];
-  if (fscanf(f, "%d %x %d %16383s", &fsel, &data, &pcyc, trace) != 4) return false;
+  if (!record_read(f, fscanf(f, "%d %x %d %16383s", &fsel, &data, &pcyc, trace), 4)) return false;
+  check_trace(f, trace, sizeof trace);
   int tracelen = (int)strlen(trace);
   // edge 0: start sampled.
   dut->start = 1;

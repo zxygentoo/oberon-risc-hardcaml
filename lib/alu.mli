@@ -1,24 +1,21 @@
-(** [Alu] — the RISC5 register-op results that [RISC5.v] computes inline in its [aluRes]
-    mux: MOV, the logic ops (AND/ANN/IOR/XOR), and ADD/SUB. Grouped into one unit for
-    isolated reference tests (AGENT.md §2/§6).
+(** The register-operation results that [RISC5.v] computes inline in its [aluRes] mux:
+    MOV, the logic operations (AND, ANN, IOR, XOR) and ADD/SUB. They are gathered into a
+    unit so that they can be tested alone.
 
-    The remaining register ops are separate peer units — the shifts (ops 1..3) in
-    {!Left_shifter}/{!Right_shifter}, and MUL/DIV/FP (ops 10..15) as multi-cycle units.
-    Their results are selected alongside this unit's by the result mux at the core (Phase
-    4), so those op slots read as 0 here.
+    The shifts (operations 1..3) and MUL, DIV and the FP operations (10..15) are separate
+    units whose results the core selects beside this one; their slots read 0 here.
 
-    Flags: this unit emits the arithmetic C/OV (set only by ADD/SUB; other ops pass the
-    current C/OV through). N/Z are not here — they derive from the final write value
-    (regmux), assembled at the core. *)
+    This unit produces C and OV, which only ADD and SUB change. N and Z follow the value
+    the core finally writes, so the core derives them. *)
 
 open Hardcaml
 
 module I : sig
   type 'a t =
     { p : 'a
-    (** [IR[31]] — instruction class. Only register instructions ([p=0]) set C/OV; with
-        [p=1] (branch/memory) ADD/SUB are inert even when [op] is 8/9, matching
-        [RISC5.v]'s [ADD = ~p & (op==8)]. *)
+    (** [IR[31]], the instruction class. Only a register instruction ([p] = 0) sets C and
+        OV: a branch or memory instruction whose [op] field happens to be 8 or 9 leaves
+        them alone, as [RISC5.v]'s [ADD = ~p & (op==8)] does. *)
     ; op : 'a (** [IR[19:16]] — register-operation selector (4 bits) *)
     ; u : 'a (** modifier [IR[29]]: ADD'/SUB' carry-in, MOV variants *)
     ; q : 'a (** [IR[30]]: selects the MOV immediate forms *)
@@ -44,6 +41,4 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [create] builds the result for MOV, the logic ops, and ADD/SUB (ops 0, 4..9) plus the
-    C/OV flags; other op slots read as 0 (their units feed the result mux at the core). *)
 val create : Signal.t I.t -> Signal.t O.t

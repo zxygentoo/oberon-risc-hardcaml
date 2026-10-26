@@ -1,25 +1,18 @@
-(* Public API and behaviour spec live in [ps2.mli].
+(* A port of PS2.v; the contract is in [ps2.mli].
 
-   Port of [PS2.v]. The keyboard provides its OWN clock, so unlike the UART there is no
-   baud divider — three ideas carry the design:
+   The keyboard supplies the clock, so there is no divider:
+   - Clock recovery. [Q0]/[Q1] synchronise [ps2c]; [shift = Q1 & ~Q0] pulses for one cycle
+     on each falling edge and samples [ps2d].
+   - A walking start bit. [shreg] is 11 bits, reset to all ones, and each [shift] brings
+     [ps2d] in at the top. The start bit, a 0 and the first bit in, reaches bit 0 after
+     exactly eleven shifts: [endbit = ~shreg[0]]. There is no bit counter; the start bit
+     is the counter, and the byte is then in [shreg[8:1]].
+   - A 16-byte FIFO. [endbit] pushes the byte at [inptr]; [rdy] is [inptr <> outptr];
+     [data] is the entry at [outptr]; [done_] pops. It is a [multiport_memory] with a
+     synchronous write and an asynchronous read, like the register file.
 
-   - CLOCK RECOVERY. A 2-FF chain [Q0]/[Q1] synchronizes the asynchronous [ps2c]; [shift]
-     = [Q1 & ~Q0] is a one-cycle pulse on each ps2c falling edge — the bit strobe that
-     samples [ps2d]. The device's clock is the timing.
-   - WALKING START BIT. [shreg] is 11 bits, reset to all-1s; each [shift] brings [ps2d] in
-     at the top ([{ps2d, shreg[10:1]}], a right-shift). [endbit = ~shreg[0]]: the start
-     bit (0, the first bit in) is always the lowest frame bit, so bit 0 stays 1 until it
-     walks down — after exactly the 11 frame bits (start, 8 data, parity, stop). No bit
-     counter; the start bit IS the counter, and the byte then sits in [shreg[8:1]].
-   - 16-BYTE FIFO. On [endbit] the byte is pushed at [inptr] (inptr++); [rdy] =
-     inptr<>outptr (non-empty), [data] = fifo[outptr], and a read pulse [done_] pops
-     (outptr++). It buffers keystrokes, decoupling the keyboard from the CPU. Modeled as a
-     [multiport_memory] — one synchronous write, one asynchronous read — exactly like the
-     register file ([registers.ml]).
-
-   [rst] is active-low and synchronous; per the RTL it resets [shreg] (to all-1s), [inptr]
-   and [outptr], so those carry a reset term while [Q0]/[Q1] just track [ps2c]. Clock-only
-   [Reg_spec], like the rest of the peripherals. *)
+   Reset is synchronous and active low and, as in the RTL, covers [shreg] and the two
+   pointers. *)
 
 open! Base
 open Hardcaml
@@ -58,11 +51,10 @@ let create (i : _ I.t) : _ O.t =
   let shreg_v = shreg.value -- "shreg" in
   let inptr_v = inptr.value -- "inptr" in
   let outptr_v = outptr.value -- "outptr" in
-  let endbit = ~:(select shreg_v ~high:0 ~low:0) -- "endbit" in
+  let endbit = ~:(lsb shreg_v) -- "endbit" in
   let shift = q1_v &: ~:q0_v in
   let rdy = ~:(inptr_v ==: outptr_v) in
-  (* 16x8 FIFO: synchronous write of shreg[8:1] at inptr on endbit, asynchronous read at
-     outptr (same shape as the register file — let synthesis infer distributed RAM) *)
+  (* written at [inptr] on [endbit], read asynchronously at [outptr] *)
   let write_port =
     { Write_port.write_clock = i.clock
     ; write_address = inptr_v
@@ -94,15 +86,28 @@ let create (i : _ I.t) : _ O.t =
   { O.rdy; shift; data }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── The
-   testbench plays the keyboard: clock 11-bit frames on ps2c/ps2d and read the recovered
-   bytes back through the FIFO. Functional decode + a multi-byte FIFO order check + a
-   qcheck round-trip, plus a waveform of the clock-recovery front end (ps2c edge → shift →
-   shreg walking). The exhaustive bit-for-bit fidelity check vs [PS2.v] is the Verilator
-   co-sim. *)
+module For_tests = struct
+  let odd_parity data =
+    let ones = ref 0 in
+    for j = 0 to 7 do
+      ones := !ones + ((data lsr j) land 1)
+    done;
+    1 - (!ones land 1)
+  ;;
 
-let lo = Bits.of_unsigned_int ~width:1 0
-let hi = Bits.of_unsigned_int ~width:1 1
+  let frame_bits data =
+    (false :: List.init 8 ~f:(fun j -> (data lsr j) land 1 = 1))
+    @ [ odd_parity data = 1; true ]
+  ;;
+end
+
+(* ── Tests ── The testbench plays the keyboard: it clocks frames in and reads the bytes
+   back through the FIFO, checking single bytes, the order of several, and a round trip; a
+   waveform shows the clock recovery. Fidelity to PS2.v is the co-simulation's and the
+   proof's job. *)
+
+let lo = Bits.gnd
+let hi = Bits.vdd
 let bit b = if b then hi else lo
 let h = 4 (* ps2c half-period in clocks (>=2 for the synchronizer to see the edge) *)
 
@@ -116,35 +121,24 @@ let reset_idle sim (inp : _ I.t) =
   Cyclesim.cycle sim
 ;;
 
-(* odd parity over the 8 data bits (the DUT ignores it — it occupies one frame slot) *)
-let odd_parity data =
-  let ones = ref 0 in
-  for j = 0 to 7 do
-    ones := !ones + ((data lsr j) land 1)
+(* one device clock: present the data bit, then a ps2c falling edge (h high + h low) so
+   the DUT's synchronizer sees it *)
+let send_bit sim (inp : _ I.t) b =
+  inp.ps2d := bit b;
+  inp.ps2c := hi;
+  for _ = 1 to h do
+    Cyclesim.cycle sim
   done;
-  1 - (!ones land 1)
+  inp.ps2c := lo;
+  for _ = 1 to h do
+    Cyclesim.cycle sim
+  done
 ;;
 
-(* play the keyboard: clock the 11 frame bits (start, 8 data LSbit-first, parity, stop) on
-   ps2c/ps2d; the DUT shifts ps2d in on each ps2c falling edge. Leaves ps2c idle high. *)
+(* play the keyboard: clock the 11 frame bits ({!For_tests.frame_bits}) on ps2c/ps2d; the
+   DUT shifts ps2d in on each ps2c falling edge. Leaves ps2c idle high. *)
 let send_byte sim (inp : _ I.t) ~data =
-  let send_bit b =
-    inp.ps2d := bit b;
-    inp.ps2c := hi;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done;
-    inp.ps2c := lo;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done
-  in
-  send_bit false;
-  for j = 0 to 7 do
-    send_bit ((data lsr j) land 1 = 1)
-  done;
-  send_bit (odd_parity data = 1);
-  send_bit true;
+  List.iter (For_tests.frame_bits data) ~f:(send_bit sim inp);
   inp.ps2c := hi;
   for _ = 1 to h do
     Cyclesim.cycle sim
@@ -199,19 +193,20 @@ let%expect_test "ps2 — 16-byte FIFO buffers and pops in order" =
   [%expect {| popped 0x11 0x22 0x33; rdy now 0 |}]
 ;;
 
-let%expect_test "ps2 — random scancode round-trips [qcheck]" =
+let%expect_test "ps2 — every scancode round-trips" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   reset_idle sim inp;
-  QCheck.Test.check_exn
-    (QCheck.Test.make ~count:64 ~name:"ps2-roundtrip" (QCheck.int_bound 0xFF) (fun data ->
-       send_byte sim inp ~data;
-       let rdy = Bits.to_int_trunc !(outp.rdy) in
-       let got = Bits.to_int_trunc !(outp.data) in
-       pop sim inp;
-       rdy = 1 && got = data));
+  for data = 0 to 255 do
+    send_byte sim inp ~data;
+    let rdy = Bits.to_int_trunc !(outp.rdy) in
+    let got = Bits.to_int_trunc !(outp.data) in
+    pop sim inp;
+    if not (rdy = 1 && got = data)
+    then Stdlib.Printf.printf "sent 0x%02X: rdy=%d data=0x%02X\n" data rdy got
+  done;
   [%expect {| |}]
 ;;
 
@@ -220,25 +215,14 @@ let%expect_test "ps2 — random scancode round-trips [qcheck]" =
    ...0,0,1,1,1,0,0; here the start bit then d0=0, d1=0). *)
 let%expect_test "ps2 — clock recovery [waveform: ps2c edge → shift → shreg]" =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let module Waveform = Hardcaml_waveterm.For_cyclesim.Waveform in
+  let module Waveform = Hardcaml_waveterm.Waveform in
   let module D = Hardcaml_waveterm.Display_rule in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
-  let waves, sim = Waveform.create sim in
+  let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
   reset_idle sim inp;
-  let send_bit b =
-    inp.ps2d := bit b;
-    inp.ps2c := hi;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done;
-    inp.ps2c := lo;
-    for _ = 1 to h do
-      Cyclesim.cycle sim
-    done
-  in
-  send_bit false;
-  send_bit false;
+  send_bit sim inp false;
+  send_bit sim inp false;
   Waveform.print
     ~start_cycle:2
     ~wave_width:2
