@@ -4,7 +4,7 @@
 
 let () =
   let ours = Risc5.Rom.bootloader
-  and oracle = Emu.Boot_rom.bootloader in
+  and oracle = Emu.Boot_rom.bootloader () in
   if Array.length ours <> Array.length oracle
   then (
     Printf.printf

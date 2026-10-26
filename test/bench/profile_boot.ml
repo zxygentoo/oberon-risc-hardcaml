@@ -18,8 +18,8 @@ let cap = 3_000_000 (* reset → handoff (~403K) + ~2.6M of the running OS *)
 let () =
   let tmp = Boot.Disk.copy_to_temp Boot.Disk.image in
   let oracle = Boot.Oracle.create ~disk:tmp in
-  let ram = R.For_tests.ram oracle in
-  let bootrom = Emu.Boot_rom.bootloader in
+  let ram = R.Cpu.ram oracle in
+  let bootrom = Emu.Boot_rom.bootloader () in
   let rom_instr = ref 0
   and ram_instr = ref 0
   and mul = ref 0
@@ -30,7 +30,7 @@ let () =
   and handoff_step = ref 0
   and steps = ref 0 in
   while !steps < cap do
-    let pc = R.For_tests.pc oracle in
+    let pc = R.Cpu.pc oracle in
     let in_ram = pc < oracle_ram_base in
     if in_ram && not !handoff_seen
     then (
@@ -59,7 +59,7 @@ let () =
         then (
           incr div;
           last_muldiv_step := !steps)));
-    R.For_tests.single_step oracle;
+    R.Cpu.single_step oracle;
     incr steps
   done;
   Boot.Disk.rm_temp tmp;

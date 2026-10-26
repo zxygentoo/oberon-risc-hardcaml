@@ -32,21 +32,18 @@ let boot_oracle_to_handoff () =
   let tmp = Disk.copy_to_temp Disk.image in
   let oracle = Oracle.create ~disk:tmp in
   let steps = ref 0 in
-  while R.For_tests.pc oracle >= oracle_ram_base && !steps < oracle_step_cap do
+  while R.Cpu.pc oracle >= oracle_ram_base && !steps < oracle_step_cap do
     if !steps land 0xFFF = 0 then R.set_time oracle (Emu.U32.wrap (!steps / 25000));
-    R.For_tests.single_step oracle;
+    R.Cpu.single_step oracle;
     incr steps
   done;
   Disk.rm_temp tmp;
-  Printf.printf
-    "oracle handoff: pc=0x%X after %d steps\n%!"
-    (R.For_tests.pc oracle)
-    !steps;
-  let ram = R.For_tests.ram oracle in
-  { pc = R.For_tests.pc oracle
-  ; regs = R.For_tests.regs oracle
-  ; flags = R.For_tests.flags oracle
-  ; h = R.For_tests.h oracle
+  Printf.printf "oracle handoff: pc=0x%X after %d steps\n%!" (R.Cpu.pc oracle) !steps;
+  let ram = R.Cpu.ram oracle in
+  { pc = R.Cpu.pc oracle
+  ; regs = R.Cpu.regs oracle
+  ; flags = R.Cpu.flags oracle
+  ; h = R.Cpu.h oracle
   ; ram = (fun w -> ram.(w))
   }
 ;;

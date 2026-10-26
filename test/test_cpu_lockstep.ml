@@ -7,7 +7,7 @@
 
    The core's state is reached by name through Cyclesim (the register file is a named
    memory; pc, ir, the flags and h are named registers; [stall] a named node), the
-   oracle's through its [For_tests] hooks.
+   oracle's through [Risc.Cpu].
 
    Covered: register operations 0..15, branches, loads and stores one instruction at a
    time, then short programs run from RAM under a random external stall. Where the oracle
@@ -150,20 +150,17 @@ let step_core t case =
 
 (* poke [case]'s arch state into the oracle (the mirror of [poke_core]; does not step) *)
 let poke_oracle t { regs; n; z; c; ov; h; instr; op = _ } =
-  let oregs = R.For_tests.regs t.oracle in
+  let oregs = R.Cpu.regs t.oracle in
   Array.iteri (fun k v -> oregs.(k) <- v) regs;
-  R.For_tests.set_flags t.oracle (packed_flags ~n ~z ~c ~ov);
-  R.For_tests.set_h t.oracle h;
-  R.For_tests.set_pc t.oracle base_pc;
-  (R.For_tests.ram t.oracle).(base_pc) <- instr
+  R.Cpu.set_flags t.oracle (packed_flags ~n ~z ~c ~ov);
+  R.Cpu.set_h t.oracle h;
+  R.Cpu.set_pc t.oracle base_pc;
+  (R.Cpu.ram t.oracle).(base_pc) <- instr
 ;;
 
 (* read back the oracle's (regs, flags, pc, h) *)
 let read_oracle t =
-  ( R.For_tests.regs t.oracle
-  , R.For_tests.flags t.oracle
-  , R.For_tests.pc t.oracle
-  , R.For_tests.h t.oracle )
+  R.Cpu.regs t.oracle, R.Cpu.flags t.oracle, R.Cpu.pc t.oracle, R.Cpu.h t.oracle
 ;;
 
 (* full architectural agreement: the 16 registers, the packed flags, pc, and h *)
@@ -177,7 +174,7 @@ let state_eq (hw_regs, hw_flags, hw_pc, hw_h) (or_regs, or_flags, or_pc, or_h) =
 (* run [case] on the oracle and read back the same (regs, flags, pc, h) tuple *)
 let step_oracle t case =
   poke_oracle t case;
-  R.For_tests.single_step t.oracle;
+  R.Cpu.single_step t.oracle;
   read_oracle t
 ;;
 
@@ -350,8 +347,8 @@ let agree_load t ~case ~adr_byte ~byte_mode ~load_val =
   Cyclesim.cycle t.sim;
   let hw = read_core t in
   poke_oracle t case;
-  (R.For_tests.ram t.oracle).(adr_byte lsr 2) <- load_val;
-  R.For_tests.single_step t.oracle;
+  (R.Cpu.ram t.oracle).(adr_byte lsr 2) <- load_val;
+  R.Cpu.single_step t.oracle;
   bus = (adr_byte, 1, 0, byte_mode) && state_eq hw (read_oracle t)
 ;;
 
@@ -413,10 +410,10 @@ let agree_store t ~case ~adr_byte ~init_word ~byte_mode =
   in
   let adr_word = adr_byte lsr 2 in
   poke_oracle t case;
-  (R.For_tests.ram t.oracle).(adr_word) <- init_word;
-  R.For_tests.single_step t.oracle;
+  (R.Cpu.ram t.oracle).(adr_word) <- init_word;
+  R.Cpu.single_step t.oracle;
   bus = (adr_byte, 0, 1, byte_mode)
-  && hw_mem = (R.For_tests.ram t.oracle).(adr_word)
+  && hw_mem = (R.Cpu.ram t.oracle).(adr_word)
   && state_eq hw (read_oracle t)
 ;;
 
@@ -582,14 +579,11 @@ let print_stats () =
    one of the known reasons? In a program any such step ends the comparison (a diverged H
    or carry feeds everything after it), so the case is discarded. *)
 let oracle_next_is_steered t =
-  let instr = (R.For_tests.ram t.oracle).(R.For_tests.pc t.oracle) in
+  let instr = (R.Cpu.ram t.oracle).(R.Cpu.pc t.oracle) in
   instr lsr 31 = 0
   &&
   match
-    authority
-      ~instr
-      ~regs:(R.For_tests.regs t.oracle)
-      ~c:((R.For_tests.flags t.oracle lsr 2) land 1)
+    authority ~instr ~regs:(R.Cpu.regs t.oracle) ~c:((R.Cpu.flags t.oracle lsr 2) land 1)
   with
   | Oracle -> false
   | Skip | Rtl_h _ -> true
@@ -602,15 +596,15 @@ let agree_prog t (instrs, regs, (flags, h, stall_seed), data) =
   (* eight seeded words around the data base; the rest of the region starts at zero *)
   let seeded = List.mapi (fun k w -> (data_base lsr 2) - 4 + k, w) data in
   (* ── the oracle ── *)
-  let oram = R.For_tests.ram t.oracle in
+  let oram = R.Cpu.ram t.oracle in
   Array.fill oram data_lo (data_hi - data_lo) 0;
   List.iter (fun (w, v) -> oram.(w) <- v) seeded;
   Array.fill oram base_pc (prog_len + pad + 1) 0;
   Array.blit prog 0 oram base_pc prog_len;
-  Array.blit regs 0 (R.For_tests.regs t.oracle) 0 16;
-  R.For_tests.set_flags t.oracle flags;
-  R.For_tests.set_h t.oracle h;
-  R.For_tests.set_pc t.oracle base_pc;
+  Array.blit regs 0 (R.Cpu.regs t.oracle) 0 16;
+  R.Cpu.set_flags t.oracle flags;
+  R.Cpu.set_h t.oracle h;
+  R.Cpu.set_pc t.oracle base_pc;
   let steps = ref 0
   and executed = ref 0 (* program instructions, the trailing padding not counted *)
   and loads = ref 0
@@ -619,14 +613,14 @@ let agree_prog t (instrs, regs, (flags, h, stall_seed), data) =
   and multi = ref 0
   and multi_pairs = ref 0
   and prev_multi = ref false in
-  while R.For_tests.pc t.oracle <> end_pc do
+  while R.Cpu.pc t.oracle <> end_pc do
     if !steps > prog_len + pad || oracle_next_is_steered t
     then (
       stats.discarded <- stats.discarded + 1;
       QCheck.assume_fail ());
-    let pc = R.For_tests.pc t.oracle in
+    let pc = R.Cpu.pc t.oracle in
     let instr = oram.(pc) in
-    R.For_tests.single_step t.oracle;
+    R.Cpu.single_step t.oracle;
     incr steps;
     if pc < base_pc + prog_len
     then (
@@ -634,7 +628,7 @@ let agree_prog t (instrs, regs, (flags, h, stall_seed), data) =
       let is_multi = instr lsr 31 = 0 && (instr lsr 16) land 0xF >= 10 in
       (match instr lsr 30 with
        | 2 -> if (instr lsr 29) land 1 = 1 then incr stores else incr loads
-       | 3 -> if R.For_tests.pc t.oracle <> pc + 1 then incr taken
+       | 3 -> if R.Cpu.pc t.oracle <> pc + 1 then incr taken
        | _ -> if is_multi then incr multi);
       if is_multi && !prev_multi then incr multi_pairs;
       prev_multi := is_multi)
