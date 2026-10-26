@@ -1,11 +1,9 @@
-(* Public API and behaviour spec live in [framebuf.mli].
+(* The contract is in [framebuf.mli].
 
-   Implementation note. The window compare and index subtract run combinationally off the
-   core's store signals into the BRAM write port (registered inside the RAM primitive) —
-   the same shape as {!Cache}'s snoop path. [Video.org] is not span-aligned (0x37FC0 mod
-   0x8000 <> 0), so the index is a genuine 15-bit subtract, not a bit-slice. The read side
-   registers [vid_ack]/[vidpar] alongside the RAM's own address register, so the three
-   outputs change together on the cycle after [vidreq]. *)
+   [Video.org] is not aligned to the span (0x37FC0 is not a multiple of 0x8000), so the
+   index is a real 15-bit subtraction, not a bit slice. On the read side [vid_ack] and
+   [vidpar] are registered beside the RAM's own address register, so the three outputs
+   change together, one cycle after [vidreq]. *)
 
 open! Base
 open Hardcaml
@@ -39,11 +37,9 @@ end
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* the store's 22-bit word address (full 16 MiB — exactly {!Cache}'s cached address, and
-     {!Cellram}'s since 2a). This MUST match Cellram's width: with a narrow 18-bit compare a
-     himem store whose low 18 word-bits fall in [base, base+size) would false-match the
-     window and corrupt the shadow (and break shadow ≡ PSRAM, since Cellram no longer
-     aliases). The wide compare places all of himem outside the window. *)
+  (* The store's 22-bit word address. The comparison must be as wide as Cellram's
+     addressing: an 18-bit one would take a store above 1 MiB whose low bits fall in the
+     window for a framebuffer store, and corrupt the shadow. *)
   let wa = select i.adr ~high:23 ~low:2 in
   let in_window = wa >=:. base &: (wa <:. base + size) in
   let widx = select (wa -:. base) ~high:(span_log2 - 1) ~low:0 in
@@ -79,12 +75,9 @@ let create (i : _ I.t) : _ O.t =
   }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── No oracle
-   needed: the contract is a shadow RAM — stores in the window land (word and byte-lane),
-   stores outside it don't (checked at the index they would alias to), and a [vidreq]
-   returns the word one cycle later with [vid_ack]/[vidpar]. A waveform pins the read
-   timing (ack/par/data move together, one cycle after req); a printf test covers the
-   write-path cases. *)
+(* ── Tests ── Stores in the window land, by word and by byte lane; stores outside it do
+   not, checked at the index they would alias to; and a [vidreq] returns the word one
+   cycle later with [vid_ack] and [vidpar]. *)
 
 let%expect_test "framebuf — vidreq timing: ack/par/viddata one cycle after req [waveform]"
   =
@@ -177,10 +170,8 @@ let%expect_test "framebuf — word store, byte-lane store, out-of-window store i
   (* likewise one word past the span's end (word Org + 0x8000, aliasing to index 0) *)
   store ~adr:((base + (1 lsl span_log2)) * 4) ~ben:0 ~wdata:0xFFFFFFFF;
   Stdlib.Printf.printf "above window    : %08X\n" (fetch base);
-  (* 2a himem-alias guard: word (Org + 2^18) is byte 0x1DFF00 in himem, but its low 18
-     word-bits equal Org — an 18-bit window compare would corrupt shadow index 0. The
-     22-bit compare (matching {!Cellram}) places it outside the window, so Org is
-     untouched. *)
+  (* word [org + 2^18] lies above 1 MiB but its low 18 bits equal [org]'s: a narrow
+     comparison would write shadow index 0 *)
   store ~adr:((base + (1 lsl 18)) * 4) ~ben:0 ~wdata:0xFFFFFFFF;
   Stdlib.Printf.printf "himem alias Org : %08X\n" (fetch base);
   (* the span's last word is writable *)

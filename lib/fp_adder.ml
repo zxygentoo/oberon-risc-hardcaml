@@ -1,27 +1,19 @@
-(* Public API and behaviour spec live in [fp_adder.mli].
+(* A port of FPAdder.v; the contract is in [fp_adder.mli].
 
-   Implementation note. A pipelined sequential unit, so per AGENT.md §2 we mirror RISC5.v's
-   skeleton exactly: the registered signals (the three pipeline stages x3/y3, Sum, t3, plus
-   the 2-bit State) and the stall timing are the spec the oracle checks and synthesis
-   preserves; the combinational datapath between the register boundaries is idiomatic
-   Hardcaml. Original RTL is [test/_po/verilog/src/FPAdder.v] (132 lines).
+   The registers are the RTL's: the pipeline stages [x3]/[y3], [Sum] and [t3], and the
+   counter [State]. Stage 0 unpacks the operands, takes the exponent difference to find
+   the larger exponent [e0] and the two shift counts, converts each operand to two's
+   complement and shifts the smaller one right. Stage 1 adds. Stage 2 goes back to sign
+   and magnitude and rounds (the +1 acts on the guard bit), finds the leading 1, shifts it
+   up to the hidden-bit position and adjusts the exponent. The output repacks sign,
+   exponent and mantissa — or, for FLOOR, sign-extends the sum — with zero handled
+   explicitly.
 
-   The pipeline. Stage 0 unpacks x/y into sign, 8-bit exponent and 25-bit mantissa (restored
-   hidden bit + a low guard bit), takes the exponent difference to pick the larger exponent
-   e0 and the right-shift counts, converts the smaller operand to two's complement and
-   denormalizes it, registering x3/y3. Stage 1 registers Sum = sext(x3) + sext(y3). Stage 2
-   converts Sum back to sign-magnitude and rounds (s = |Sum| + 1, the +1 acting on the guard
-   bit), finds the leading one with the z24..z2 detector to get the post-normalize shift
-   count sc, shifts s left into t3, and adjusts the exponent e1 = e0 - sc + 1. The output
-   repacks {sign, e1, t3}, or sign-extends Sum[25:1] for FLOOR, with the zero / FLT-null
-   cases handled explicitly.
-
-   Two idiom choices (§2). The barrel shifts (denormalize, post-normalize) are radix-4 staged
-   in the RTL; here they are log_shift. The denormalize fills with the operand sign rather
-   than the value's MSB, so it is an arithmetic shift of {sign, mantissa} truncated back to
-   25 bits — equivalent to the RTL's {{n{xs}}, ...} fills, saturating to all-sign past 32.
-   The leading-one detector and shift-count encoder, by contrast, are transliterated bit for
-   bit (a priority encoder is exactly where an idiomatic rewrite could silently diverge). *)
+   The two barrel shifts are staged in the RTL and are [log_shift] here. The alignment
+   shift fills with the operand's sign, so it is an arithmetic shift of
+   [{sign, mantissa}]. The leading-one detector and its shift-count encoder are
+   transliterated bit for bit: a priority encoder is exactly where a rewrite could differ
+   without anyone noticing. *)
 
 open! Base
 open Hardcaml
@@ -47,12 +39,10 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* The post-normalize shift count. Stage 2's rounded magnitude [s] has its leading one
-   somewhere in [s[25:2]]; this finds it (a leading-one detector — [z(2k)] is high iff
-   [s[25:2k]] are all zero) and encodes, as a 5-bit count [sc[4:0]], how far to shift [s]
-   left so that one lands at the hidden-bit position. Transliterated bit-for-bit from the
-   RTL (§2 — a priority encoder is exactly where an idiomatic rewrite could silently
-   diverge), so it reads as dense boolean logic by design. *)
+(* The shift count for renormalising. The rounded magnitude [s] has its leading 1
+   somewhere in [s[25:2]]; [z(2k)] is high when [s[25:2k]] are all zero, and the count
+   says how far left to shift so that the 1 lands on the hidden bit. Bit for bit from the
+   RTL. *)
 let shift_count s =
   let sb n = select s ~high:n ~low:n in
   let z24 = ~:(sb 25) &: ~:(sb 24) in
@@ -106,17 +96,11 @@ let shift_count s =
 
 let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create () ~clock:i.clock in
-  (* Phase 7: ce-gate every register — the State counter [reg_fb] and the pipeline regs
-     [reg] — so the unit freezes with the ce-gated core during a multi-cycle PSRAM wait
-     (else State overruns the fetch-wait and the op restarts — see [Divider]). [ce = vdd]
-     (the default) ⇒ byte-identical. *)
+  (* the state freezes with the core under [ce]; see [Divider] *)
   let reg_fb spec ~width ~f = Signal.reg_fb spec ~enable:ce ~width ~f in
   let reg spec d = Signal.reg spec ~enable:ce d in
-  (* Sequential skeleton (final): 2-bit State, run-gated with no reset, stall = run &
-     ~(S==3). *)
-  (* The five pipeline registers are named to match the RTL ([State]/[x3]/[y3]/[Sum]/[t3])
-     so the Phase-8 formal harness can pair the flip-flops with FPAdder.v's (yosys
-     [equiv_make] matches FFs by name — test/formal), as MUL/DIV name their [S]/[P]/[RQ]. *)
+  (* [run] is the enable and the synchronous clear. The registers carry the RTL's names:
+     the equivalence proof pairs registers by name. *)
   let state =
     reg_fb spec ~width:2 ~f:(fun s -> mux2 i.run (s +:. 1) (zero 2)) -- "State"
   in
@@ -143,11 +127,9 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   let e0 = mux2 (msb dx) (uresize ye ~width:9) (uresize xe ~width:9) in
   let sx = mux2 (msb dy) (zero 8) (select dy ~high:7 ~low:0) in
   let sy = mux2 (msb dx) (zero 8) (select dx ~high:7 ~low:0) in
-  (* ---- Stage 0: two's-complement convert + denormalize the smaller operand -> x3, y3
-     ---- *)
-  (* arithmetic right shift of [{sign, mantissa}] by [by], truncated to 25 bits (fills
-     with the operand sign; saturates to all-sign past 32) — the RTL's staged radix-4
-     shifter *)
+  (* ---- Stage 0: to two's complement, and shift the smaller operand right ---- The shift
+     is arithmetic, of [{sign, mantissa}] truncated to 25 bits: it fills with the
+     operand's sign. *)
   let denorm m ~sign ~by = select (log_shift ~f:sra (sign @: m) ~by) ~high:24 ~low:0 in
   (* convert a negative operand to two's complement before the add (not for FLT) *)
   let x0 = mux2 (xs &: ~:(i.u)) (negate xm) xm in
@@ -179,11 +161,9 @@ let create ?(ce = vdd) (i : _ I.t) : _ O.t =
   { O.stall; z }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Value-correctness — the frozen [fp_vectors.txt] replay — is oracle-coupled (it reads
-   the vendored vectors), so it lives in [test/test_fp_adder.ml]. What we pin here is the
-   cycle timing plus one oracle-free sanity value: the 2-bit State walks 0->3, stall holds
-   for States 0..2 then drops at State==3, and a plain FAD 1.0 + 1.0 = 2.0 (0x40000000). *)
+(* ── Tests ── The values are checked in test/test_fp_adder.ml against the frozen vectors.
+   Here: the timing ([State] walks from 0 to 3 and [stall] drops at 3) and one value, 1.0
+   + 1.0. *)
 
 let%expect_test "FPAdder timing — stall envelope (State 0->3) + FAD 1.0 + 1.0 = 2.0" =
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -194,9 +174,8 @@ let%expect_test "FPAdder timing — stall envelope (State 0->3) + FAD 1.0 + 1.0 
   let inp = Cyclesim.inputs sim in
   let outp = Cyclesim.outputs sim in
   let set r v w = r := Bits.of_unsigned_int ~width:w v in
-  (* one idle cycle so the run/stall rising edges show, then a FAD run (u=v=0) with
-     operands held stable across the run (as the core guarantees); z is read when stall
-     drops (State 3), then run releases the next cycle, exactly as the core sequences it. *)
+  (* one idle cycle, then FAD with the operands held; [z] is read when [stall] drops, and
+     [run] is released on the next cycle, as the core does *)
   set inp.u 0 1;
   set inp.v 0 1;
   set inp.x 0x3F80_0000 32;

@@ -1,10 +1,5 @@
-(* Phase 3b — FPDivider value-correctness against the frozen fp_vectors (the always-on,
-   Verilator-free behavioural layer; the RTL-fidelity co-sim in test/cosim/ is the
-   separate, opt-in fidelity oracle — AGENT.md §6).
-
-   Like FML and unlike the adder, FDV has no compiler-unreachable domain and no
-   emulator-vs-RTL divergence (AGENT.md §8), so it needs no steering: replay every
-   D-vector and fuzz against Emu.Fp via the shared [Fp_replay.simple_value_test]. *)
+(* The FP divider's values: every frozen D vector, then a fuzz against [Emu.Fp]. The
+   emulator and FPDivider.v agree on every input, so nothing is skipped. *)
 
 open Hardcaml
 module Fp = Risc5.Fp_divider

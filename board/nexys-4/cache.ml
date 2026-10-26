@@ -1,11 +1,8 @@
-(* Public API + the placement/coherence/geometry rationale live in [cache.mli].
+(* The contract, and the coherence argument, are in [cache.mli].
 
-   Implementation note. The line is packed into one [multiport_memory] word:
-   {valid[1]; tag[tag_w]; data[32]}, read asynchronously (combinational hit). One synchronous
-   write port serves both fill (read-miss retire) and invalidate (snooped store) — they never
-   coincide (the core is single-issue: a cycle is a fetch, a load, or a store), so [we]/[wd]
-   just mux between them. The write port is feedback-driven ([fill]/[invalidate] depend on the
-   read of the same line), so [we]/[wd] are wires assigned after the memory. *)
+   A line is one [multiport_memory] word, {valid, tag, data}, read asynchronously. The
+   single write port's enable and data depend on the read of the same line, so they are
+   wires, assigned after the memory. *)
 
 open! Base
 open Hardcaml
@@ -36,14 +33,12 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* [lines_log2] = log2 of the number of lines (default 1024 lines = 4 KiB of data). The
-   cached address is the 22-bit word address of the 16 MiB space ([adr[23:2]]); index = its
-   low [lines_log2] bits, tag = the rest. (Widened from the 1 MB / 18-bit map for himem —
-   DOOM.md §3 track 2a; the extra tag bits distinguish [1 MB, 16 MB) from its low-1 MB
-   alias, so a himem line can no longer false-hit a low-memory one.) *)
+(* The cached address is the 22-bit word address [adr[23:2]]: its low [lines_log2] bits
+   index, the rest is the tag. The tag covers the whole 16 MiB, so a word above 1 MiB
+   cannot hit the line of its low alias. *)
 let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
-  (* outside 1..21 the index/tag selects die inside Hardcaml with an opaque width error
-     (22 would need a degenerate 0-bit tag); fail legibly at the seam instead *)
+  (* outside 1..21 the index and tag selections would fail inside Hardcaml, with a width
+     error far from the cause *)
   if lines_log2 < 1 || lines_log2 > 21
   then
     failwith
@@ -56,7 +51,6 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
   let wa = select i.adr ~high:23 ~low:2 in
   let index = select wa ~high:(lines_log2 - 1) ~low:0 in
   let tag = select wa ~high:21 ~low:lines_log2 in
-  (* one synchronous write port, feedback-driven (fill/invalidate depend on the read) *)
   let we = wire 1 in
   let wd = wire line_w in
   let write_port =
@@ -80,14 +74,10 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
   let stored_data = select stored ~high:31 ~low:0 in
   let tag_match = stored_valid &: (stored_tag ==: tag) in
   let hit = i.cacheable_read &: tag_match in
-  (* fill a read miss when it retires; on a store that hits, either UPDATE the line in
-     place (Phase-10b [write_update], word stores — the same write-through transaction
-     lands the same word in PSRAM, so the coherence invariant is untouched; idempotent
-     across the frozen store cycles since the ce-frozen core holds [adr]/[wdata] stable)
-     or drop it (byte stores — merging one lane would need read-modify; and the whole
-     store-hit case when [write_update] is off, the proven Phase-10a policy). All three
-     are mutually exclusive (fill needs a read cycle; update/invalidate split on [ben]),
-     so one write port still serves them all. *)
+  (* A read miss fills its line when it retires. A store that hits either rewrites the
+     line (a word store under [write_update]; harmless to repeat over the cycles a frozen
+     core holds the store) or drops it. The three never coincide, so one write port serves
+     them. *)
   let fill = i.cacheable_read &: i.ce &: ~:hit in
   let store_hit = i.write &: tag_match in
   let update = if write_update then store_hit &: ~:(i.ben) else gnd in
@@ -99,19 +89,12 @@ let create ?(lines_log2 = 10) ?(write_update = false) (i : _ I.t) : _ O.t =
   { O.hit; rdata = stored_data }
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ────────────────────────────────────────── Coherence
-   is the property that matters (§5): a fill makes a line hit, a tag-mismatch at the same
-   index does *not* (no false hit), and a snooped store drops the line. Drive the raw [I]
-   ports — the cache is its own spec, no oracle — and check hit/rdata; then freeze a
-   waveform of the same sequence. Note [multiport_memory]'s async read is post-write in
-   Cyclesim (like the register file, §6), so a line filled this cycle reads back next
-   cycle; the [fill] write enable is latched from the *pre*-edge [hit] (= 0 on the miss),
-   so a read miss fills exactly once. *)
+(* ── Tests ── A fill makes a line hit; another address with the same index does not; a
+   store drops the line. [multiport_memory]'s asynchronous read shows a write on the cycle
+   after it, so a line filled in one cycle reads back in the next. *)
 
-(* Shared drivers for the four tests below: [set] pokes one input ref; [step] presents one
-   cycle's inputs and clocks. [read]/[write] default to a plain cacheable read; omitted
-   optional inputs are left untouched — the 2a test latches [fill_data] once outside its
-   steps. *)
+(* [set] pokes an input; [step] presents one cycle's inputs and clocks. Optional inputs
+   left out keep their level. *)
 let set r v w = r := Bits.of_unsigned_int ~width:w v
 
 let step sim (inp : _ I.t) ?(read = 1) ?(write = 0) ?ben ?fill ?wdata ~adr ~ce () =
@@ -159,9 +142,8 @@ let%expect_test "icache — fill hits, tag-mismatch misses, store snoop-invalida
     |}]
 ;;
 
-(* Phase-10b [write_update]: a WORD store that hits refreshes the line in place (the next
-   load serves the STORED word — the store-then-load pattern that was 96% of load misses
-   under snoop-invalidate); a BYTE store still kills the line. *)
+(* With [write_update] a word store that hits refreshes the line, so the next load returns
+   the stored word; a byte store still drops it. *)
 let%expect_test "icache — write-update: word store refreshes in place, byte store \
                  invalidates [coherence]"
   =
@@ -193,11 +175,9 @@ let%expect_test "icache — write-update: word store refreshes in place, byte st
     |}]
 ;;
 
-(* 2a (DOOM.md §3): the tag widened 18→22 bits so a himem line can't false-hit its low-1
-   MB alias. Low word 0x10 (byte 0x40) and himem word 0x40010 (byte 0x100040) share index
-   0x10 and, under the OLD 18-bit tag, the same tag (bit 18 dropped) — the himem read
-   would have false-hit the low line. With the 22-bit tag their tags differ (0 vs 0x100),
-   so it misses. *)
+(* Two words that share index 0x10, one in low memory (byte 0x40) and one above 1 MiB
+   (byte 0x100040). Their 22-bit tags differ, so the second misses; with an 18-bit tag it
+   would have hit the first one's line. *)
 let%expect_test "icache — 2a: a himem [1 MB, 16 MB) line does not alias low memory" =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in

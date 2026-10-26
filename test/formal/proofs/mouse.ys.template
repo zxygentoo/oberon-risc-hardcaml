@@ -1,4 +1,4 @@
-# Mouse open-drain equivalence (AGENT.md §6, README Tier 2). MousePM.v's MouseP has
+# Mouse open-drain equivalence (see ../README.md). MousePM.v's MouseP has
 # bidirectional open-drain `inout msclk, msdat`; our gate splits each into a *_oe drive + a
 # resolved-value input. mouse_shim.v wraps BOTH into one interface (a free external read +
 # the resolved line as the observable). Driven by Yosys_equiv.run_proof. Placeholders (named
@@ -26,6 +26,8 @@ setundef -one
 memory
 opt
 equiv_make {gold_shim} {ours_shim} equiv
+# keep: an $equiv whose output nothing reads must still be proven, not swept by opt_clean.
+setattr -set keep 1 t:$equiv
 hierarchy -top equiv
 opt -full
 equiv_simple

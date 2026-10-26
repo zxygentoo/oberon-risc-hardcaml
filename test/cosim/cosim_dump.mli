@@ -1,8 +1,5 @@
-(* Shared helpers for the RTL-fidelity dumpers (test/cosim/dump_*.ml). Each dumper drives
-   a Hardcaml unit over a stimulus set and writes a per-cycle hex trace; these are the
-   atoms every dumper repeats. The per-unit reset + frame/transfer loop stays in each
-   dumper (its protocol is its own), so this is just the shared vocabulary, not a
-   framework. *)
+(* The few helpers every co-simulation dumper repeats. Each dumper keeps its own reset and
+   transfer loop: its protocol is its own. *)
 
 open Hardcaml
 

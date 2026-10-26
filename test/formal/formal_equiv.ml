@@ -5,14 +5,12 @@ type result =
   | Equivalent
   | Counterexample
 
-(* Drive yosys ourselves rather than via [Hardcaml_of_verilog.Synthesize]. Reason: yosys
-   0.65 emits cell parameters as binary strings by default, which hardcaml_of_verilog's
-   techlib rejects ("expecting int parameter"); [write_json -compat-int] emits them as
-   JSON numbers instead, but hardcaml_of_verilog's built-in script omits the flag. We
-   replicate its default lowering passes (proc/flatten/memory/opt/clean) and add
-   [-compat-int], then feed the JSON into its exposed
-   [Yosys_netlist.of_string -> Netlist -> Verilog_circuit] path — so no fork of
-   hardcaml_of_verilog is needed. *)
+(* yosys is driven here and not through [Hardcaml_of_verilog.Synthesize]. yosys 0.65
+   writes cell parameters as binary strings, which the importer's techlib rejects
+   ("expecting int parameter"); [write_json -compat-int] writes them as numbers, but the
+   importer's own script does not pass the flag. So its lowering passes (proc, flatten,
+   memory, opt, clean) are repeated here with the flag added, and the JSON goes in through
+   the public [Yosys_netlist.of_string] path: no fork of the importer is needed. *)
 let import ~work_dir ~verilog ~top_module =
   ignore
     (Stdlib.Sys.command (Printf.sprintf "mkdir -p %s" (Stdlib.Filename.quote work_dir)));
@@ -50,10 +48,7 @@ let import ~work_dir ~verilog ~top_module =
   |> Or_error.ok_exn
 ;;
 
-(* Combinational equivalence of two in-process Hardcaml circuits (no .v import) — for a
-   property checked against a spec we WRITE in Hardcaml rather than a reference .v (e.g.
-   the VID look-ahead address ≡ a geometry spec). Sec builds the miter and SAT-checks it
-   with z3; it pairs by port name, so [ours] and [spec] must share input/output names. *)
+(* [Sec] builds the miter and z3 checks it; ports are paired by name. *)
 let check_circuits ~ours ~spec =
   let sec = Hardcaml_verify.Sec.create ours spec |> Or_error.ok_exn in
   match Hardcaml_verify.Sec.circuits_equivalent sec |> Or_error.ok_exn with

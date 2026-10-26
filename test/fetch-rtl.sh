@@ -5,13 +5,14 @@
 # archive and checksum-verified against test/rtl-sources.txt — so a fresh clone with
 # verilator just works while we ship only the provenance pins, never the copyrighted RTL.
 #
-# A checksum mismatch means upstream drifted from the exact revision the port (and AGENT.md
-# §8's RTL line-number citations) was verified against, so we refuse rather than co-sim against
-# unknown RTL. Updating to a newer upstream revision is a deliberate edit of rtl-sources.txt.
+# A checksum mismatch means upstream drifted from the exact revision the port was verified
+# against (and whose line numbers the documentation cites), so we refuse rather than co-sim
+# against unknown RTL. Updating to a newer upstream revision is a deliberate edit of rtl-sources.txt.
 #
 # Standalone or called by the cosim/formal runners; toolchain-free (curl/unzip/sha256sum/awk/grep, no opam).
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+# the repo root, from this script's own location (works in a release tarball, no git needed)
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 manifest=test/rtl-sources.txt
 rtl_dir=test/_po/verilog/src
@@ -34,16 +35,19 @@ url=$(awk '$1=="#" && $2=="url" {print $3}' "$manifest")
 zip_sha=$(awk '$1=="#" && $2=="zip256" {print $3}' "$manifest")
 zip="$work_root/OStationVerilog.zip"
 
-echo "[rtl] fetching reference Verilog: $url"
-curl -fsSL -o "$zip" "$url" || {
-  echo "[rtl] fetch failed (offline?). Manual fallback: download $url and unzip its" >&2
-  echo "      src/*.v into $rtl_dir/, then re-run." >&2
-  exit 2
-}
-echo "$zip_sha  $zip" | sha256sum -c --status - || {
-  echo "[rtl] archive checksum mismatch — upstream changed; refusing (see $manifest)" >&2
-  exit 2
-}
+# a previously downloaded archive that still matches its pin is reused (offline-friendly)
+if ! echo "$zip_sha  $zip" | sha256sum -c --status - 2>/dev/null; then
+  echo "[rtl] fetching reference Verilog: $url"
+  curl -fsSL -o "$zip" "$url" || {
+    echo "[rtl] fetch failed (offline?). Manual fallback: download $url and unzip its" >&2
+    echo "      src/*.v into $rtl_dir/, then re-run." >&2
+    exit 2
+  }
+  echo "$zip_sha  $zip" | sha256sum -c --status - || {
+    echo "[rtl] archive checksum mismatch — upstream changed; refusing (see $manifest)" >&2
+    exit 2
+  }
+fi
 mkdir -p "$rtl_dir"
 unzip -o -q "$zip" 'src/*.v' -d "$work_root"
 cp "$work_root"/src/*.v "$rtl_dir"/

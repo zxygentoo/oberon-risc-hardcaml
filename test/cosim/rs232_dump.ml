@@ -1,22 +1,14 @@
-(* RTL-fidelity dumper for the RS232 UART — both directions, selected by argv:
-   [rs232_dump rs232t] (the transmitter) or [rs232_dump rs232r] (the receiver).
+(* The dumper for the UART, in the direction given by its argument: [rs232_dump rs232t] or
+   [rs232_dump rs232r]. Both use the same stimuli — eight corner bytes at both rates, then
+   a seeded random pass — but their protocols differ:
+   - the transmitter is driven with (fsel, data), and (rdy, txd) is recorded every cycle
+     from [start] until [rdy] returns. Line: "fsel data cycles hextrace", a digit = rdy<<1
+     | txd;
+   - the receiver is fed a frame on [rxd] at the bit period, drained to [rdy], and
+     acknowledged with [done_]; the inputs driven and [rdy] are recorded every cycle.
+     Line: "fsel data hextrace", a digit = done_<<2 | rxd<<1 | rdy.
 
-   The two share the test-vector driver ([drive]: the 8 corner bytes in both baud rates,
-   then an rng-`0x232` fast/slow fuzz pass) and the reset/`emit` shape, but their
-   per-frame protocol genuinely differs, so each keeps its own [frame]:
-
-   - TX is a serial handshake (start/rdy), OUTPUT-only: drive (fsel, data), then record
-     for EVERY cycle from [start] to [rdy] re-raising the (rdy, txd) observed. Line: "fsel
-     data cycles hextrace", hextrace nibble = rdy<<1 | txd. No value column — [txd] IS the
-     serialised value, checked each cycle.
-   - RX is INPUT-driven: play the sender — hold a UART frame on [rxd] (start, 8 data
-     LSbit-first, stop) at the baud period, drain to [rdy], capture the byte, ack with
-     [done_] — recording per cycle the inputs driven + [rdy]. Line: "fsel data hextrace"
-     (data = recovered byte, checked when rdy=1), hextrace nibble = done_<<2 | rxd<<1 |
-     rdy.
-
-   The matching Verilator harnesses (rs232t.cpp / rs232r.cpp) replay the identical
-   stimulus through the reference RS232T.v / RS232R.v and assert cycle-by-cycle equality. *)
+   rs232t.cpp and rs232r.cpp replay the same through RS232T.v and RS232R.v. *)
 
 open Hardcaml
 open Cosim_dump
@@ -25,10 +17,8 @@ module Uart_rx = Risc5.Uart_rx
 module Sim_t = Cyclesim.With_interface (Uart_tx.I) (Uart_tx.O)
 module Sim_r = Cyclesim.With_interface (Uart_rx.I) (Uart_rx.O)
 
-(* shared stimulus: the 8 corner bytes in both rates, then a fuzz pass biased to the cheap
-   fast rate (fsel=1) over the slow rate (fsel=0). The framing is data-independent in
-   structure (only WHICH bits appear changes), so a modest spread across both rates
-   exhausts the datapath. *)
+(* the stimuli: eight corner bytes at both rates, then a random pass that favours the fast
+   rate *)
 let corners = [ 0x00; 0xFF; 0xA5; 0x5A; 0x01; 0x80; 0x7F; 0xC3 ]
 
 let drive ~emit ~fast_n ~slow_n =
@@ -53,9 +43,7 @@ let tx () =
   let sim = Sim_t.create Uart_tx.create in
   let inp = (Cyclesim.inputs sim : _ Uart_tx.I.t) in
   let outp = (Cyclesim.outputs sim : _ Uart_tx.O.t) in
-  (* reset (rst_n active-low, synchronous), then frames back-to-back: after each one the
-     unit returns to rdy=1 / tick=0, so [start] re-arms it cleanly — exactly as the .cpp
-     does. *)
+  (* reset, then frames back to back, as in the .cpp *)
   set inp.rst_n 0;
   set inp.start 0;
   set inp.fsel 0;

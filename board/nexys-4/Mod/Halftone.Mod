@@ -5,7 +5,7 @@ MODULE Halftone; (*the display mode's Oberon face (seam spec: ABI.md §11 in the
   This module is the thin system service any Oberon program uses to put grayscale
   pixels on the 1-bit panel: Claim, then three calls (Open + LinearRows, Bayer8,
   ToneIdentity, On) get a working window; Release when done. DOOM's blob keeps
-  talking raw MMIO per its own seam (AGENT.md paragraph 5, blob-talks-MMIO);
+  talking raw MMIO per its own seam;
   Mandel.Mod is this module's first client.
 
   SINGLE OWNER, enforced at CONSUMER lifetime: there is exactly one rect in

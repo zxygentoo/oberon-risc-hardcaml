@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
   int rstn, dmc, dmd, mco, mdo;
   unsigned out;
 
-  while (fscanf(f, "%d %d %d %d %d %x", &rstn, &dmc, &dmd, &mco, &mdo, &out) == 6) {
+  while (record_read(f, fscanf(f, "%d %d %d %d %d %x", &rstn, &dmc, &dmd, &mco, &mdo, &out), 6)) {
     dut->rst = rstn;
     // resolve the open-drain with the RTL's current (pre-edge) pull-low + the device's drive
     dut->msclk_in = !(dut->msclk_oe || dmc);
@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     }
     n++;
   }
+  if (n == 0) bad_dump(f, "no records");
   fclose(f);
   printf("mouse co-sim: %ld cycles, %ld mismatch\n", n, mismatch);
   if (mismatch == 0) printf("==> Hardcaml Mouse is bit-exact AND cycle-exact to MousePM.v.\n");

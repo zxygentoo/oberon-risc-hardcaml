@@ -1,11 +1,4 @@
-(* Public API and behaviour spec live in [rom.mli].
-
-   Implementation note. Two halves of one artifact in one module: the ROM {b circuit} (the
-   port of [PROM.v] -- a [reg [31:0] mem[511:0]] read on the inverted clock; the .mli
-   explains why the asynchronous-read model is edge-equivalent) and the boot {b image} it
-   ships ([bootloader], transcribed from [prom.mem]). The circuit takes its image as
-   [~contents] so tests can feed hand-assembled programs; the canonical image lives
-   alongside so the [risc5] library is a self-contained port of the machine. *)
+(* The contract is in [rom.mli]: the ROM circuit, and the boot image it ships. *)
 
 open! Base
 open Hardcaml
@@ -34,8 +27,8 @@ let create ~contents (i : _ I.t) : _ O.t =
   { O.data = reads.(0) }
 ;;
 
-(* The 383-word PROM image proper, transcribed from [PROM.v]/[prom.mem] (verbatim-equal to
-   the C [risc-boot.inc]); [bootloader] zero-fills to 512. *)
+(* The 383-word boot image, verbatim the C emulator's [risc-boot.inc] (see the .mli for
+   how it differs from the 2018 archive's [prom.mem]); [bootloader] zero-fills to 512. *)
 let image =
   [| 0xE7000151
    ; 0x00000000
@@ -428,11 +421,8 @@ let bootloader =
   Array.init 512 ~f:(fun i -> if i < Array.length image then image.(i) else 0)
 ;;
 
-(* ── Tests (co-located; AGENT.md §6) ──────────────────────────────────────────
-   Correctness: load a recognisable image and read back all 512 words — deterministic, so
-   a plain loop, not qcheck; the image array is its own spec, no oracle. Behaviour: a
-   frozen waveform of a few reads showing the asynchronous read (data tracks adr within
-   the cycle). *)
+(* ── Tests ── Every word of a recognisable image reads back, and a waveform shows the
+   read following the address within the cycle. *)
 
 let test_image = Array.init depth ~f:(fun k -> 0xC0DE0000 lor k)
 

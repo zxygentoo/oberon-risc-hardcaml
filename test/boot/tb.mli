@@ -1,17 +1,19 @@
-(** The Cyclesim-side half shared by the four boot gates (both checkpoints, both visual
-    goldens): loud by-name lookups, the SPI/SD-card tick, and the run-to-handoff driver.
-    SoC-independent — both SoCs expose the same register/memory names; each gate supplies
-    its sim construction, reset preamble, and RAM readback as closures. The Hardcaml-free
-    half is {!Boot_checkpoint_common}. *)
+(** The Cyclesim side of the boot harness: lookups by name that fail loudly, the SD card's
+    tick, the drive to the handoff, and the scan-out capture. It works for either SoC,
+    since both use the same register and memory names; each gate supplies its sim, its
+    reset sequence and its RAM reader. *)
 
 open Hardcaml
 
-(** by-name lookups that fail loudly — a silent [None] would read as zeros (AGENT.md §6) *)
+(** a SoC word pc below this has left the ROM-decode region for low RAM — the OS handoff *)
+val rom_region_base : int
+
+(** lookups by name that fail loudly: one that silently found nothing would read as zeros *)
 val lookup_reg : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Reg.t
 
 val lookup_mem : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Memory.t
 
-(** node-or-reg lookup — plain node lookup misses registers (AGENT.md §6) *)
+(** a node or a register: the plain node lookup does not find registers *)
 val lookup_node : ('i, 'o) Cyclesim.t -> string -> Cyclesim.Node.t
 
 (** the packed N/Z/C/OV flags word (Z | N<<1 | C<<2 | V<<3), as the oracle reads it *)
@@ -34,12 +36,24 @@ module Spi : sig
   (** one sim cycle with the SD card on the wire: present miso, cycle, advance the bridge *)
   val tick : ('i, 'o) Cyclesim.t -> t -> unit
 
-  (** the tick's halves, for split-phase harnesses that own their clock edge
-      (risc_core_dump's pre-edge capture): [set_miso] before the edge, [step] after *)
+  (** the tick's halves, for split-phase harnesses that own their clock edge (core_dump's
+      pre-edge capture): [set_miso] before the edge, [step] after *)
   val set_miso : t -> unit
 
   val step : t -> unit
 end
+
+(** [scan_frame sim ~tick ~rgb] runs one full raster frame of [tick]s and rebuilds the
+    framebuffer from what actually leaves the [rgb] pins (raster position read from the
+    [hcnt]/[vcnt] registers). Returns the image, in {!Golden}'s framebuffer layout, and
+    the number of lit pixels seen {e outside} the visible window (blanking must be dark).
+    The goldens compare it to the framebuffer memory they hashed, which puts the whole
+    scan-out path — fetch, shadow read port, display-mode mux, shifter — under the gate. *)
+val scan_frame
+  :  ('i, 'o) Cyclesim.t
+  -> tick:(unit -> unit)
+  -> rgb:Bits.t ref
+  -> int array * int
 
 (** [run_to_handoff ~sim ~miso ~sclk ~reset ~cap ~ram ()] boots [sim] from the real disk
     to the OS handoff and snapshots the architectural state ([None] if pc never leaves the
@@ -53,4 +67,4 @@ val run_to_handoff
   -> cap:int
   -> ram:(unit -> int -> int)
   -> unit
-  -> Boot_checkpoint_common.snapshot option
+  -> Checkpoint.snapshot option

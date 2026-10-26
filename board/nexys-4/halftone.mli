@@ -1,24 +1,20 @@
-(** [Halftone] — the machine's indexed/grayscale display mode, v2 (the generality rework):
-    a client-defined 8bpp source window scanned out to a RECTANGLE of the 1024x768 mono
-    panel through a CPU-uploaded tone LUT, threshold map, row map and scale registers —
-    ordered dithering at scanout. The v1 experiment (DOOM's dither moved into hardware)
-    baked the 320x200 → fullscreen geometry into ROMs; v2 keeps only MECHANISM in hardware
-    — every policy (tone, thresholds, and now geometry) arrives from the client at
-    runtime, so DOOM is one client among any Oberon program that wants grayscale pixels
-    (the seam spec: the DOOM repo's ABI.md §11).
+(** An 8-bit display mode: a window of 8-bit pixels that the client fills is shown in a
+    rectangle of the 1024x768 mono screen, dithered at scan-out through a tone table, a
+    threshold map, a row map and scale registers that the client uploads. The hardware
+    holds only the mechanism; tone, thresholds and geometry are all the client's.
 
-    The Phase-10c {!Framebuf} trick still: a write-through shadow of the himem windows
-    below serves {!Risc5.Video}'s [vidreq] with a compose FSM; the board muxes
-    Halftone/Framebuf per completing request on {!O.claim} — inside the rect this module
-    answers, outside (and whenever the mode is off) the mono shadow does.
+    Like {!Framebuf} it is a write-through shadow, here of two windows of high memory, and
+    it answers {!Risc5.Video}'s fetches from that shadow. The board selects between the
+    two per request on {!O.claim}: inside the rectangle this module answers; outside it,
+    and whenever the mode is off, the mono shadow does.
 
     {1 The pixel window (64 KiB at {!base} = [0x310000])}
 
-    - [+0 .. +63999] — pixel bytes. MEANING IS CLIENT-DEFINED: the row map names each
-      displayed row's byte offset in the window, so image layout/stride/double-buffering
-      are all software policy.
-    - [{!lut_off} .. +64255] — tone LUT (index = pixel byte, value = 8-bit gray).
-    - [{!ctl_off} ..] — the register block, word stores:
+    - [+0 .. +63999]: pixel bytes. Their layout is the client's: the row map gives each
+      displayed row's byte offset in the window, so stride and double buffering are
+      software.
+    - [{!lut_off} .. +64255]: the tone table (index = pixel byte, value = 8-bit grey).
+    - [{!ctl_off} ..]: the registers, written by word stores:
 
     {v
     reg     off  bits  semantics
@@ -32,29 +28,27 @@
     XOFF    +28  16    starting source byte column (DDA seeds sx := XOFF at row start)
     v}
 
-    Geometry registers are SHADOWED: stores land in shadows, the hardware latches shadow →
-    active once per frame at vblank entry (no mid-frame tearing; a zero-sized power-up
-    rect claims nothing, so mode-off elaboration stays display-identical to a board
-    without the module). CTL bit 0 is immediate — [exit()]'s instant desktop restore.
-    Registers are write-only (CPU loads of the window read PSRAM truth); status is on MMIO
-    (below).
+    The geometry registers are shadowed: a store lands in a shadow, and the shadows become
+    active once per frame, on entry to vertical blanking, so the picture never tears in
+    mid-frame. At power-up the active rectangle is empty and claims nothing. CTL bit 0
+    takes effect at once. The registers cannot be read back: a load from the window reads
+    the PSRAM.
 
     {1 The table window (8 KiB at {!thr_base} = [0x30E000])}
 
-    - [+0 .. +4095] — threshold map, VERBATIM: 64x64 bytes row-major ([map[row*64 + col]];
-      byte or word stores). The v1 slot-quad packing is gone.
-    - [{!rowmap_off} .. +7167] — row map: 768 words, entry [y] (rect-relative output row)
-      = [{thr_row[21:16], row_base[15:0]}] — the source row's byte offset in the pixel
-      window and the threshold-map row for that output line. WORD STORES ONLY (one 32-bit
-      RAM, no byte lanes). Any vertical scale/dealing/double-buffer flip is a software
-      loop filling these words; no vertical DDA exists in hardware. DOOM uploads the exact
-      out2 dealing, keeping hardware ≡ [__dg_dither_fs] bit-identical.
+    - [+0 .. +4095]: the threshold map, 64x64 bytes in row order ([map[row*64 + col]]),
+      written by byte or word stores.
+    - [{!rowmap_off} .. +7167]: the row map, 768 words. Entry [y], a row of the rectangle,
+      is [{thr_row[21:16], row_base[15:0]}]: the byte offset of its source row in the
+      pixel window, and its row of the threshold map. Word stores only. All vertical
+      geometry — scaling, letterboxing, flipping between buffers — is a software loop
+      filling these words; the hardware has no vertical scaler.
 
-    {1 The decision function and the horizontal DDA (frozen)}
+    {1 The decision and the horizontal scaler}
 
-    Per output pixel of a claimed word:
-    [bit = lut[pix[row_base + sx]] > thr[thr_row][ox & 63]] (bit 0 of a word = leftmost
-    pixel), with [sx] advanced by the output-driven DDA:
+    For each output pixel of a claimed word:
+    [bit = lut[pix[row_base + sx]] > thr[thr_row][ox & 63]] (bit 0 of a word is the
+    leftmost pixel), with [sx] stepped by the output pixel:
 
     {v
     row start (first claimed word of a rect row):  sx := XOFF;  acc := XDEN
@@ -62,39 +56,35 @@
                        if acc > XNUM then (acc := acc - XNUM; sx := sx + 1)
     v}
 
-    At XNUM/XDEN = 16/5 this deals source widths 3,3,3,3,4 — exactly the v1 slot tables
-    (pinned by the tests' full-frame hash). DDA state (and the FSM's 2-word source window)
-    carries ACROSS the words of a rect row: correctness relies on {!Risc5.Video}'s
-    raster-order request stream (every visible word, in order — true by construction of
-    the prefetch). Blanking-time fetches ([y >= 768]) are never claimed.
+    At 16/5 this deals source widths 3, 3, 3, 3, 4. The scaler's state carries across the
+    words of a row, which relies on {!Risc5.Video} requesting every visible word in raster
+    order, as it does. Fetches during blanking are never claimed.
 
     {1 Frame sync}
 
-    Video issues NO fetches during vertical blanking ([req0] is gated with [~vblank]), so
-    blanking is visible at this seam as a REQUEST GAP — ~47k clk of silence against ~300
-    clk for the longest in-frame gap (hblank) — and a saturating watchdog detects it with
-    no CDC and no Video changes: {!O.status} bit 0 = vblank (entry fires ~68 us into the
-    ~786 us blanking), bits [15:8] = an 8-bit frame counter (increments at vblank entry —
-    the edge that also latches the geometry shadows). The board SoC wires [status] into
-    the MMIO read mux at slot 10 ([0xFFFFE8], read-only) — the machine's frame clock for
-    [Halftone.Sync] and animation pacing.
+    Video issues no fetch during vertical blanking, so here blanking shows as a gap in the
+    requests: about 47,000 clocks of silence, against about 300 for the longest gap within
+    a frame. A saturating counter detects it, with no clock-domain crossing and no change
+    to Video. {!O.status} bit 0 is the blanking flag, raised early in the blanking
+    interval, and bits 15..8 count frames, stepping on that same edge — the one that also
+    makes the geometry shadows active. The SoC puts [status] at MMIO slot 10 ([0xFFFFE8],
+    read only): the frame clock for a client that paces itself, or writes between frames.
 
     {1 Coherence and timing}
 
-    Stores tap the same write-through transaction {!Framebuf} snoops (PSRAM keeps the
-    truth; CPU loads never touch this module). A claimed compose takes 21 clk from
-    [vidreq] to [vid_ack] at ANY scale — 2 output px/clock (one aligned 4-lane threshold
-    read per beat PAIR, fixed pair accumulation) over a 2-word sliding source window (one
-    pixel-shadow read per clock, its address pure registered state — at <= 2 source bytes
-    per beat two window slides are never consecutive, the 60 MHz closure lesson) — inside
-    Video's ~2-group prefetch budget (~59 clk at 60 MHz) and its ~29.5-clk sustained
-    request spacing. All memories are sync-read byte-lane BRAMs except the tone LUT (async
-    LUTRAM, replicated x2 for the two per-clock lookups); the row map is one 32-bit
-    synchronous RAM read at request-accept. *)
+    Stores are taken from the same transaction {!Framebuf} takes them from; the PSRAM
+    keeps the truth and CPU loads never involve this module. A claimed word takes 21
+    clocks from request to acknowledge at any scale: two output pixels per clock, over a
+    sliding window of two source words. A request arriving while a word is being composed
+    is dropped, so those 21 clocks must fit between Video's requests, 32 pixels apart: the
+    system clock must be faster than 42.7 MHz. The pixel and threshold memories are
+    synchronous byte-lane block RAMs; the tone table is asynchronous distributed RAM, in
+    two copies for the two lookups of a clock; the row map is one 32-bit RAM read when a
+    request is accepted. *)
 
 open Hardcaml
 
-(** Byte base of the 64 KiB pixel window: [0x310000] (ABI.md §11, the DOOM repo). *)
+(** Byte base of the 64 KiB pixel window: [0x310000]. *)
 val base : int
 
 (** Pixel window size in bytes (64 KiB — decode is [adr[23:16] = base >> 16]). *)
@@ -116,9 +106,8 @@ val thr_size : int
     [{thr_row[21:16], row_base[15:0]}], word stores only. *)
 val rowmap_off : int
 
-(** The status word's MMIO read slot: [10] (byte [0xFFFFE8]). The one authority — the SoC
-    passes [status_slot, status] to {!Risc5.Peripherals.create}, whose collision check
-    then guards the value; the Oberon driver mirrors it (ABI §11). *)
+(** The status word's MMIO read slot, 10 (byte [0xFFFFE8]). The SoC passes it to
+    {!Risc5.Peripherals.create}, which checks it against the other slots. *)
 val status_slot : int
 
 module I : sig

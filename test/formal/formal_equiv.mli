@@ -1,13 +1,12 @@
-(** Formal logic-equivalence of a Hardcaml circuit against its reference Verilog.
+(** Combinational equivalence of a Hardcaml circuit and its reference Verilog.
 
-    The "Formal" layer of the verification pyramid (AGENT.md §6): where [test/cosim]
-    {e simulates} a unit against its reference [.v] and compares samples, this {e proves}
-    the two compute the identical function — exhaustively, via SAT, over every input.
-    Combinational only ([hardcaml_verify]'s [Sec]: "stateful logic must be the same
-    between the two circuits"), which is a complete proof for the datapath blocks
-    (shifters, ALU logic/adder) and a deferred problem for the stateful units.
+    Where [test/cosim] simulates a unit against its [.v] and compares samples, this proves
+    that the two compute the same function, over every input, by SAT. [hardcaml_verify]'s
+    [Sec] requires the stateful logic of the two circuits to be the same, so this is a
+    complete proof for the combinational blocks only; the units with state are proven by
+    {!Yosys_equiv}.
 
-    Needs [yosys] (to import the Verilog) and [z3] ([Sec]'s SAT backend) on PATH. *)
+    Needs [yosys] (to import the Verilog) and [z3] ([Sec]'s solver) on PATH. *)
 
 open! Base
 open Hardcaml
@@ -30,9 +29,8 @@ val check
   -> ours:Circuit.t
   -> result
 
-(** [check_circuits ~ours ~spec] proves [ours] computes the identical combinational
-    function as [spec] — two in-process Hardcaml circuits, [Sec]-checked by z3 (no [.v]
-    import). For a property checked against a spec written in Hardcaml rather than a
-    reference [.v] (e.g. the VID look-ahead address ≡ a geometry spec). [ours] and [spec]
-    must share port names. *)
+(** [check_circuits ~ours ~spec] proves that [ours] computes the same combinational
+    function as [spec], another Hardcaml circuit: for a property whose specification is
+    written in Hardcaml because there is no [.v] to import (the video look-ahead address).
+    The two must share port names. *)
 val check_circuits : ours:Circuit.t -> spec:Circuit.t -> result

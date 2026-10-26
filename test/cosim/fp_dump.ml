@@ -1,20 +1,14 @@
-(* Consolidated RTL-fidelity dumper for the FP units. Drives a Hardcaml FP unit (selected
-   by the first argument) over a stimulus set and writes "x y z cycles" / "x y u v z
-   cycles" lines (cycles = how many clock cycles the unit stalls), which the matching
-   Verilator harness (test/cosim/<unit>.cpp) replays through the reference
-   test/_po/verilog/src/<Unit>.v to assert RTL z == port z AND RTL stall-length == port
-   stall-length — value- AND cycle-fidelity, the latter the simulation preview of the
-   Phase-8 equivalence proof. This is a port-vs-RTL FIDELITY check, so the stimuli are (a)
-   the frozen fp_vectors lines tagged for this unit (the expected-z column is ignored — we
-   compare against the RTL, not the software oracle) and (b) a deterministic random fuzz
-   pass for breadth.
+(* The dumper for the three FP units. It drives one of them over a set of stimuli and
+   writes a line per operation: the operands, the result, and the number of cycles the
+   unit stalled. The harness <unit>.cpp replays the lines through the reference .v and
+   requires the same result and the same stall length. The stimuli are the frozen vectors
+   tagged for the unit (their expected-result column is ignored: the reference here is the
+   RTL) and a seeded random pass.
 
-   The three FP units share one dumper because the drive protocol (run -> drain on stall
-   -> read z) is identical; they differ only in the modifier bits (the adder carries u/v
-   for FLT/FLOOR, mul/div don't) and the frozen-vector line tag (A / M / D). A per-unit
-   [driver] captures exactly those two differences; everything else below is shared.
+   The three share a dumper because the protocol is the same; they differ only in whether
+   they carry u and v, and in their tag in the vector file.
 
-   Usage: fp_dump <fp_adder|fp_multiplier|fp_divider> <path to fp_vectors.txt> (-> stdout) *)
+   Usage: fp_dump <fp_adder|fp_multiplier|fp_divider> <path to fp_vectors.txt> *)
 
 open Hardcaml
 open Cosim_dump
@@ -26,10 +20,8 @@ open Cosim_dump
 let drive sim ~run ~stall ~z =
   set run 1;
   Cyclesim.cycle sim;
-  (* [cycles] counts the clock cycles with [run] asserted until [stall] drops — i.e. the
-     stall length (= the unit's state-counter terminal: FPAdd 3, FPMul 25, FPDiv 26). The
-     <unit>.cpp drives the RTL with the identical run -> drain protocol and the identical
-     count, so equal counts ⇔ the port stalls for exactly as many cycles as the RTL. *)
+  (* [cycles] counts the clocks with [run] high until [stall] drops: the stall length (3,
+     25 or 26). The .cpp counts the same way on the RTL. *)
   let cycles = ref 1 in
   while Bits.to_int_trunc !stall = 1 do
     Cyclesim.cycle sim;
@@ -132,10 +124,9 @@ let () =
         done
       with
       | End_of_file -> ());
-  (* (b) fuzz: deterministic random stimuli for breadth — any 32-bit pattern is a valid
-     fidelity stimulus (port vs RTL, not against IEEE semantics). Each draw is bound with
-     an explicit let so the RNG consumption order is independent of argument-evaluation
-     order. *)
+  (* random patterns: any 32 bits are a valid stimulus for a comparison with the RTL. Each
+     draw is bound by its own [let], so that the order of draws does not depend on
+     argument evaluation order. *)
   let rng = Random.State.make [| 0xF9_AD |] in
   for _ = 1 to 20000 do
     let u = if d.has_uv then Random.State.int rng 2 else 0 in

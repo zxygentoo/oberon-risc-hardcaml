@@ -1,7 +1,8 @@
-; Formal logic-equivalence (AGENT.md §6, the "Formal" layer): prove our combinational
-; Hardcaml units compute the identical function as their reference Verilog, via
-; hardcaml_of_verilog (yosys import) + hardcaml_verify (Sec — a SAT equivalence check, z3).
-; The exhaustive counterpart to test/cosim (which samples the same comparison via Verilator).
+; The proofs: each faithful unit is proven equivalent to its reference Verilog — the
+; combinational ones by importing the .v (hardcaml_of_verilog) and a SAT check
+; (hardcaml_verify's Sec, z3), the ones with state inside yosys by induction. The exhaustive
+; counterpart of test/cosim, which samples the same comparison under Verilator. The
+; inventory, and what each proof does and does not cover, is in README.md.
 ;
 ; OPT-IN — needs yosys + z3 on PATH (like cosim needs verilator), so it's kept out of
 ; @runtest. formal_run is the self-contained OCaml runner (cd to repo root, tool check, RTL

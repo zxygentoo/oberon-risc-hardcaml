@@ -1,10 +1,10 @@
-(** The gate side of the in-situ core-glue proof: our {!Risc5.Cpu} assembled with the 8
-    submodules as black-box [Instantiation] stubs (module / instance / port / output-wire
-    names matching [RISC5.v]), via {!Risc5.Cpu.create_with_units}. Proving this against
-    [RISC5.v] with the units black-boxed checks the glue — decode, the inline ALU,
-    control, flags, the 13 state registers — with the units assumed-equivalent (each
-    proven separately, §6). See [proofs/core.ys.template] (run by
-    {!Yosys_equiv.run_proof}) for the yosys flow and the README for the rationale. *)
+(** Our side of the core-glue proof: {!Risc5.Cpu} assembled, through
+    {!Risc5.Cpu.create_with_units}, with the eight submodules as black-box [Instantiation]
+    stubs whose module, instance, port and output-wire names are [RISC5.v]'s. Proving it
+    against [RISC5.v], with the units black boxes there too, checks the glue — decode, the
+    inline ALU, control, flags, the 13 state registers — on the assumption that the units
+    are equivalent, which each unit's own proof discharges. The yosys flow is
+    [proofs/core.ys.template]; the reasoning is in the README. *)
 
 open Hardcaml
 
