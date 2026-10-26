@@ -8,6 +8,8 @@ It boots Project Oberon and Extended Oberon from an SD card to the desktop on re
 hardware, as a standalone workstation, and it runs
 [DOOM](https://github.com/zxygentoo/DOOM-on-Oberon).
 
+![A Nexys 4 board with its LEDs lit, beside a monitor showing the Project Oberon desktop with DOOM's title screen in a viewer](docs/oberon-on-nexys4.jpg)
+
 The port was built one module at a time from Wirth's Verilog, and it is held to two
 references: an [OCaml emulator](https://github.com/zxygentoo/oberon-risc-emu-ocaml) for
 what each instruction computes, and the original Verilog itself, by co-simulation and by
@@ -17,7 +19,9 @@ equivalence proofs, for what each register does on each clock.
 
 - **The faithful port** (`lib/`): the RISC5 core, its multiplier, divider, shifters and
   floating-point units, the register file, UART, SPI, PS/2 keyboard and mouse, and the
-  video controller. Each mirrors its Verilog original register for register.
+  video controller. Each mirrors its Verilog original register for register, except
+  for two deliberate departures in the video controller: its fetch request crosses into
+  the system clock's domain through a synchroniser, and it fetches one word ahead.
 - **The board layer** (`board/nexys-4/`): what a Nexys 4 needs that the original
   OberonStation did not. Main memory is a 16 MiB PSRAM that takes five or six clocks
   per halfword, so the layer adds an instruction and data cache, a write buffer and a
@@ -35,7 +39,7 @@ equivalence proofs, for what each register does on each clock.
 | the emulator | every instruction class, and short programs | 290,000 random cases, the state compared after each instruction |
 | the emulator | a whole boot | the state at the jump into the OS, then the desktop's framebuffer, byte for byte; on the simulation SoC and on the board SoC as shipped |
 | the Verilog | nine units, and the core over 10 M cycles of a boot | co-simulation under Verilator, every output on every cycle |
-| the Verilog | twelve units and the core's glue | equivalence proofs (yosys induction, z3) |
+| the Verilog | twelve units, the core's glue, and the video controller around its two departures | equivalence proofs (yosys induction, z3) |
 | a specification | the register file, the video look-ahead, the video clock crossing | proofs |
 | the hardware | the board | it boots, rebuilds the whole Oberon system without a trap, and plays DOOM's timedemo to the exact tick count |
 
@@ -72,11 +76,12 @@ its opam repository carries.
 git clone --recurse-submodules https://github.com/zxygentoo/oberon-risc-hardcaml.git
 cd oberon-risc-hardcaml
 
+opam update --all
 opam switch create 5.2.0+ox \
   --repos ox=git+https://github.com/oxcaml/opam-repository.git,default
 eval $(opam env --switch 5.2.0+ox --set-switch)
-opam install hardcaml hardcaml_waveterm ppx_hardcaml ppx_expect qcheck-core \
-             hardcaml_verify hardcaml_of_verilog ocamlformat
+opam install . --deps-only   # Hardcaml and the test libraries, as the .opam file lists them
+opam install ocamlformat     # for dune fmt
 
 dune build @check     # type-check everything
 dune runtest          # unit tests, FP replays, the lockstep: about 15 s
@@ -92,9 +97,8 @@ dune build @formal                # the 17 proofs                       (needs y
 dune build @gates                 # everything, about 10 minutes
 ```
 
-The reference Verilog is not in the repository (it is not ours to redistribute). The
-co-simulation and the proofs fetch it on first use and verify it against pinned
-checksums.
+The reference Verilog is not in the repository. The co-simulation and the proofs fetch
+it from projectoberon.net on first use and verify it against pinned checksums.
 
 ## On a board
 
@@ -108,6 +112,10 @@ vivado -mode batch -source board/nexys-4/build.tcl    # synthesize, place, route
 vivado -mode batch -source board/nexys-4/program.tcl  # load over JTAG, or
 vivado -mode batch -source board/nexys-4/flash.tcl    # write the QSPI flash
 ```
+
+To skip the build, take `oberon.bit` from a
+[release](https://github.com/zxygentoo/oberon-risc-hardcaml/releases), put it in
+`board/_build/nexys-4/`, and run only the last two steps.
 
 The SD card holds the Oberon file system where the OberonStation expects it, 0x80002
 blocks in. A `.dsk` image, as the emulators use, is the file system alone, so it goes at
@@ -160,4 +168,5 @@ Andreas Pirklbauer's.
 ## License
 
 [MIT](LICENSE), for the code in this repository. The reference Verilog and the Oberon
-system are their authors'.
+system are their authors'. [`THIRD_PARTY.md`](THIRD_PARTY.md) lists what here derives
+from other work, and the notices it carries.

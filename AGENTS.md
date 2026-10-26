@@ -54,7 +54,8 @@ you must know before changing anything; the rest is reference:
 - `vendor/`: the emulator, a submodule built as library `emu`. Never edit it from here.
 - Git-ignored: `board/_generated/`, `board/_build/`, `test/_work/`, and `test/_po/` —
   the reference Verilog, fetched by `test/fetch-rtl.sh` and checksum-pinned in
-  `test/rtl-sources.txt`. It is not ours to redistribute, and changing a pin is deliberate.
+  `test/rtl-sources.txt`. It stays out of the repo, fetched from its source, and changing
+  a pin is deliberate.
 
 ## Gates
 

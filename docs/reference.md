@@ -7,8 +7,8 @@ Verilog disagree.
 ## The reference Verilog
 
 The port follows `OStationVerilog.zip` (rev. 2015/2018, N. Wirth / P. Reed). The archive
-is not ours to redistribute, so it is not in the repo: `test/fetch-rtl.sh` fetches it on
-demand into `test/_po/verilog/src/`, and `test/rtl-sources.txt` pins every file by
+is not in the repo: `test/fetch-rtl.sh` fetches it from projectoberon.net on demand into
+`test/_po/verilog/src/`, and `test/rtl-sources.txt` pins every file by
 checksum. A mismatch means upstream has drifted from the revision the port was verified
 against (the line numbers below refer to that revision); updating a pin is a deliberate
 edit of that file.
