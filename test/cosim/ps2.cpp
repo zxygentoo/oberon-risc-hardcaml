@@ -28,7 +28,8 @@ static void reset_ps2(VPS2* dut) {
 static bool replay_ps2(VPS2* dut, FILE* f, Serial_mismatches* m) {
   unsigned int data;
   char trace[8192];
-  if (fscanf(f, "%x %8191s", &data, trace) != 2) return false;
+  if (!record_read(f, fscanf(f, "%x %8191s", &data, trace), 2)) return false;
+  check_trace(f, trace, sizeof trace);
   int len = (int)strlen(trace);
   for (int k = 0; k < len; k++) {
     int hd = hexval(trace[k]);

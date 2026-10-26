@@ -82,7 +82,10 @@ word are zero in this check. Vertical blanking and sync would need a whole frame
 visual goldens cover them, with real pixels.
 
 A stimulus harness compares whatever its dumper produced, and its log prints how many
-stimuli that was. It does not itself reject an empty dump.
+stimuli that was. A dump it cannot read whole fails the unit with exit 2: an empty one,
+a record that does not parse, a trace too long for its buffer. Stopping at the first bad
+record would pass on whatever came before it, and on nothing at all after a change to a
+dumper's format.
 
 ## The core
 
@@ -112,7 +115,8 @@ The trace is captured afresh on every run (about 160 MiB in `test/_work/cosim/co
 is the port's own recorded behaviour, and a reused trace would vouch for a core that has
 since changed. Each record holds the inputs a state consumes and the outputs it drives,
 taken before the clock edge, which keeps the trace consistent across the release of
-reset. `CYC_FROM`, `CYC_TO` and `NOTRACE` make `core_dump` print `pc`, `ir`, the flags
+reset. An empty trace, or one whose last record is cut short, fails like a bad dump.
+`CYC_FROM`, `CYC_TO` and `NOTRACE` make `core_dump` print `pc`, `ir`, the flags
 and the registers over a window, for looking closely at a mismatch.
 
 ## The reference Verilog
@@ -157,4 +161,5 @@ Every unit is one entry in `cosim_run.ml`'s `units` list.
 **Any other interface** gets its own `<unit>_dump.ml` and `<unit>.cpp`. `spi_dump.ml`
 and `spi.cpp` are the pattern: dump a trace with one record per cycle (the stimulus and
 the outputs to check), and let the harness run the RTL to its own end condition while
-comparing every cycle.
+comparing every cycle. Read each record through `cosim.h`'s `record_read`, and a trace
+field through `check_trace`, so that a bad dump fails instead of ending the replay early.

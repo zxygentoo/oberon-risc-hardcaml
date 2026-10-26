@@ -60,8 +60,8 @@ int main(int argc, char** argv) {
   // with vcnt>=2.) Raster (hsync/vsync) and the req protocol are checked from t=0.
   const long RGB_WARMUP_TICKS = 1344 * 5; // one scanline
 
-  while (fscanf(f, "%d %x %d %x %d %d %x", &inv, &viddata, &req, &vidadr, &hsync, &vsync, &rgb) ==
-         7) {
+  while (record_read(
+    f, fscanf(f, "%d %x %d %x %d %d %x", &inv, &viddata, &req, &vidadr, &hsync, &vsync, &rgb), 7)) {
     (void)viddata; // the file's viddata is the PORT's own echoed address — informational here;
                    // VID60.v is driven from its OWN vidadr below
     dut->inv = inv;
@@ -93,6 +93,7 @@ int main(int argc, char** argv) {
     n++;
     t++;
   }
+  if (n == 0) bad_dump(f, "no records");
   fclose(f);
   long req_diff = req_rtl_pulses - req_port_pulses;
   int req_ok = req_diff <= 1 && req_diff >= -1;

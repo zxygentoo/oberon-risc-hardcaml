@@ -30,7 +30,9 @@ struct Rec {
 
 static bool read_rec(FILE* f, Rec* r) {
   unsigned char b[17];
-  if (fread(b, 1, 17, f) != 17) return false;
+  size_t got = fread(b, 1, 17, f);
+  if (got == 0 && !ferror(f)) return false;
+  if (got != 17) bad_dump(f, "a record cut short");
   int c = b[0];
   r->rst = c & 1;
   r->irq = (c >> 1) & 1;

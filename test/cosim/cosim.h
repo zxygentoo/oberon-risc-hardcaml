@@ -2,12 +2,15 @@
 // but duck-typed, so the cross-check protocols are templated here once and each per-unit .cpp is
 // a thin shell (its names + stimulus parser/replay). Two runners: run_drain_cosim for the
 // stall-based FP units (run -> drain on stall -> compare z), and run_serial_cosim for the
-// cycle-by-cycle serial units (SPI/RS232T/RS232R/PS2), plus the shared tick/cosim_open/hexval.
+// cycle-by-cycle serial units (SPI/RS232T/RS232R/PS2), plus the shared tick/cosim_open/hexval
+// and the dump guards (bad_dump/record_read/check_trace).
 // The two-clock vid + the bidirectional-inout mouse keep their own main() (different shapes).
 #pragma once
 #include "verilated.h"
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 // one clock cycle: falling then rising edge, evaluating combinational logic at each.
 template <typename Dut> static void tick(Dut* dut) {
@@ -28,6 +31,27 @@ static FILE* cosim_open(int argc, char** argv) {
   FILE* f = fopen(argv[1], "r");
   if (!f) fprintf(stderr, "cannot open %s\n", argv[1]);
   return f;
+}
+
+// end the run on a dump that cannot be read whole (exit 2, as for a missing file). Ending the
+// replay at the first bad record instead would pass on whatever came before it, and on nothing
+// at all when the dumper's format changes.
+[[noreturn]] static void bad_dump(FILE* f, const char* what) {
+  fprintf(stderr, "bad dump at byte %ld: %s\n", ftell(f), what);
+  exit(2);
+}
+
+// one record's fscanf result: true when all [want] fields were read, false at a clean end of the
+// file. A record cut short, or with a field that does not parse, is a bad dump.
+static bool record_read(FILE* f, int got, int want) {
+  if (got == want) return true;
+  if (got != EOF || ferror(f)) bad_dump(f, "a record that does not parse");
+  return false;
+}
+
+// a trace that fills its buffer may have been cut, and its rest would be read as the next record.
+static void check_trace(FILE* f, const char* trace, size_t size) {
+  if (strlen(trace) >= size - 1) bad_dump(f, "a trace as long as its buffer");
 }
 
 // the three name strings a cross-check prints: [tag] in the stats line, "[port] is bit-exact
@@ -66,6 +90,7 @@ static int run_serial_cosim(Unit unit, Dut* dut, FILE* f, Reset reset, Replay re
   Serial_mismatches m;
   long n = 0;
   while (replay(dut, f, &m)) n++;
+  if (n == 0) bad_dump(f, "no records");
   fclose(f);
   printf("%s co-sim: %ld stimuli, %ld value-mismatch, %ld wave-mismatch, %ld cycle-mismatch\n",
          unit.tag, n, m.value, m.wave, m.cycle);
@@ -129,6 +154,7 @@ static int run_drain_cosim(Unit unit, Dut* dut, FILE* f, Parse parse) {
         printf("CYCLE-MISMATCH %s: RTL=%dcy PORT=%dcy\n", label, rcyc, pcyc);
     }
   }
+  if (n == 0) bad_dump(f, "no records");
   fclose(f);
   printf("%s co-sim: %ld stimuli, %ld value-mismatch, %ld cycle-mismatch\n", unit.tag, n,
          value_mismatch, cycle_mismatch);
@@ -144,7 +170,7 @@ template <typename Dut>
 static bool parse_xy(FILE* f, Dut* dut, uint32_t* pz, int* pcyc, char* label) {
   unsigned int x, y, z;
   int cyc;
-  if (fscanf(f, "%x %x %x %d", &x, &y, &z, &cyc) != 4) return false;
+  if (!record_read(f, fscanf(f, "%x %x %x %d", &x, &y, &z, &cyc), 4)) return false;
   dut->x = x;
   dut->y = y;
   *pz = z;
@@ -157,7 +183,7 @@ template <typename Dut>
 static bool parse_xyuv(FILE* f, Dut* dut, uint32_t* pz, int* pcyc, char* label) {
   unsigned int x, y, z;
   int u, v, cyc;
-  if (fscanf(f, "%x %x %d %d %x %d", &x, &y, &u, &v, &z, &cyc) != 6) return false;
+  if (!record_read(f, fscanf(f, "%x %x %d %d %x %d", &x, &y, &u, &v, &z, &cyc), 6)) return false;
   dut->u = u;
   dut->v = v;
   dut->x = x;

@@ -28,7 +28,8 @@ static bool replay_rs232r(VRS232R* dut, FILE* f, Serial_mismatches* m) {
   int fsel;
   unsigned int data;
   char trace[65536];
-  if (fscanf(f, "%d %x %65535s", &fsel, &data, trace) != 3) return false;
+  if (!record_read(f, fscanf(f, "%d %x %65535s", &fsel, &data, trace), 3)) return false;
+  check_trace(f, trace, sizeof trace);
   dut->fsel = fsel;
   int len = (int)strlen(trace);
   for (int k = 0; k < len; k++) {
